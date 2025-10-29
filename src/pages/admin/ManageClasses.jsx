@@ -156,7 +156,7 @@ export default function ManageClasses() {
       const snapshot = await getDocs(collection(db, "teachers"))
       const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
       setTeachers(data)
-      console.log("[v0] Teachers loaded:", data)
+      console.log(" Teachers loaded:", data)
     } catch (error) {
       console.error("Error fetching teachers:", error)
     }
@@ -444,14 +444,14 @@ export default function ManageClasses() {
 
           // Create the new exam first
           const newExamRef = await addDoc(collection(db, "exams"), newExam)
-          console.log("[v0] Created archived exam:", newExamRef.id)
+          console.log(" Created archived exam:", newExamRef.id)
 
           // Then copy all questions from the source exam to the new exam
           try {
             const questionsCopied = await copyExamQuestions(examId, newExamRef.id)
-            console.log("[v0] Copied", questionsCopied, "questions for exam", newExamRef.id)
+            console.log(" Copied", questionsCopied, "questions for exam", newExamRef.id)
           } catch (questionError) {
-            console.error("[v0] Error copying questions for exam:", questionError)
+            console.error(" Error copying questions for exam:", questionError)
             toast({
               variant: "error",
               title: "Warning",
@@ -472,7 +472,7 @@ export default function ManageClasses() {
         description: `Successfully archived ${archivedCount} item(s)!`,
       })
     } catch (error) {
-      console.error("[v0] Error archiving:", error)
+      console.error(" Error archiving:", error)
       toast({
         variant: "error",
         title: "Error",

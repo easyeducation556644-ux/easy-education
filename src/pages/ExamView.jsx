@@ -74,12 +74,12 @@ export default function ExamView() {
 
       setActualExamId(resolvedExamId)
       const questionsData = await getQuestionsByExam(resolvedExamId)
-      console.log("[v0] Fetched questions for exam:", resolvedExamId, "Count:", questionsData.length)
+      console.log(" Fetched questions for exam:", resolvedExamId, "Count:", questionsData.length)
 
       const existingResult = await getExamResult(currentUser.uid, resolvedExamId)
 
       if (questionsData.length === 0) {
-        console.warn("[v0] No questions found for exam:", examId)
+        console.warn(" No questions found for exam:", examId)
         toast({
           variant: "error",
           title: "No Questions",
@@ -95,7 +95,7 @@ export default function ExamView() {
         setTimeLeft(examData.duration * 60)
       }
     } catch (error) {
-      console.error("[v0] Error fetching exam:", error)
+      console.error(" Error fetching exam:", error)
       toast({
         variant: "error",
         title: "Error",
@@ -297,7 +297,7 @@ export default function ExamView() {
         throw new Error("No questions found in exam")
       }
 
-      console.log("[v0] Starting exam submission...", {
+      console.log(" Starting exam submission...", {
         userId: currentUser.uid,
         examId: actualExamId,
         score,
@@ -315,7 +315,7 @@ export default function ExamView() {
 
       setTimeout(() => navigate(`/exam/${actualExamId}/result`), 1500)
     } catch (error) {
-      console.error("[v0] Error submitting exam:", error)
+      console.error(" Error submitting exam:", error)
       toast({
         variant: "error",
         title: "Submission Failed",

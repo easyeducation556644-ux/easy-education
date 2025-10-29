@@ -75,7 +75,7 @@ export default function Header() {
     const fetchSettings = async () => {
       try {
         if (!db) {
-          console.warn("[v0] Firebase not available, skipping settings fetch")
+          console.warn(" Firebase not available, skipping settings fetch")
           return
         }
         const settingsQuery = query(collection(db, "settings"), where("type", "==", "general"))
@@ -85,7 +85,7 @@ export default function Header() {
           setCommunityEnabled(settings.communityEnabled !== false)
         }
       } catch (error) {
-        console.error("[v0] Error fetching settings:", error)
+        console.error(" Error fetching settings:", error)
       }
     }
     fetchSettings()

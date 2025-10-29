@@ -24,7 +24,7 @@ export default function Home() {
   const fetchData = async () => {
     try {
       if (!db) {
-        console.warn("[v0] Firebase not available, skipping data fetch")
+        console.warn(" Firebase not available, skipping data fetch")
         setLoading(false)
         return
       }
@@ -51,7 +51,7 @@ export default function Home() {
       }))
       setCategories(categoriesData)
     } catch (error) {
-      console.error("[v0] Error fetching data:", error)
+      console.error(" Error fetching data:", error)
       // Continue with empty data
     } finally {
       setLoading(false)

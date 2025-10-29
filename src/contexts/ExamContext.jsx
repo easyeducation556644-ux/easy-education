@@ -148,7 +148,7 @@ export function ExamProvider({ children }) {
 
   const getQuestionsByExam = async (examId) => {
     try {
-      console.log("[v0] Fetching questions for exam:", examId)
+      console.log(" Fetching questions for exam:", examId)
       const q = query(collection(db, "examQuestions"), where("examId", "==", examId))
       const snapshot = await getDocs(q)
       const questions = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
@@ -166,10 +166,10 @@ export function ExamProvider({ children }) {
         // If neither has order, sort by createdAt descending
         return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
       })
-      console.log("[v0] Found", questions.length, "questions for exam", examId)
+      console.log(" Found", questions.length, "questions for exam", examId)
       return questions
     } catch (error) {
-      console.error("[v0] Error fetching questions:", error)
+      console.error(" Error fetching questions:", error)
       return []
     }
   }
@@ -227,7 +227,7 @@ export function ExamProvider({ children }) {
           marks: q.marks || 0,
         }))
 
-      console.log("[v0] Submitting exam result:", {
+      console.log(" Submitting exam result:", {
         userId,
         examId,
         score,
@@ -252,10 +252,10 @@ export function ExamProvider({ children }) {
         attemptNumber,
       })
 
-      console.log("[v0] Exam result submitted successfully:", result.id)
+      console.log(" Exam result submitted successfully:", result.id)
       return result.id
     } catch (error) {
-      console.error("[v0] Error submitting exam result:", error)
+      console.error(" Error submitting exam result:", error)
       throw new Error(`Failed to submit exam: ${error.message}`)
     }
   }
@@ -354,11 +354,11 @@ export function ExamProvider({ children }) {
 
   const copyExamQuestions = async (sourceExamId, targetExamId) => {
     try {
-      console.log("[v0] Copying questions from exam", sourceExamId, "to", targetExamId)
+      console.log(" Copying questions from exam", sourceExamId, "to", targetExamId)
       const sourceQuestions = await getQuestionsByExam(sourceExamId)
 
       if (sourceQuestions.length === 0) {
-        console.log("[v0] No questions to copy")
+        console.log(" No questions to copy")
         return 0
       }
 
@@ -374,10 +374,10 @@ export function ExamProvider({ children }) {
         copiedCount++
       }
 
-      console.log("[v0] Successfully copied", copiedCount, "questions")
+      console.log(" Successfully copied", copiedCount, "questions")
       return copiedCount
     } catch (error) {
-      console.error("[v0] Error copying exam questions:", error)
+      console.error(" Error copying exam questions:", error)
       throw error
     }
   }

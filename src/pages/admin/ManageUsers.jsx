@@ -202,7 +202,7 @@ export default function ManageUsers() {
       variant: "destructive",
       onConfirm: async () => {
         try {
-          console.log("[v0] Removing user from course:", selectedUser.id, courseId)
+          console.log(" Removing user from course:", selectedUser.id, courseId)
 
           const paymentsQuery = query(
             collection(db, "payments"),
@@ -228,7 +228,7 @@ export default function ManageUsers() {
             setSelectedUser(null)
           }
         } catch (error) {
-          console.error("[v0] Error removing student from course:", error)
+          console.error(" Error removing student from course:", error)
           toast({
             variant: "error",
             title: "Removal Failed",

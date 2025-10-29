@@ -41,10 +41,10 @@ import ExamAttempts from "./pages/ExamAttempts"
 import Analytics from "./pages/Analytics"
 import NotFound from "./pages/NotFound"
 
-console.log("[v0] App.jsx loaded")
+console.log(" App.jsx loaded")
 
 function App() {
-  console.log("[v0] App component rendering")
+  console.log(" App component rendering")
 
   return (
     <Router>
