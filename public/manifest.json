@@ -1,0 +1,54 @@
+{
+  "name": "Easy Education - Free Online Courses",
+  "short_name": "Easy Education",
+  "description": "Learn from the best free online courses with expert teachers",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfcfd",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "gcm_sender_id": "103953800507",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "learning"],
+  "shortcuts": [
+    {
+      "name": "Browse Courses",
+      "short_name": "Courses",
+      "description": "Browse all available courses",
+      "url": "/courses",
+      "icons": [
+        {
+          "src": "/icon-192x192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "My Courses",
+      "short_name": "My Courses",
+      "description": "View your enrolled courses",
+      "url": "/my-courses",
+      "icons": [
+        {
+          "src": "/icon-192x192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}

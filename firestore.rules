@@ -1,0 +1,239 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===== Helper Functions =====
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/adminTokens/$(request.auth.uid));
+    }
+    
+    function hasRole(role) {
+      return isSignedIn() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+
+    // ===== Users Collection =====
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Admin Tokens Collection =====
+    match /adminTokens/{userId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Only backend can modify
+    }
+
+    // ===== Courses Collection =====
+    match /courses/{courseId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Subjects Collection =====
+    match /subjects/{subjectId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Chapters Collection =====
+    match /chapters/{chapterId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Classes Collection =====
+    match /classes/{classId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Categories Collection =====
+    match /categories/{categoryId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Teachers Collection =====
+    match /teachers/{teacherId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Exams Collection =====
+    match /exams/{examId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Exam Questions Collection =====
+    match /examQuestions/{questionId} {
+      allow read: if true; // Students can see questions during exam
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Exam Results Collection =====
+    match /examResults/{resultId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // ===== Exam Attempts Collection =====
+    match /examAttempts/{attemptId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // ===== CQ Submissions Collection =====
+    match /cqSubmissions/{submissionId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // ===== Payments Collection =====
+    match /payments/{paymentId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isAdmin(); // Only admin can approve/reject
+      allow delete: if isAdmin();
+    }
+
+    // ===== User Courses Enrollment Collection =====
+    match /userCourses/{enrollmentId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isAdmin(); // Enrollment happens after payment approval
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== User Progress Collection =====
+    match /userProgress/{progressId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // ===== Announcements Collection =====
+    match /announcements/{announcementId} {
+      allow read: if true; // Public reading
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Community Posts Collection =====
+    // FIXED: Posts use authorId field, not userId
+    match /posts/{postId} {
+      allow read: if true; // Anyone can read posts (public community)
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.authorId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.authorId) || isAdmin());
+      allow delete: if isSignedIn() && 
+                       (isOwner(resource.data.authorId) || isAdmin());
+    }
+
+    // ===== Comments Collection =====
+    // FIXED: Comments use authorId field, not userId
+    match /comments/{commentId} {
+      allow read: if true; // Anyone can read comments (public community)
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.authorId);
+      allow update: if isSignedIn() && 
+                       (isOwner(resource.data.authorId) || isAdmin());
+      allow delete: if isSignedIn() && 
+                       (isOwner(resource.data.authorId) || isAdmin());
+    }
+
+    // ===== Coupons Collection =====
+    match /coupons/{couponId} {
+      allow read: if isSignedIn(); // Only logged-in users can see coupons
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Notifications Collection =====
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isAdmin(); // Only admin sends notifications
+      allow update: if isSignedIn() && isOwner(resource.data.userId); // User can mark as read
+      allow delete: if isSignedIn() && 
+                       (isOwner(resource.data.userId) || isAdmin());
+    }
+
+    // ===== Telegram Submissions Collection =====
+    match /telegramSubmissions/{submissionId} {
+      allow read: if isSignedIn() && 
+                     (isOwner(resource.data.userId) || isAdmin());
+      allow create: if isSignedIn() && 
+                       isOwner(request.resource.data.userId);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Settings Collection =====
+    match /settings/{settingId} {
+      allow read: if true; // Public settings like website name, logo
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ===== Default Deny All =====
+    // Any collection not explicitly listed above will be denied
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

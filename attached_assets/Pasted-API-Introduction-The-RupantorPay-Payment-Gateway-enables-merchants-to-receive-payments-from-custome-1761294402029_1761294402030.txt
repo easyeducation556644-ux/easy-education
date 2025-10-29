@@ -1,0 +1,44 @@
+API Introduction
+The RupantorPay Payment Gateway enables merchants to receive payments from customers by temporarily redirecting them to RupantorPay.com. The gateway connects multiple payment terminals including card systems, mobile financial systems, and local/international wallets. After payment completion, customers are returned to the merchant's site, and the merchant receives payment notification with transaction details.
+
+Note: This document is intended for technical personnel supporting merchant websites. Working knowledge of HTML forms or cURL is required.
+API Operation
+Our REST APIs support both GET and POST methods in two environments:
+
+Sandbox: For testing purposes (use test credentials)
+Live: For production processing (use live credentials)
+POST GET Create Payment URL
+https://payment.rupantorpay.com/api/payment/checkout
+
+Endpoint for creating new payment requests
+
+POST GET Verify Payment
+https://payment.rupantorpay.com/api/payment/verify-payment
+
+Endpoint for verifying completed transactions
+
+Server Requirements: Your server must support cURL for API integration. For HTML Form submission, see the HTML Post method examples below.
+Parameter Details
+Payment Initialization Parameters - Required for POST requests to create payment URLs
+Field Name	Description	Required	Example Values
+fullname	Customer Full Name	Yes	John Doe
+email	Customer Email Address	Yes	john@gmail.com
+amount	Total payable amount (skip trailing zeros for whole numbers)	Yes	10 or 10.50 or 10.6
+success_url	URL to redirect after successful payment	Yes	https://yourdomain.com/success.php
+webhook_url	URL for server-to-server payment notifications	No	https://yourdomain.com/webhook.php
+cancel_url	URL to redirect if payment is cancelled	Yes	https://yourdomain.com/cancel.php
+meta_data	Additional JSON formatted data	No	{"order_id": "12345", "product": "Premium"}
+Payment Verification Parameters - Required for GET requests to verify payments
+Field Name	Description	Required	Example Values
+transaction_id	Transaction ID received in success URL	Yes	OVKPXW165414
+Headers Details
+Header Name	Value
+Content-Type	application/json
+X-API-KEY	Your API key from Brands section
+X-CLIENT	<?= $_SERVER['HTTP_HOST']; ?>
+Checkout POPUP
+Add This JS To Your Page:
+
+<script src="https://rupantorpay.com/public/assets/js/checkout.js"></script>
+  
+<script> rupantorpayCheckOut(payment_url); </script>
