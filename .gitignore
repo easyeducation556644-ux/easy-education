@@ -46,3 +46,10 @@ next-env.d.ts
 logs
 *.log
 .env
+
+# replit
+.replit
+.upm
+.cache
+.config
+/tmp
