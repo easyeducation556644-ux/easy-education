@@ -412,7 +412,7 @@ export default function CourseChapters() {
         </div>
 
         {/* Telegram Join Section - Only show on first page (subject-based courses or archive root) */}
-        {course?.telegramLink && !subject && !isArchiveSubject && !telegramSubmitted && (
+        {course?.telegramLink && !subject && !isArchiveSubject && (
           <div className="bg-gradient-to-br from-blue-50/80 to-cyan-50/50 dark:from-blue-950/30 dark:to-cyan-950/20 border-2 border-blue-200 dark:border-blue-800 rounded-xl p-4 md:p-5 mb-6 shadow-lg max-w-4xl">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
               <div>
@@ -444,19 +444,36 @@ export default function CourseChapters() {
 টেলিগ্রাম গ্রুপে জয়েন রিকুয়েষ্ট দেওয়ার আগে নিচের ফর্মটা সাবমিট করে তারপর রিকুয়েষ্ট দিবে, ফর্মটা একবারের বেশি সাবমিট করা যাবেনা তাই সঠিক ইনফর্মেশন দিয়ে সাবমিট করবে। আর রিকুয়েষ্ট দেওয়ার পর অপেক্ষা করবে আমরা সময় মতো তোমাকে গ্রুপে এড করে নিবো।</p>
               
               {telegramSubmitted ? (
-                <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3 flex items-start gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-green-700 dark:text-green-300 text-xs mb-0.5">
-                      Information Submitted
-                    </p>
-                    <p className="text-xs text-green-600 dark:text-green-400">
-                      You have already submitted your Telegram information for this course.
-                    </p>
+                <div className="space-y-3">
+                  <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3 flex items-start gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-green-700 dark:text-green-300 text-xs mb-0.5">
+                        Information Submitted Successfully!
+                      </p>
+                      <p className="text-xs text-green-600 dark:text-green-400">
+                        You have successfully submitted your Telegram information. Now you can join the Telegram group using the button below.
+                      </p>
+                    </div>
                   </div>
+                  
+                  <a
+                    href={course.telegramLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 py-2.5 px-5 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium shadow-md hover:shadow-lg text-sm"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>Join Telegram Group</span>
+                  </a>
                 </div>
               ) : (
-                <form onSubmit={handleTelegramSubmit} className="space-y-2.5">
+                <>
+                  <h3 className="font-semibold mb-2.5 text-xs md:text-sm">Submit Your Telegram Information</h3>
+                  <p className="block text-xs font-medium text-muted-foreground mb-1.5">
+টেলিগ্রাম গ্রুপে জয়েন রিকুয়েষ্ট দেওয়ার আগে নিচের ফর্মটা সাবমিট করে তারপর রিকুয়েষ্ট দিবে, ফর্মটা একবারের বেশি সাবমিট করা যাবেনা তাই সঠিক ইনফর্মেশন দিয়ে সাবমিট করবে। আর রিকুয়েষ্ট দেওয়ার পর অপেক্ষা করবে আমরা সময় মতো তোমাকে গ্রুপে এড করে নিবো।</p>
+                  
+                  <form onSubmit={handleTelegramSubmit} className="space-y-2.5">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                     <div>
                       <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -531,6 +548,7 @@ export default function CourseChapters() {
                     )}
                   </button>
                 </form>
+                </>
               )}
             </div>
           </div>
