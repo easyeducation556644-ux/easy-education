@@ -12,7 +12,7 @@ export default function Footer() {
               Easy Education
             </h3>
             <p className="text-muted-foreground text-sm">
-              HSC academic & admissiozn courses  at low price.
+              HSC academic & admission courses  at low price.
             </p>
           </div>
 
