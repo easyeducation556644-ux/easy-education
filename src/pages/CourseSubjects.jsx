@@ -361,8 +361,9 @@ export default function CourseSubjects() {
           </div>
         )}
 
+
         {/* Telegram Join Section */}
-        {course?.telegramLink && !telegramSubmitted && (
+        {course?.telegramLink && (
           <div className="mt-8 max-w-4xl mx-auto">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -380,139 +381,127 @@ export default function CourseSubjects() {
                 Join our Telegram group to get updates, interact with instructors, and connect with fellow students.
               </p>
 
-              <a
-                href={course.telegramLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block w-full md:w-auto md:inline-block py-3 px-6 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium text-center mb-6 shadow-md hover:shadow-lg"
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <Send className="w-5 h-5" />
-                  <span>Join Telegram Group</span>
-                </div>
-              </a>
-
-              <div className="border-t border-border pt-4">
-                <h3 className="font-semibold mb-3 text-sm">Submit Your Telegram Information</h3>
-                <p className="block text-xs font-medium text-muted-foreground mb-1.5">
-টেলিগ্রাম গ্রুপে জয়েন রিকুয়েষ্ট দেওয়ার আগে নিচের ফর্মটা সাবমিট করে তারপর রিকুয়েষ্ট দিবে, ফর্মটা একবারের বেশি সাবমিট করা যাবেনা তাই সঠিক ইনফর্মেশন দিয়ে সাবমিট করবে। আর রিকুয়েষ্ট দেওয়ার পর অপেক্ষা করবে আমরা সময় মতো তোমাকে গ্রুপে এড করে নিবো।</p>
-                
-                <form onSubmit={handleTelegramSubmit} className="space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {telegramSubmitted ? (
+                <div className="space-y-3">
+                  <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-3 flex items-start gap-2.5">
+                    <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
                     <div>
-                      <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                        Webapp Account Name
-                      </label>
-                      <input
-                        type="text"
-                        value={currentUser?.displayName || currentUser?.email || ""}
-                        disabled
-                        className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-sm"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                        Webapp Account Gmail
-                      </label>
-                      <input
-                        type="email"
-                        value={currentUser?.email || ""}
-                        disabled
-                        className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-sm"
-                      />
+                      <p className="font-medium text-green-700 dark:text-green-300 text-sm mb-0.5">
+                        Information Submitted Successfully!
+                      </p>
+                      <p className="text-sm text-green-600 dark:text-green-400">
+                        You have successfully submitted your Telegram information. Now you can join the Telegram group using the button below.
+                      </p>
                     </div>
                   </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                        তোমার টেলিগ্রাম আইডির নাম লিখো [যেই আইডি থেকে রিকুয়েস্ট পাঠানো হয়েছে]
-                      </label>
-                      <input
-                        type="text"
-                        value={telegramId}
-                        onChange={(e) => setTelegramId(e.target.value)}
-                        placeholder="Example: Shakib"
-                        required
-                        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                        Mobile Number
-                      </label>
-                      <input
-                        type="tel"
-                        value={telegramMobile}
-                        onChange={(e) => setTelegramMobile(e.target.value)}
-                        placeholder="01912345678"
-                        required
-                        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={submittingTelegram || !telegramId.trim() || !telegramMobile.trim()}
-                    className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium text-sm flex items-center justify-center gap-2"
+                  
+                  <a
+                    href={course.telegramLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 py-3 px-6 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium shadow-md hover:shadow-lg"
                   >
-                    {submittingTelegram ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        <span>Submitting...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-4 h-4" />
-                        <span>Submit Information</span>
-                      </>
-                    )}
-                  </button>
-                </form>
-              </div>
-            </motion.div>
-          </div>
-        )}
-        {telegramSubmitted &&(
-          <div className="mt-8 max-w-4xl mx-auto">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-card border border-border rounded-xl p-6 shadow-lg"
-            >
-              <h2 className="text-xl font-bold mb-3 flex items-center gap-2">
-                <Send className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                <span className="bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-400 dark:to-cyan-400 bg-clip-text text-transparent">
-                  Join Telegram Community
-                </span>
-              </h2>
-              
-              <p className="text-sm text-muted-foreground mb-4">
-                Join our Telegram group to get updates, interact with instructors, and connect with fellow students.
-              </p>
-
-              <a
-                href={course.telegramLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block w-full md:w-auto md:inline-block py-3 px-6 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium text-center mb-6 shadow-md hover:shadow-lg"
-              >
-                <div className="flex items-center justify-center gap-2">
-                  <Send className="w-5 h-5" />
-                  <span>Join Telegram Group</span>
+                    <Send className="w-5 h-5" />
+                    <span>Join Telegram Group</span>
+                  </a>
                 </div>
-              </a>
+              ) : (
+                <>
+                  <a
+                    href={course.telegramLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full md:w-auto md:inline-block py-3 px-6 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium text-center mb-6 shadow-md hover:shadow-lg"
+                  >
+                    <div className="flex items-center justify-center gap-2">
+                      <Send className="w-5 h-5" />
+                      <span>Join Telegram Group</span>
+                    </div>
+                  </a>
 
-              <div className="border-t border-border pt-4">
-                <h3 className="font-semibold mb-3 text-sm">Submit Your Telegram Information</h3>
-                <p className="block text-xs font-medium text-muted-foreground mb-1.5">
-ফর্মটি সাবমিট করা হয়েছে</p>
-                
+                  <div className="border-t border-border pt-4">
+                    <h3 className="font-semibold mb-3 text-sm">Submit Your Telegram Information</h3>
+                    <p className="block text-xs font-medium text-muted-foreground mb-1.5">
+টেলিগ্রাম গ্রুপে জয়েন রিকুয়েষ্ট দেওয়ার আগে নিচের ফর্মটা সাবমিট করে তারপর রিকুয়েষ্ট দিবে, ফর্মটা একবারের বেশি সাবমিট করা যাবেনা তাই সঠিক ইনফর্মেশন দিয়ে সাবমিট করবে। আর রিকুয়েষ্ট দেওয়ার পর অপেক্ষা করবে আমরা সময় মতো তোমাকে গ্রুপে এড করে নিবো।</p>
+                    
+                    <form onSubmit={handleTelegramSubmit} className="space-y-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                            Webapp Account Name
+                          </label>
+                          <input
+                            type="text"
+                            value={currentUser?.displayName || currentUser?.email || ""}
+                            disabled
+                            className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-sm"
+                          />
+                        </div>
 
-              </div>
+                        <div>
+                          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                            Webapp Account Gmail
+                          </label>
+                          <input
+                            type="email"
+                            value={currentUser?.email || ""}
+                            disabled
+                            className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-sm"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                            তোমার টেলিগ্রাম আইডির নাম লিখো [যেই আইডি থেকে রিকুয়েস্ট পাঠানো হয়েছে]
+                          </label>
+                          <input
+                            type="text"
+                            value={telegramId}
+                            onChange={(e) => setTelegramId(e.target.value)}
+                            placeholder="Example: Shakib"
+                            required
+                            className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                            Mobile Number
+                          </label>
+                          <input
+                            type="tel"
+                            value={telegramMobile}
+                            onChange={(e) => setTelegramMobile(e.target.value)}
+                            placeholder="01912345678"
+                            required
+                            className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={submittingTelegram || !telegramId.trim() || !telegramMobile.trim()}
+                        className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium text-sm flex items-center justify-center gap-2"
+                      >
+                        {submittingTelegram ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            <span>Submitting...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="w-4 h-4" />
+                            <span>Submit Information</span>
+                          </>
+                        )}
+                      </button>
+                    </form>
+                  </div>
+                </>
+              )}
             </motion.div>
           </div>
         )}
