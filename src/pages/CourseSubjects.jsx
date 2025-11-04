@@ -476,6 +476,46 @@ export default function CourseSubjects() {
             </motion.div>
           </div>
         )}
+        {telegramSubmitted &&(
+          <div className="mt-8 max-w-4xl mx-auto">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-card border border-border rounded-xl p-6 shadow-lg"
+            >
+              <h2 className="text-xl font-bold mb-3 flex items-center gap-2">
+                <Send className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <span className="bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-400 dark:to-cyan-400 bg-clip-text text-transparent">
+                  Join Telegram Community
+                </span>
+              </h2>
+              
+              <p className="text-sm text-muted-foreground mb-4">
+                Join our Telegram group to get updates, interact with instructors, and connect with fellow students.
+              </p>
+
+              <a
+                href={course.telegramLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full md:w-auto md:inline-block py-3 px-6 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-lg transition-all font-medium text-center mb-6 shadow-md hover:shadow-lg"
+              >
+                <div className="flex items-center justify-center gap-2">
+                  <Send className="w-5 h-5" />
+                  <span>Join Telegram Group</span>
+                </div>
+              </a>
+
+              <div className="border-t border-border pt-4">
+                <h3 className="font-semibold mb-3 text-sm">Submit Your Telegram Information</h3>
+                <p className="block text-xs font-medium text-muted-foreground mb-1.5">
+ফর্মটি সাবমিট করা হয়েছে</p>
+                
+
+              </div>
+            </motion.div>
+          </div>
+        )}
       </div>
     </div>
   )
