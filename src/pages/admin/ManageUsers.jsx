@@ -2,13 +2,15 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check } from "lucide-react"
-import { collection, getDocs, doc, updateDoc, deleteDoc, query, where } from "firebase/firestore"
+import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle } from "lucide-react"
+import { collection, getDocs, doc, updateDoc, deleteDoc, query, where, addDoc, serverTimestamp } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
 
 export default function ManageUsers() {
+  const { userProfile } = useAuth()
   const [users, setUsers] = useState([])
   const [filteredUsers, setFilteredUsers] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
@@ -17,6 +19,7 @@ export default function ManageUsers() {
   const [courses, setCourses] = useState([])
   const [showRemoveModal, setShowRemoveModal] = useState(false)
   const [showGrantAccessModal, setShowGrantAccessModal] = useState(false)
+  const [showUserDetailsModal, setShowUserDetailsModal] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedCourse, setSelectedCourse] = useState("")
   const [selectedCoursesForGrant, setSelectedCoursesForGrant] = useState([])
@@ -163,6 +166,52 @@ export default function ManageUsers() {
     }
   }
 
+  const handleUnbanUser = async (userId) => {
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        banned: false,
+        banExpiresAt: null,
+        devices: []
+      })
+      
+      await fetchUsers()
+      setShowUserDetailsModal(false)
+      
+      showSuccess("User unbanned successfully and devices cleared!")
+      toast({
+        variant: "success",
+        title: "Success",
+        description: "User has been unbanned and can log in again",
+      })
+    } catch (error) {
+      console.error("Error unbanning user:", error)
+      toast({
+        variant: "error",
+        title: "Unban Failed",
+        description: error.message || "Failed to unban user",
+      })
+    }
+  }
+
+  const formatTimeRemaining = (banExpiresAt) => {
+    if (!banExpiresAt) return null
+    
+    const now = new Date()
+    const banEnd = banExpiresAt.toDate()
+    const diff = banEnd - now
+
+    if (diff <= 0) return "Ban expired"
+
+    const minutes = Math.floor(diff / (1000 * 60))
+    const hours = Math.floor(minutes / 60)
+    const remainingMinutes = minutes % 60
+
+    if (hours > 0) {
+      return `${hours}h ${remainingMinutes}m remaining`
+    }
+    return `${remainingMinutes}m remaining`
+  }
+
   const handleDeleteUser = async (userId) => {
     setConfirmDialog({
       isOpen: true,
@@ -234,6 +283,23 @@ export default function ManageUsers() {
       const result = await response.json()
 
       if (result.success) {
+        await addDoc(collection(db, "notifications"), {
+          type: 'admin_course_grant',
+          title: 'Admin Granted Course Access',
+          message: `${userProfile?.name || 'Admin'} granted ${selectedUser.name} access to ${coursesToEnroll.length} course(s)`,
+          userId: selectedUser.id,
+          userName: selectedUser.name,
+          userEmail: selectedUser.email,
+          adminId: userProfile?.id || 'unknown',
+          adminName: userProfile?.name || 'Admin',
+          adminEmail: userProfile?.email || 'admin@gmail.com',
+          courses: coursesToEnroll,
+          transactionId: transactionId,
+          isRead: false,
+          createdAt: serverTimestamp(),
+          link: '/admin/payments'
+        })
+
         toast({
           title: "Success",
           description: `Successfully granted access to ${coursesToEnroll.length} course(s)!`,
@@ -460,6 +526,16 @@ export default function ManageUsers() {
                             <Shield className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary" />
                           </button>
                         )}
+                        <button
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setShowUserDetailsModal(true)
+                          }}
+                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
+                          title="View User Details"
+                        >
+                          <Info className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-500" />
+                        </button>
                         <button
                           onClick={() => handleBanUser(user.id, user.banned)}
                           className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
@@ -724,6 +800,158 @@ export default function ManageUsers() {
               <button
                 onClick={() => {
                   setShowRemoveModal(false)
+                  setSelectedUser(null)
+                }}
+                className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
+              >
+                Close
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showUserDetailsModal && selectedUser && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold">User Details</h2>
+              <button
+                onClick={() => {
+                  setShowUserDetailsModal(false)
+                  setSelectedUser(null)
+                }}
+                className="p-2 hover:bg-muted rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mb-6 p-4 bg-muted/50 rounded-lg">
+              <div className="flex items-center gap-3">
+                {selectedUser.photoURL ? (
+                  <img
+                    src={selectedUser.photoURL}
+                    alt={selectedUser.name}
+                    className="w-16 h-16 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center">
+                    <span className="text-primary font-semibold text-2xl">
+                      {selectedUser.name?.[0] || "U"}
+                    </span>
+                  </div>
+                )}
+                <div>
+                  <p className="font-semibold text-xl">{selectedUser.name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+                  <p className="text-sm text-muted-foreground">
+                    Role: <span className="font-medium">{selectedUser.role || 'user'}</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {(selectedUser.banned || selectedUser.permanentBan || selectedUser.banCount > 0) && (
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                  Ban Information
+                </h3>
+                <div className="space-y-3">
+                  <div className="p-4 bg-muted rounded-lg">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Status</p>
+                        <p className="font-semibold">
+                          {selectedUser.permanentBan ? (
+                            <span className="text-red-500">Permanently Banned</span>
+                          ) : selectedUser.banned ? (
+                            <span className="text-yellow-500">Temporarily Banned</span>
+                          ) : (
+                            <span className="text-green-500">Active</span>
+                          )}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">Ban Count</p>
+                        <p className="font-semibold">{selectedUser.banCount || 0}</p>
+                      </div>
+                      {selectedUser.banExpiresAt && !selectedUser.permanentBan && (
+                        <div className="col-span-2">
+                          <p className="text-sm text-muted-foreground flex items-center gap-2">
+                            <Clock className="w-4 h-4" />
+                            Time Remaining
+                          </p>
+                          <p className="font-semibold text-yellow-600">
+                            {formatTimeRemaining(selectedUser.banExpiresAt)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedUser.banHistory && selectedUser.banHistory.length > 0 && (
+                    <details className="p-4 bg-muted rounded-lg">
+                      <summary className="cursor-pointer font-medium">Ban History ({selectedUser.banHistory.length})</summary>
+                      <div className="mt-3 space-y-2">
+                        {selectedUser.banHistory.map((ban, idx) => (
+                          <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
+                            <p className="font-medium">Ban #{idx + 1}</p>
+                            <p className="text-muted-foreground">Reason: {ban.reason}</p>
+                            <p className="text-muted-foreground">
+                              Date: {new Date(ban.timestamp).toLocaleString()}
+                            </p>
+                            {ban.bannedUntil && (
+                              <p className="text-muted-foreground">
+                                Until: {new Date(ban.bannedUntil).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {selectedUser.devices && selectedUser.devices.length > 0 && (
+                    <details className="p-4 bg-muted rounded-lg">
+                      <summary className="cursor-pointer font-medium">Devices ({selectedUser.devices.length})</summary>
+                      <div className="mt-3 space-y-2">
+                        {selectedUser.devices.map((device, idx) => (
+                          <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
+                            <p className="font-medium">Device {idx + 1}</p>
+                            <p className="text-muted-foreground">Platform: {device.platform}</p>
+                            <p className="text-muted-foreground">Resolution: {device.screenResolution}</p>
+                            <p className="text-muted-foreground">
+                              Last Seen: {new Date(device.timestamp || device.lastSeen).toLocaleString()}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {(selectedUser.banned || selectedUser.permanentBan) && (
+                    <button
+                      onClick={() => handleUnbanUser(selectedUser.id)}
+                      className="w-full py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                    >
+                      <Ban className="w-5 h-5" />
+                      Unban User & Clear Devices
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 pt-4 border-t border-border">
+              <button
+                onClick={() => {
+                  setShowUserDetailsModal(false)
                   setSelectedUser(null)
                 }}
                 className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
