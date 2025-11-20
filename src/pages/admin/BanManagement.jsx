@@ -471,16 +471,10 @@ export default function BanManagement() {
                                     longitude={device.geolocation.longitude}
                                     city={device.geolocation.city}
                                     country={device.geolocation.country}
+                                    region={device.geolocation.region}
+                                    district={device.geolocation.district}
+                                    thana={device.geolocation.thana}
                                   />
-                                  <a
-                                    href={`https://www.google.com/maps?q=${device.geolocation.latitude},${device.geolocation.longitude}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 mt-2 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs"
-                                  >
-                                    <MapPin className="w-3 h-3" />
-                                    Open in Google Maps
-                                  </a>
                                 </div>
                               )}
                             </>

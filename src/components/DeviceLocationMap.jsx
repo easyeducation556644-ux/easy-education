@@ -1,112 +1,65 @@
-import { useEffect, useRef } from 'react'
+import { MapPin, ExternalLink } from 'lucide-react'
 
-export function DeviceLocationMap({ latitude, longitude, city, country }) {
-  const mapRef = useRef(null)
-  const mapInstanceRef = useRef(null)
-
-  useEffect(() => {
-    if (!mapRef.current || !latitude || !longitude || latitude === 0 || longitude === 0) return
-
-    const loadGoogleMaps = () => {
-      if (window.google && window.google.maps) {
-        initMap()
-        return
-      }
-
-      if (document.querySelector('script[src*="maps.googleapis.com"]')) {
-        const checkInterval = setInterval(() => {
-          if (window.google && window.google.maps) {
-            clearInterval(checkInterval)
-            initMap()
-          }
-        }, 100)
-        return
-      }
-
-      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-      
-      if (!apiKey) {
-        console.warn('Google Maps API key not configured. Set VITE_GOOGLE_MAPS_API_KEY environment variable.')
-        return
-      }
-
-      const script = document.createElement('script')
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}`
-      script.async = true
-      script.defer = true
-      script.onload = () => {
-        initMap()
-      }
-      script.onerror = () => {
-        console.error('Failed to load Google Maps script')
-      }
-      document.head.appendChild(script)
-    }
-
-    const initMap = () => {
-      if (!window.google || !window.google.maps || !mapRef.current) return
-
-      const position = { lat: latitude, lng: longitude }
-
-      const map = new window.google.maps.Map(mapRef.current, {
-        center: position,
-        zoom: 12,
-        mapTypeControl: false,
-        streetViewControl: false,
-        fullscreenControl: true,
-      })
-
-      new window.google.maps.Marker({
-        position: position,
-        map: map,
-        title: `${city}, ${country}`,
-        animation: window.google.maps.Animation.DROP,
-      })
-
-      mapInstanceRef.current = map
-    }
-
-    loadGoogleMaps()
-
-    return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current = null
-      }
-    }
-  }, [latitude, longitude, city, country])
-
+export function DeviceLocationMap({ latitude, longitude, city, country, region, district, thana }) {
   const hasValidLocation = latitude && longitude && latitude !== 0 && longitude !== 0
-  const hasApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
 
   if (!hasValidLocation) {
     return (
-      <div className="w-full h-64 bg-muted rounded-lg flex items-center justify-center">
+      <div className="w-full bg-muted rounded-lg flex items-center justify-center p-6">
         <p className="text-sm text-muted-foreground">Location data not available</p>
       </div>
     )
   }
 
-  if (!hasApiKey) {
-    return (
-      <div className="w-full h-64 bg-muted rounded-lg flex flex-col items-center justify-center gap-3 p-4">
-        <p className="text-sm text-muted-foreground text-center">
-          Google Maps API key not configured
-        </p>
-        <a
-          href={`https://www.google.com/maps?q=${latitude},${longitude}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
-        >
-          View on Google Maps
-        </a>
-      </div>
-    )
-  }
+  const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`
+  
+  const locationParts = [
+    thana,
+    district,
+    region,
+    city,
+    country
+  ].filter(Boolean)
 
   return (
-    <div className="w-full h-64 bg-muted rounded-lg overflow-hidden border border-border">
-      <div ref={mapRef} className="w-full h-full" />
+    <div className="w-full bg-muted rounded-lg border border-border overflow-hidden">
+      <div className="p-4 bg-gradient-to-br from-blue-500/10 to-purple-500/10 border-b border-border">
+        <div className="flex items-start gap-3">
+          <div className="p-2 bg-blue-500/20 rounded-lg">
+            <MapPin className="w-5 h-5 text-blue-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="font-medium text-foreground mb-1">Device Location</h4>
+            {locationParts.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">
+                  {locationParts.join(' • ')}
+                </p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {latitude.toFixed(6)}, {longitude.toFixed(6)}
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground font-mono">
+                {latitude.toFixed(6)}, {longitude.toFixed(6)}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+      
+      <div className="p-4">
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-medium"
+        >
+          <MapPin className="w-4 h-4" />
+          Open in Google Maps
+          <ExternalLink className="w-4 h-4" />
+        </a>
+      </div>
     </div>
   )
 }

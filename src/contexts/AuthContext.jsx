@@ -95,7 +95,7 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        throw new Error("PERMANENT_BAN")
+        return deviceInfo
       }
 
       if (userData.banned === true && !banExpiresAt) {
@@ -107,7 +107,7 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        throw new Error("MANUAL_BAN")
+        return deviceInfo
       }
 
       if (banExpiresAt) {
@@ -130,7 +130,7 @@ export function AuthProvider({ children }) {
           }
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
-          throw new Error("TEMP_BAN")
+          return deviceInfo
         }
       }
 
@@ -223,7 +223,6 @@ export function AuthProvider({ children }) {
           }
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
-          throw new Error(newBanCount >= 3 ? "PERMANENT_BAN" : "TEMP_BAN")
         } else {
           await updateDoc(userRef, {
             devices: updatedDevices
@@ -368,9 +367,6 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "MANUAL_BAN" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
-          throw firestoreError
-        }
         console.error("Firestore error during sign in:", firestoreError)
       }
 
@@ -439,9 +435,6 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "MANUAL_BAN" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
-          throw firestoreError
-        }
         console.error("Firestore error during Google sign in:", firestoreError)
       }
 
