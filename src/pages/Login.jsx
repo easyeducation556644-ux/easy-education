@@ -43,6 +43,10 @@ export default function Login() {
       console.error(" Google login error:", err)
       if (err.message === "BANNED_USER") {
         setError("Your account has been banned. Please contact support.")
+      } else if (err.message === "TEMP_BAN") {
+        setError("Multiple device login detected! Your account has been temporarily banned for 30 minutes.")
+      } else if (err.message === "PERMANENT_BAN") {
+        setError("Your account has been permanently banned due to multiple violations.")
       } else if (err.code === "auth/popup-closed-by-user") {
         setError("Sign-in popup was closed. Please try again.")
       } else if (err.code === "auth/popup-blocked") {

@@ -9,8 +9,9 @@ import {
   signOut as firebaseSignOut,
   sendPasswordResetEmail as firebaseSendPasswordResetEmail,
 } from "firebase/auth"
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot } from "firebase/firestore"
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection, addDoc, query, where, getDocs } from "firebase/firestore"
 import { auth, db, googleProvider } from "../lib/firebase"
+import { getDeviceInfo } from "../lib/deviceTracking"
 
 const AuthContext = createContext({})
 
@@ -31,6 +32,111 @@ export function AuthProvider({ children }) {
   const refreshUserProfile = async () => {
     if (currentUser) {
       await fetchUserProfile(currentUser.uid)
+    }
+  }
+
+  const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
+    try {
+      const deviceInfo = getDeviceInfo()
+      const userRef = doc(db, "users", userId)
+      const userDoc = await getDoc(userRef)
+      
+      if (!userDoc.exists()) return null
+      
+      const userData = userDoc.data()
+      const devices = userData.devices || []
+      const banCount = userData.banCount || 0
+      const banHistory = userData.banHistory || []
+      const permanentBan = userData.permanentBan || false
+      const banExpiresAt = userData.banExpiresAt
+
+      if (permanentBan) {
+        await firebaseSignOut(auth)
+        throw new Error("PERMANENT_BAN")
+      }
+
+      if (banExpiresAt && banExpiresAt.toDate() > new Date()) {
+        await firebaseSignOut(auth)
+        throw new Error("TEMP_BAN")
+      }
+
+      if (banExpiresAt && banExpiresAt.toDate() <= new Date()) {
+        await updateDoc(userRef, {
+          banned: false,
+          banExpiresAt: null
+        })
+      }
+
+      const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
+      
+      if (!existingDevice) {
+        const updatedDevices = [...devices, deviceInfo]
+        
+        if (updatedDevices.length > 1) {
+          const newBanCount = banCount + 1
+          const now = new Date()
+          const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
+          
+          const banRecord = {
+            timestamp: now.toISOString(),
+            reason: 'Multiple device login detected',
+            deviceCount: updatedDevices.length,
+            bannedUntil: banExpires.toISOString()
+          }
+
+          const updateData = {
+            devices: updatedDevices,
+            banCount: newBanCount,
+            banHistory: [...banHistory, banRecord],
+            banned: true,
+            banExpiresAt: banExpires
+          }
+
+          if (newBanCount >= 3) {
+            updateData.permanentBan = true
+            updateData.banned = true
+            updateData.banExpiresAt = null
+            banRecord.reason = 'Permanent ban - 3 violations'
+          }
+
+          await updateDoc(userRef, updateData)
+
+          await addDoc(collection(db, "banNotifications"), {
+            userId,
+            userEmail,
+            userName,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            deviceCount: updatedDevices.length,
+            banCount: newBanCount,
+            bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
+            devices: updatedDevices,
+            createdAt: serverTimestamp(),
+            isRead: false
+          })
+
+          await firebaseSignOut(auth)
+          throw new Error(newBanCount >= 3 ? "PERMANENT_BAN" : "TEMP_BAN")
+        } else {
+          await updateDoc(userRef, {
+            devices: updatedDevices
+          })
+        }
+      } else {
+        const updatedDevices = devices.map(d =>
+          d.fingerprint === deviceInfo.fingerprint
+            ? { ...d, lastSeen: deviceInfo.timestamp }
+            : d
+        )
+        await updateDoc(userRef, {
+          devices: updatedDevices
+        })
+      }
+
+      return deviceInfo
+    } catch (error) {
+      console.error("Device check error:", error)
+      throw error
     }
   }
 
@@ -61,6 +167,7 @@ export function AuthProvider({ children }) {
       const user = userCredential.user
 
       const isDefaultAdmin = email === "admin@gmail.com"
+      const deviceInfo = getDeviceInfo()
 
       const newUserData = {
         name: userData.name || "",
@@ -78,6 +185,11 @@ export function AuthProvider({ children }) {
         lastActive: serverTimestamp(),
         photoURL: user.photoURL || "",
         createdAt: serverTimestamp(),
+        devices: [deviceInfo],
+        banCount: 0,
+        banHistory: [],
+        permanentBan: false,
+        banExpiresAt: null
       }
 
       await setDoc(doc(db, "users", user.uid), newUserData)
@@ -94,6 +206,7 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
+      const deviceInfo = getDeviceInfo()
 
       try {
         const userDoc = await getDoc(userRef)
@@ -116,6 +229,11 @@ export function AuthProvider({ children }) {
             lastActive: serverTimestamp(),
             photoURL: userCredential.user.photoURL || "",
             createdAt: serverTimestamp(),
+            devices: [deviceInfo],
+            banCount: 0,
+            banHistory: [],
+            permanentBan: false,
+            banExpiresAt: null
           }
           await setDoc(userRef, newUserData)
         } else {
@@ -123,6 +241,14 @@ export function AuthProvider({ children }) {
           if (userData.banned === true) {
             await firebaseSignOut(auth)
             throw new Error("BANNED_USER")
+          }
+
+          if (userData.role !== "admin") {
+            await checkAndHandleDeviceLogin(
+              userCredential.user.uid,
+              userCredential.user.email,
+              userData.name || "User"
+            )
           }
 
           const updateData = {
@@ -137,7 +263,7 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "BANNED_USER") {
+        if (firestoreError.message === "BANNED_USER" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
           throw firestoreError
         }
         console.error("Firestore error during sign in:", firestoreError)
@@ -156,6 +282,7 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
+      const deviceInfo = getDeviceInfo()
 
       try {
         const userRef = doc(db, "users", user.uid)
@@ -179,6 +306,11 @@ export function AuthProvider({ children }) {
             lastActive: serverTimestamp(),
             photoURL: user.photoURL || "",
             createdAt: serverTimestamp(),
+            devices: [deviceInfo],
+            banCount: 0,
+            banHistory: [],
+            permanentBan: false,
+            banExpiresAt: null
           }
           await setDoc(userRef, newUserData)
         } else {
@@ -186,6 +318,14 @@ export function AuthProvider({ children }) {
           if (userData.banned === true) {
             await firebaseSignOut(auth)
             throw new Error("BANNED_USER")
+          }
+
+          if (userData.role !== "admin") {
+            await checkAndHandleDeviceLogin(
+              user.uid,
+              user.email,
+              userData.name || user.displayName || "User"
+            )
           }
 
           const updateData = {
@@ -200,7 +340,7 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "BANNED_USER") {
+        if (firestoreError.message === "BANNED_USER" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
           throw firestoreError
         }
         console.error("Firestore error during Google sign in:", firestoreError)
