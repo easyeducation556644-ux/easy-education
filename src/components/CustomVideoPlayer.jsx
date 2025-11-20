@@ -32,6 +32,13 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
   const [isBuffering, setIsBuffering] = useState(false)
   const [isSeekingLoading, setIsSeekingLoading] = useState(false)
+  const [brightness, setBrightness] = useState(100)
+  const [showVolumeIndicator, setShowVolumeIndicator] = useState(false)
+  const [showBrightnessIndicator, setShowBrightnessIndicator] = useState(false)
+  const [isSwiping, setIsSwiping] = useState(false)
+  const [swipeStartY, setSwipeStartY] = useState(0)
+  const [swipeStartX, setSwipeStartX] = useState(0)
+  const [swipeType, setSwipeType] = useState(null)
 
   const videoRef = useRef(null)
   const containerRef = useRef(null)
@@ -446,7 +453,63 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setCurrentTime(newTime)
   }
 
-  const handleSingleTap = (action) => {
+  const handleTouchStart = (e) => {
+    const touch = e.touches[0]
+    setSwipeStartY(touch.clientY)
+    setSwipeStartX(touch.clientX)
+    setIsSwiping(false)
+    
+    const containerWidth = containerRef.current?.clientWidth || 0
+    const touchX = touch.clientX - containerRef.current?.getBoundingClientRect().left
+    
+    if (touchX < containerWidth * 0.25) {
+      setSwipeType('brightness')
+    } else if (touchX > containerWidth * 0.75) {
+      setSwipeType('volume')
+    } else {
+      setSwipeType(null)
+    }
+  }
+
+  const handleTouchMove = (e) => {
+    if (!swipeType) return
+    
+    const touch = e.touches[0]
+    const deltaY = swipeStartY - touch.clientY
+    const deltaX = Math.abs(touch.clientX - swipeStartX)
+    
+    if (Math.abs(deltaY) > 10 && deltaX < 30) {
+      setIsSwiping(true)
+      e.preventDefault()
+      
+      if (swipeType === 'volume') {
+        const newVolume = Math.min(100, Math.max(0, volume + deltaY / 2))
+        handleVolumeChange(newVolume)
+        setShowVolumeIndicator(true)
+        setSwipeStartY(touch.clientY)
+      } else if (swipeType === 'brightness') {
+        const newBrightness = Math.min(200, Math.max(30, brightness + deltaY / 2))
+        setBrightness(newBrightness)
+        setShowBrightnessIndicator(true)
+        setSwipeStartY(touch.clientY)
+      }
+    }
+  }
+
+  const handleTouchEnd = () => {
+    if (showVolumeIndicator) {
+      setTimeout(() => setShowVolumeIndicator(false), 1000)
+    }
+    if (showBrightnessIndicator) {
+      setTimeout(() => setShowBrightnessIndicator(false), 1000)
+    }
+    setSwipeType(null)
+    setIsSwiping(false)
+  }
+
+  const handleSingleTap = (e) => {
+    if (isSwiping) return
+    
     const now = Date.now()
     const timeSinceLastTap = now - lastTapRef.current.time
 
@@ -457,7 +520,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
     setTimeout(() => {
       if (lastTapRef.current.time !== 0) {
-        action()
+        setShowControls(!showControls)
         lastTapRef.current = { time: 0, side: null }
       }
     }, 300)
@@ -952,15 +1015,19 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         }`}
         onMouseMove={resetControlsTimeout}
         onMouseLeave={() => playing && setShowControls(false)}
-        onTouchStart={resetControlsTimeout}
-        onTouchMove={resetControlsTimeout}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         onContextMenu={(e) => e.preventDefault()}
       >
         {isYouTube ? (
           <>
-            <div id="yt-player" className="absolute inset-0 w-full h-full" />
+            <div 
+              id="yt-player" 
+              className="absolute inset-0 w-full h-full transition-all duration-100" 
+              style={{ filter: `brightness(${brightness}%)` }}
+            />
             {!hasStartedPlaying && <div className="absolute inset-0 bg-black z-10 pointer-events-none" />}
-            <div className="absolute inset-0 pointer-events-none z-[5] bg-transparent" />
             <div className="absolute inset-0 pointer-events-none z-[10] bg-transparent" />
             <div className="absolute inset-0 pointer-events-none z-[15] bg-transparent" />
             <div className="absolute inset-0 pointer-events-none z-[20] bg-transparent" />
@@ -975,7 +1042,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         ) : (
           <video
             ref={videoRef}
-            className="absolute inset-0 w-full h-full object-contain"
+            className="absolute inset-0 w-full h-full object-contain transition-all duration-100"
+            style={{ filter: `brightness(${brightness}%)` }}
             playsInline
             preload="metadata"
             autoPlay
@@ -985,26 +1053,80 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
         <div className="absolute inset-0 flex z-30 pointer-events-none">
           <div 
-            className="w-1/3 h-full pointer-events-auto cursor-pointer" 
-            onClick={() => handleSingleTap(handlePlayPause)}
+            className="w-1/4 h-full pointer-events-auto cursor-pointer" 
+            onClick={handleSingleTap}
             onDoubleClick={(e) => {
               e.preventDefault()
               skipBackward()
             }}
           />
           <div 
-            className="w-1/3 h-full pointer-events-auto cursor-pointer" 
-            onClick={() => handleSingleTap(handlePlayPause)}
+            className="w-1/2 h-full pointer-events-auto cursor-pointer" 
+            onClick={handleSingleTap}
           />
           <div 
-            className="w-1/3 h-full pointer-events-auto cursor-pointer" 
-            onClick={() => handleSingleTap(handlePlayPause)}
+            className="w-1/4 h-full pointer-events-auto cursor-pointer" 
+            onClick={handleSingleTap}
             onDoubleClick={(e) => {
               e.preventDefault()
               skipForward()
             }}
           />
         </div>
+
+        {/* Volume Indicator */}
+        <AnimatePresence>
+          {showVolumeIndicator && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="absolute right-8 top-1/2 -translate-y-1/2 z-[55] pointer-events-none"
+            >
+              <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
+                <div className="flex flex-col items-center gap-3">
+                  <Volume2 className="w-6 h-6 text-white" />
+                  <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-red-500 to-red-400 rounded-full"
+                      style={{ height: `${volume}%` }}
+                      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                    />
+                  </div>
+                  <span className="text-white font-bold text-sm">{Math.round(volume)}%</span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Brightness Indicator */}
+        <AnimatePresence>
+          {showBrightnessIndicator && (
+            <motion.div
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="absolute left-8 top-1/2 -translate-y-1/2 z-[55] pointer-events-none"
+            >
+              <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
+                <div className="flex flex-col items-center gap-3">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                  <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-yellow-500 to-yellow-300 rounded-full"
+                      style={{ height: `${(brightness - 30) / 1.7}%` }}
+                      transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                    />
+                  </div>
+                  <span className="text-white font-bold text-sm">{Math.round(brightness)}%</span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center z-40 bg-gradient-to-br from-gray-900 to-black">
