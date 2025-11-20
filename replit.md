@@ -2,6 +2,17 @@
 
 Easy Education is a Progressive Web Application (PWA) for delivering free online courses. The platform features a React-based frontend with Vite build tooling, Express.js backend for API routes, and Firebase for authentication, database, and push notifications. The application supports payment processing through RupantorPay, image uploads via ImgBB, and includes comprehensive admin capabilities for course management and enrollment tracking.
 
+# Recent Changes
+
+**November 20, 2025:**
+- **Video Player UI Enhancement:** Removed gradient shadow overlay from video player controls for cleaner, more modern appearance
+- **Admin Attribution System:** Implemented comprehensive tracking of which administrator approved or rejected payments
+  - Payment records now store `approvedBy`, `approvedById`, `rejectedBy`, `rejectedById` fields
+  - Admin dashboard displays color-coded boxes (green for approvals, red for rejections) showing admin name and timestamp
+  - Learner notifications include admin attribution when payments are approved/rejected
+  - Separate notification channels: admin enrollment alerts (type: "enrollment") vs learner approval/rejection notifications (type: "payment_approved"/"payment_rejected")
+  - Uses `transactionId` as stable identifier for reliable notification deduplication across all payment creation methods (webhooks, manual entry, imports)
+
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
