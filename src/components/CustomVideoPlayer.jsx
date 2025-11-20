@@ -71,11 +71,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }
 
   const handleVolumeChange = (newVolume) => {
-    setVolume(newVolume)
+    const roundedVolume = Math.round(newVolume)
+    setVolume(roundedVolume)
     if (isYouTube && playerRef.current) {
-      playerRef.current.setVolume(newVolume)
+      playerRef.current.setVolume(roundedVolume)
     } else if (videoRef.current) {
-      videoRef.current.volume = newVolume / 100
+      videoRef.current.volume = roundedVolume / 100
     }
   }
 
@@ -434,22 +435,26 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
   const skipForward = () => {
     const newTime = Math.min(currentTime + 10, duration)
+    setIsSeekingLoading(true)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
     setCurrentTime(newTime)
+    setTimeout(() => setIsSeekingLoading(false), 500)
   }
 
   const skipBackward = () => {
     const newTime = Math.max(currentTime - 10, 0)
+    setIsSeekingLoading(true)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
     setCurrentTime(newTime)
+    setTimeout(() => setIsSeekingLoading(false), 500)
   }
 
   const handleTouchStart = (e) => {
@@ -1231,18 +1236,18 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               transition={{ duration: 0.3, ease: "easeOut" }}
               className="absolute top-1/2 left-[12%] -translate-y-1/2 z-[60] pointer-events-none"
             >
-              <div className="bg-white/20 backdrop-blur-md rounded-full p-8 flex items-center justify-center">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="flex items-center gap-1">
-                    <RotateCcw className="w-10 h-10 text-white" strokeWidth={2.5} />
-                    <RotateCcw className="w-10 h-10 text-white -ml-6 opacity-60" strokeWidth={2.5} />
-                    <RotateCcw className="w-10 h-10 text-white -ml-6 opacity-30" strokeWidth={2.5} />
+              <div className="bg-black/40 backdrop-blur-md rounded-full p-6 sm:p-8 flex items-center justify-center shadow-xl">
+                <div className="flex flex-col items-center gap-1 sm:gap-2">
+                  <div className="flex items-center gap-0.5 sm:gap-1">
+                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white" strokeWidth={2.5} />
+                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-60" strokeWidth={2.5} />
+                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-30" strokeWidth={2.5} />
                   </div>
                   <motion.span 
                     key={doubleTapCount.left}
                     initial={{ scale: 1.5, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    className="text-white font-bold text-xl"
+                    className="text-white font-bold text-lg sm:text-xl"
                   >
                     {10 * (doubleTapCount.left || 1)} seconds
                   </motion.span>
@@ -1263,18 +1268,18 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               transition={{ duration: 0.3, ease: "easeOut" }}
               className="absolute top-1/2 right-[12%] -translate-y-1/2 z-[60] pointer-events-none"
             >
-              <div className="bg-white/20 backdrop-blur-md rounded-full p-8 flex items-center justify-center">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="flex items-center gap-1">
-                    <RotateCw className="w-10 h-10 text-white opacity-30" strokeWidth={2.5} />
-                    <RotateCw className="w-10 h-10 text-white -ml-6 opacity-60" strokeWidth={2.5} />
-                    <RotateCw className="w-10 h-10 text-white -ml-6" strokeWidth={2.5} />
+              <div className="bg-black/40 backdrop-blur-md rounded-full p-6 sm:p-8 flex items-center justify-center shadow-xl">
+                <div className="flex flex-col items-center gap-1 sm:gap-2">
+                  <div className="flex items-center gap-0.5 sm:gap-1">
+                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white opacity-30" strokeWidth={2.5} />
+                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-60" strokeWidth={2.5} />
+                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6" strokeWidth={2.5} />
                   </div>
                   <motion.span 
                     key={doubleTapCount.right}
                     initial={{ scale: 1.5, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    className="text-white font-bold text-xl"
+                    className="text-white font-bold text-lg sm:text-xl"
                   >
                     {10 * (doubleTapCount.right || 1)} seconds
                   </motion.span>
@@ -1378,8 +1383,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                   className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
                   aria-label="Skip backward 10 seconds"
                 >
-                  <RotateCcw className="w-4 h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
-                  <span className="absolute text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                  <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                  <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
 
                 <motion.button
@@ -1389,8 +1394,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                   className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
                   aria-label="Skip forward 10 seconds"
                 >
-                  <RotateCw className="w-4 h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
-                  <span className="absolute text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                  <RotateCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                  <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
               </div>
 
