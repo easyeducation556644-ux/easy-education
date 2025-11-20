@@ -430,27 +430,21 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }, [isYouTube])
 
   const skipForward = () => {
-    setIsSeekingLoading(true)
     const newTime = Math.min(currentTime + 10, duration)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
-      // For non-YouTube videos, clear loading after a short delay
-      setTimeout(() => setIsSeekingLoading(false), 500)
     }
     setCurrentTime(newTime)
   }
 
   const skipBackward = () => {
-    setIsSeekingLoading(true)
     const newTime = Math.max(currentTime - 10, 0)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
-      // For non-YouTube videos, clear loading after a short delay
-      setTimeout(() => setIsSeekingLoading(false), 500)
     }
     setCurrentTime(newTime)
   }
@@ -494,12 +488,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       e.preventDefault()
       
       if (swipeType === 'volume') {
-        const newVolume = Math.min(100, Math.max(0, volume + deltaY / 2))
+        const newVolume = Math.min(100, Math.max(0, volume + deltaY))
         handleVolumeChange(newVolume)
         setShowVolumeIndicator(true)
         setSwipeStartY(touch.clientY)
       } else if (swipeType === 'brightness') {
-        const newBrightness = Math.min(200, Math.max(30, brightness + deltaY / 2))
+        const newBrightness = Math.min(150, Math.max(20, brightness + deltaY))
         setBrightness(newBrightness)
         setShowBrightnessIndicator(true)
         setSwipeStartY(touch.clientY)
@@ -1169,7 +1163,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                   <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
                     <motion.div 
                       className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-yellow-500 to-yellow-300 rounded-full"
-                      style={{ height: `${(brightness - 30) / 1.7}%` }}
+                      style={{ height: `${((brightness - 20) / 130) * 100}%` }}
                       transition={{ type: "spring", stiffness: 300, damping: 30 }}
                     />
                   </div>
@@ -1297,7 +1291,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 )}
               </motion.button>
 
-              <div className="flex items-center gap-2 border-l border-white/20 pl-3">
+              <div className="hidden md:flex items-center gap-2 border-l border-white/20 pl-3">
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
