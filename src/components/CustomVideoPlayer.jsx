@@ -39,6 +39,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [swipeStartY, setSwipeStartY] = useState(0)
   const [swipeStartX, setSwipeStartX] = useState(0)
   const [swipeType, setSwipeType] = useState(null)
+  const [seekDelta, setSeekDelta] = useState(0)
+  const [showSeekIndicator, setShowSeekIndicator] = useState(false)
 
   const videoRef = useRef(null)
   const containerRef = useRef(null)
@@ -458,16 +460,17 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setSwipeStartY(touch.clientY)
     setSwipeStartX(touch.clientX)
     setIsSwiping(false)
+    setSeekDelta(0)
     
     const containerWidth = containerRef.current?.clientWidth || 0
     const touchX = touch.clientX - containerRef.current?.getBoundingClientRect().left
     
-    if (touchX < containerWidth * 0.25) {
+    if (touchX < containerWidth * 0.2) {
       setSwipeType('brightness')
-    } else if (touchX > containerWidth * 0.75) {
+    } else if (touchX > containerWidth * 0.8) {
       setSwipeType('volume')
     } else {
-      setSwipeType(null)
+      setSwipeType('seek')
     }
   }
 
@@ -476,9 +479,17 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     
     const touch = e.touches[0]
     const deltaY = swipeStartY - touch.clientY
-    const deltaX = Math.abs(touch.clientX - swipeStartX)
+    const deltaX = touch.clientX - swipeStartX
     
-    if (Math.abs(deltaY) > 10 && deltaX < 30) {
+    if (swipeType === 'seek' && Math.abs(deltaX) > 10 && Math.abs(deltaY) < 50) {
+      setIsSwiping(true)
+      e.preventDefault()
+      
+      const sensitivity = duration > 3600 ? 0.3 : duration > 1800 ? 0.2 : 0.15
+      const calculatedDelta = deltaX * sensitivity
+      setSeekDelta(calculatedDelta)
+      setShowSeekIndicator(true)
+    } else if (Math.abs(deltaY) > 10 && Math.abs(deltaX) < 30) {
       setIsSwiping(true)
       e.preventDefault()
       
@@ -503,6 +514,23 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     if (showBrightnessIndicator) {
       setTimeout(() => setShowBrightnessIndicator(false), 1000)
     }
+    
+    if (showSeekIndicator && seekDelta !== 0) {
+      const newTime = Math.min(duration, Math.max(0, currentTime + seekDelta))
+      setCurrentTime(newTime)
+      
+      if (isYouTube && playerRef.current) {
+        playerRef.current.seekTo(newTime, true)
+      } else if (videoRef.current) {
+        videoRef.current.currentTime = newTime
+      }
+      
+      setTimeout(() => {
+        setShowSeekIndicator(false)
+        setSeekDelta(0)
+      }, 500)
+    }
+    
     setSwipeType(null)
     setIsSwiping(false)
   }
@@ -1006,6 +1034,30 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           pointer-events: none;
           transform: translateY(10px);
         }
+
+        /* Remove all outlines and shadows on focus/active */
+        * {
+          -webkit-tap-highlight-color: transparent;
+          -webkit-touch-callout: none;
+          -webkit-user-select: none;
+          -moz-user-select: none;
+          -ms-user-select: none;
+          user-select: none;
+        }
+
+        button:focus,
+        button:active,
+        input:focus,
+        input:active,
+        div:focus,
+        div:active {
+          outline: none !important;
+          box-shadow: none !important;
+        }
+
+        input[type="range"]:focus {
+          outline: none !important;
+        }
       `}</style>
 
       <div
@@ -1122,6 +1174,37 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                     />
                   </div>
                   <span className="text-white font-bold text-sm">{Math.round(brightness)}%</span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Seek Indicator */}
+        <AnimatePresence>
+          {showSeekIndicator && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[55] pointer-events-none"
+            >
+              <div className="bg-black/90 backdrop-blur-xl rounded-2xl px-6 py-4 min-w-[120px]">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    {seekDelta > 0 ? (
+                      <>
+                        <RotateCw className="w-8 h-8 text-white" />
+                        <span className="text-white font-bold text-2xl">+{Math.abs(Math.round(seekDelta))}s</span>
+                      </>
+                    ) : (
+                      <>
+                        <RotateCcw className="w-8 h-8 text-white" />
+                        <span className="text-white font-bold text-2xl">-{Math.abs(Math.round(seekDelta))}s</span>
+                      </>
+                    )}
+                  </div>
+                  <span className="text-white/70 text-xs">{formatTime(currentTime + seekDelta)}</span>
                 </div>
               </div>
             </motion.div>
@@ -1313,9 +1396,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 </AnimatePresence>
               </div>
 
-              <div className="text-white text-xs sm:text-sm font-medium border-l border-white/20 pl-3">
-                <span className="hidden sm:inline">{formatTime(currentTime)} / {formatTime(duration)}</span>
-                <span className="sm:hidden">{formatTime(currentTime)}</span>
+              <div className="text-white text-xs sm:text-sm font-medium border-l border-white/20 pl-3 whitespace-nowrap">
+                {formatTime(currentTime)} / {formatTime(duration)}
               </div>
             </div>
 
