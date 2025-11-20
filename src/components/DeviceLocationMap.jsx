@@ -41,20 +41,8 @@ export function DeviceLocationMap({ latitude, longitude, city, country, countryC
                 <Globe className="w-3 h-3 md:w-4 md:h-4 text-green-500" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-muted-foreground text-xs">Country:</div>
+                <div className="text-muted-foreground text-xs">দেশ / Country:</div>
                 <div className="font-medium truncate">{country}</div>
-              </div>
-            </div>
-          )}
-          
-          {countryCode && (
-            <div className="flex items-center gap-2 bg-background/50 rounded-lg p-2">
-              <div className="w-6 h-6 flex items-center justify-center bg-purple-500/20 rounded">
-                <span className="text-xs font-bold text-purple-500">{countryCode}</span>
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-muted-foreground text-xs">Country ISO:</div>
-                <div className="font-medium">{countryCode}</div>
               </div>
             </div>
           )}
@@ -65,8 +53,20 @@ export function DeviceLocationMap({ latitude, longitude, city, country, countryC
                 <Building2 className="w-3 h-3 md:w-4 md:h-4 text-orange-500" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-muted-foreground text-xs">State/Region:</div>
+                <div className="text-muted-foreground text-xs">বিভাগ / Division:</div>
                 <div className="font-medium truncate">{region}</div>
+              </div>
+            </div>
+          )}
+          
+          {district && district !== region && (
+            <div className="flex items-center gap-2 bg-background/50 rounded-lg p-2">
+              <div className="w-6 h-6 flex items-center justify-center bg-blue-500/20 rounded">
+                <span className="text-xs">🏛️</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-muted-foreground text-xs">জেলা / District:</div>
+                <div className="font-medium truncate">{district}</div>
               </div>
             </div>
           )}
@@ -77,7 +77,7 @@ export function DeviceLocationMap({ latitude, longitude, city, country, countryC
                 <span className="text-xs">🏙️</span>
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-muted-foreground text-xs">City:</div>
+                <div className="text-muted-foreground text-xs">শহর / থানা / City:</div>
                 <div className="font-medium truncate">{city}</div>
               </div>
             </div>

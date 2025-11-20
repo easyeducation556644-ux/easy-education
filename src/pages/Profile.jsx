@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { User, Building, Phone, Facebook, Linkedin, Github, Camera, Monitor, MapPin, Calendar } from "lucide-react"
+import { User, Building, Phone, Facebook, Linkedin, Github, Camera, Monitor, MapPin, Calendar, LogOut, AlertTriangle } from "lucide-react"
 import { doc, updateDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { uploadImageToImgBB } from "../lib/imgbb"
@@ -20,6 +20,7 @@ export default function Profile() {
   const [message, setMessage] = useState("")
   const [photoFile, setPhotoFile] = useState(null)
   const [photoPreview, setPhotoPreview] = useState(null)
+  const [kickingDevices, setKickingDevices] = useState(false)
 
   useEffect(() => {
     if (userProfile) {
@@ -51,6 +52,37 @@ export default function Profile() {
         setPhotoPreview(reader.result)
       }
       reader.readAsDataURL(file)
+    }
+  }
+
+  const handleKickAllDevices = async () => {
+    if (!currentUser) return
+    
+    const confirmKick = window.confirm(
+      "আপনি কি নিশ্চিত যে সব ডিভাইস থেকে লগআউট করতে চান?\n\nAre you sure you want to logout from all devices?\n\nএটি সকল ডিভাইস থেকে আপনাকে লগআউট করে দেবে এবং পুনরায় লগইন করতে হবে।"
+    )
+    
+    if (!confirmKick) return
+    
+    setKickingDevices(true)
+    try {
+      const userRef = doc(db, "users", currentUser.uid)
+      await updateDoc(userRef, {
+        devices: []
+      })
+      
+      await refreshUserProfile()
+      
+      alert("সকল ডিভাইস থেকে লগআউট সফল হয়েছে!\n\nAll devices have been logged out successfully!")
+      
+      setTimeout(() => {
+        window.location.reload()
+      }, 1000)
+    } catch (error) {
+      console.error("Error kicking all devices:", error)
+      setMessage("Failed to logout from all devices. Please try again.")
+    } finally {
+      setKickingDevices(false)
     }
   }
 
@@ -315,10 +347,31 @@ export default function Profile() {
             transition={{ delay: 0.2 }}
             className="bg-card border border-border rounded-xl p-8 mt-6"
           >
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Monitor className="w-6 h-6" />
-              Active Devices ({userProfile.devices.length})
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold flex items-center gap-2">
+                <Monitor className="w-6 h-6" />
+                Active Devices ({userProfile.devices.length})
+              </h2>
+              <button
+                onClick={handleKickAllDevices}
+                disabled={kickingDevices}
+                className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <LogOut className="w-4 h-4" />
+                {kickingDevices ? "Logging out..." : "All Device Kick"}
+              </button>
+            </div>
+            
+            <div className="mb-4 p-4 bg-orange-500/10 border border-orange-500/30 rounded-lg">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-5 h-5 text-orange-500 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-orange-600 dark:text-orange-400">
+                  <p className="font-semibold mb-1">সতর্কবার্তা:</p>
+                  <p>"All Device Kick" বাটনে ক্লিক করলে সব ডিভাইস থেকে লগআউট হবে এবং আপনাকে পুনরায় লগইন করতে হবে।</p>
+                </div>
+              </div>
+            </div>
+            
             <div className="space-y-4">
               {userProfile.devices.map((device, idx) => (
                 <div key={idx} className="p-4 bg-muted/50 rounded-lg border border-border">

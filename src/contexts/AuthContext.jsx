@@ -13,6 +13,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection
 import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
+import { DeviceLimitWarning } from "../components/DeviceLimitWarning"
 import { usePresence } from "../hooks/usePresence"
 
 const AuthContext = createContext({})
@@ -31,6 +32,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [banInfo, setBanInfo] = useState(null)
+  const [deviceWarning, setDeviceWarning] = useState(null)
 
   usePresence(currentUser)
 
@@ -234,6 +236,18 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, {
             devices: updatedDevices
           })
+          
+          if (currentDeviceCount === 1) {
+            const warningExpiresAt = new Date(now.getTime() + 30 * 60 * 1000)
+            const warningData = {
+              showWarning: true,
+              deviceCount: 2,
+              expiresAt: warningExpiresAt.toISOString(),
+              message: 'আপনি ২য় ডিভাইস থেকে লগইন করেছেন'
+            }
+            localStorage.setItem('deviceWarning', JSON.stringify(warningData))
+            setDeviceWarning(warningData)
+          }
         }
       } else {
         if (currentDeviceCount > MAX_ALLOWED_DEVICES && !isAdmin) {
@@ -590,7 +604,7 @@ export function AuthProvider({ children }) {
     const userRef = doc(db, "users", currentUser.uid)
     const unsubscribe = onSnapshot(
       userRef,
-      (doc) => {
+      async (doc) => {
         if (doc.exists()) {
           const updatedProfile = { id: currentUser.uid, ...doc.data() }
           setUserProfile(updatedProfile)
@@ -598,6 +612,19 @@ export function AuthProvider({ children }) {
           if (updatedProfile.role === "admin") {
             setBanInfo(null)
             localStorage.removeItem('banInfo')
+            return
+          }
+
+          const currentDeviceInfo = await getDeviceInfo()
+          const devices = updatedProfile.devices || []
+          const deviceExists = devices.some(d => d.fingerprint === currentDeviceInfo.fingerprint)
+          
+          if (!deviceExists && devices.length >= 0) {
+            console.log('Device has been kicked, logging out...')
+            localStorage.removeItem('deviceWarning')
+            localStorage.removeItem('banInfo')
+            await firebaseSignOut(auth)
+            window.location.reload()
             return
           }
 
@@ -793,10 +820,71 @@ export function AuthProvider({ children }) {
     }
   }
 
+  const handleDeviceWarningLogout = async () => {
+    try {
+      if (!currentUser) {
+        throw new Error('No current user found during device warning logout')
+      }
+      
+      const deviceInfo = await getDeviceInfo()
+      
+      if (!deviceInfo || !deviceInfo.fingerprint) {
+        throw new Error('Failed to get device fingerprint for cleanup')
+      }
+      
+      const userRef = doc(db, "users", currentUser.uid)
+      const userDoc = await getDoc(userRef)
+      
+      if (!userDoc.exists()) {
+        throw new Error('User document not found')
+      }
+      
+      const userData = userDoc.data()
+      const devices = userData.devices || []
+      const initialDeviceCount = devices.length
+      
+      const updatedDevices = devices.filter(d => d.fingerprint !== deviceInfo.fingerprint)
+      
+      if (updatedDevices.length === initialDeviceCount) {
+        console.warn('Device fingerprint not found in device list, but proceeding with cleanup')
+      }
+      
+      await updateDoc(userRef, { devices: updatedDevices })
+      
+      console.log('Device cleanup successful: removed device from Firestore')
+      localStorage.removeItem('deviceWarning')
+      setDeviceWarning(null)
+    } catch (error) {
+      console.error('Error during device warning logout cleanup:', error)
+      throw error
+    }
+  }
+
+  useEffect(() => {
+    const storedWarning = localStorage.getItem('deviceWarning')
+    if (storedWarning) {
+      try {
+        const parsed = JSON.parse(storedWarning)
+        const expiresAt = new Date(parsed.expiresAt)
+        const now = new Date()
+        
+        if (expiresAt <= now) {
+          localStorage.removeItem('deviceWarning')
+        } else {
+          setDeviceWarning(parsed)
+        }
+      } catch (e) {
+        console.error('Error parsing device warning:', e)
+        localStorage.removeItem('deviceWarning')
+      }
+    }
+  }, [])
+
   return (
     <AuthContext.Provider value={value}>
       {children}
       <BanOverlay banInfo={banInfo} onUnban={handleUnban} />
+      <DeviceLimitWarning warningInfo={deviceWarning} onAutoLogout={handleDeviceWarningLogout} />
     </AuthContext.Provider>
   )
 }

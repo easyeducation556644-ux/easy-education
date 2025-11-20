@@ -57,7 +57,7 @@ export function getDeviceName() {
   if (/Mac/.test(platform) && !ua.includes('iphone') && !ua.includes('ipad')) {
     return 'MacOS'
   }
-  if (/Linux/.test(platform) && !ua.includes('android')) {
+  if (/Linux/.test(platform)) {
     return 'Linux Desktop'
   }
   
