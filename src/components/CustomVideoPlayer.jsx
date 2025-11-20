@@ -10,8 +10,8 @@ import {
   Settings,
   Loader2,
   AlertCircle,
-  SkipForward,
-  SkipBack,
+  RotateCw,
+  RotateCcw,
 } from "lucide-react"
 
 export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
@@ -30,6 +30,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false)
   const [isSeeking, setIsSeeking] = useState(false)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
+  const [isBuffering, setIsBuffering] = useState(false)
+  const [isSeekingLoading, setIsSeekingLoading] = useState(false)
 
   const videoRef = useRef(null)
   const containerRef = useRef(null)
@@ -125,6 +127,18 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             setDuration(event.target.getDuration())
             event.target.setVolume(volume)
             event.target.setPlaybackRate(playbackRate)
+            
+            // Set highest quality available (4K if available)
+            const availableQualities = event.target.getAvailableQualityLevels()
+            if (availableQualities && availableQualities.length > 0) {
+              // Try to set 4K (hd2160), otherwise use the highest available
+              if (availableQualities.includes('hd2160')) {
+                event.target.setPlaybackQuality('hd2160')
+              } else {
+                event.target.setPlaybackQuality(availableQualities[0])
+              }
+            }
+            
             setLoading(false)
 
             const playPromise = event.target.playVideo()
@@ -140,10 +154,20 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           onStateChange: (event) => {
             const state = event.data
             const isPlaying = state === window.YT.PlayerState.PLAYING
+            const isBufferingState = state === window.YT.PlayerState.BUFFERING
+            
             setPlaying(isPlaying)
+            setIsBuffering(isBufferingState)
+            
+            // Clear seeking loading for non-buffering states
+            if (!isBufferingState) {
+              setIsSeekingLoading(false)
+            }
+            
             if (isPlaying) {
               setHasStartedPlaying(true)
             }
+            
             if (state === window.YT.PlayerState.ENDED) {
               setPlaying(false)
               if (onNext) {
@@ -352,9 +376,21 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       }
     }
 
-    const handlePlay = () => setPlaying(true)
+    const handlePlay = () => {
+      setPlaying(true)
+      setIsSeekingLoading(false)
+    }
     const handlePause = () => setPlaying(false)
     const handleEnded = () => setPlaying(false)
+    
+    const handleWaiting = () => {
+      setIsBuffering(true)
+    }
+    
+    const handleCanPlay = () => {
+      setIsBuffering(false)
+      setIsSeekingLoading(false)
+    }
 
     const handleError = (e) => {
       setError("Failed to load video")
@@ -367,6 +403,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     video.addEventListener("play", handlePlay)
     video.addEventListener("pause", handlePause)
     video.addEventListener("ended", handleEnded)
+    video.addEventListener("waiting", handleWaiting)
+    video.addEventListener("canplay", handleCanPlay)
     video.addEventListener("error", handleError)
 
     return () => {
@@ -376,26 +414,34 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       video.removeEventListener("play", handlePlay)
       video.removeEventListener("pause", handlePause)
       video.removeEventListener("ended", handleEnded)
+      video.removeEventListener("waiting", handleWaiting)
+      video.removeEventListener("canplay", handleCanPlay)
       video.removeEventListener("error", handleError)
     }
   }, [isYouTube])
 
   const skipForward = () => {
+    setIsSeekingLoading(true)
     const newTime = Math.min(currentTime + 10, duration)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
+      // For non-YouTube videos, clear loading after a short delay
+      setTimeout(() => setIsSeekingLoading(false), 500)
     }
     setCurrentTime(newTime)
   }
 
   const skipBackward = () => {
+    setIsSeekingLoading(true)
     const newTime = Math.max(currentTime - 10, 0)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
+      // For non-YouTube videos, clear loading after a short delay
+      setTimeout(() => setIsSeekingLoading(false), 500)
     }
     setCurrentTime(newTime)
   }
@@ -901,7 +947,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
       <div
         ref={containerRef}
-        className={`relative w-full aspect-video bg-black group rounded-xl overflow-hidden shadow-2xl ${
+        className={`relative w-full aspect-video bg-black group rounded-xl overflow-hidden ${
           fullscreen ? "flex items-center justify-center" : ""
         }`}
         onMouseMove={resetControlsTimeout}
@@ -969,6 +1015,19 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           </div>
         )}
 
+        {(isBuffering || isSeekingLoading) && !loading && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            className="absolute inset-0 flex items-center justify-center z-40 pointer-events-none"
+          >
+            <div className="bg-black/60 backdrop-blur-sm rounded-2xl p-6">
+              <Loader2 className="w-10 h-10 sm:w-12 sm:h-12 text-red-500 animate-spin" />
+            </div>
+          </motion.div>
+        )}
+
         {!playing && !loading && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
@@ -979,7 +1038,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             <motion.div
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.95 }}
-              className="w-16 h-16 bg-gradient-to-br from-red-500 to-red-600 rounded-full flex items-center justify-center backdrop-blur-sm shadow-2xl"
+              className="w-16 h-16 bg-gradient-to-br from-red-500 to-red-600 rounded-full flex items-center justify-center backdrop-blur-sm"
             >
               <Play className="w-8 h-8 text-white fill-white ml-1" />
             </motion.div>
@@ -1038,20 +1097,22 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={skipBackward}
-                  className="text-white hover:text-red-500 transition-colors p-1"
+                  className="text-white hover:text-red-500 transition-colors p-1 relative"
                   aria-label="Skip backward 10 seconds"
                 >
-                  <SkipBack className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <RotateCcw className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <span className="absolute text-[8px] sm:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
 
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={skipForward}
-                  className="text-white hover:text-red-500 transition-colors p-1"
+                  className="text-white hover:text-red-500 transition-colors p-1 relative"
                   aria-label="Skip forward 10 seconds"
                 >
-                  <SkipForward className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <RotateCw className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <span className="absolute text-[8px] sm:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
               </div>
 
@@ -1130,8 +1191,9 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 </AnimatePresence>
               </div>
 
-              <div className="hidden lg:block text-white text-sm font-medium border-l border-white/20 pl-3">
-                {formatTime(currentTime)} / {formatTime(duration)}
+              <div className="text-white text-xs sm:text-sm font-medium border-l border-white/20 pl-3">
+                <span className="hidden sm:inline">{formatTime(currentTime)} / {formatTime(duration)}</span>
+                <span className="sm:hidden">{formatTime(currentTime)}</span>
               </div>
             </div>
 
