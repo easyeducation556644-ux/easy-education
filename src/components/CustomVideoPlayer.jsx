@@ -465,9 +465,9 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     const containerWidth = containerRef.current?.clientWidth || 0
     const touchX = touch.clientX - containerRef.current?.getBoundingClientRect().left
     
-    if (touchX < containerWidth * 0.2) {
+    if (touchX < containerWidth * 0.15) {
       setSwipeType('brightness')
-    } else if (touchX > containerWidth * 0.8) {
+    } else if (touchX > containerWidth * 0.85) {
       setSwipeType('volume')
     } else {
       setSwipeType('seek')
@@ -1126,14 +1126,14 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           />
         </div>
 
-        {/* Volume Indicator */}
+        {/* Volume Indicator - Right side of center */}
         <AnimatePresence>
           {showVolumeIndicator && (
             <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              className="absolute right-8 top-1/2 -translate-y-1/2 z-[55] pointer-events-none"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="absolute top-1/2 left-1/2 -translate-y-1/2 translate-x-16 z-[55] pointer-events-none"
             >
               <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
                 <div className="flex flex-col items-center gap-3">
@@ -1152,14 +1152,14 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           )}
         </AnimatePresence>
 
-        {/* Brightness Indicator */}
+        {/* Brightness Indicator - Left side of center */}
         <AnimatePresence>
           {showBrightnessIndicator && (
             <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="absolute left-8 top-1/2 -translate-y-1/2 z-[55] pointer-events-none"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="absolute top-1/2 left-1/2 -translate-y-1/2 -translate-x-[144px] z-[55] pointer-events-none"
             >
               <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
                 <div className="flex flex-col items-center gap-3">
