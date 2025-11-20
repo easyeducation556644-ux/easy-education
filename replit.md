@@ -5,6 +5,25 @@ Easy Education is a Progressive Web Application (PWA) for delivering free online
 # Recent Changes
 
 **November 20, 2025:**
+- **Real-Time Presence Detection System:** Implemented comprehensive online/offline status tracking
+  - Created `usePresence` hook that monitors tab visibility, window focus, and page visibility changes
+  - Automatic status updates when user switches tabs, minimizes window, or closes browser
+  - 30-second heartbeat to maintain accurate online status for active users
+  - Real-time synchronization with Firestore for live presence indicators
+- **Enhanced Ban Management Admin Panel:** New dedicated "Ban Info" admin page (`/admin/ban-management`)
+  - Real-time user list with live online/offline status indicators
+  - Filter users by: All, Banned, Online, or Offline status
+  - View detailed device information for each user (platform, IP address, resolution, last seen)
+  - Manual ban functionality with custom reason (30-minute temporary ban)
+  - Manual unban functionality with full ban record clearing
+  - Device kick functionality to remotely log out specific devices
+  - Live updates via Firestore onSnapshot - no manual refresh needed
+  - Ban countdown timers showing remaining ban time
+- **Admin Immunity from Auto-Ban:** Admins can now use multiple devices without triggering auto-ban
+  - Role-based check added to device login detection
+  - Admins bypass the simultaneous login ban rule
+  - Device tracking still functions normally for admins
+  - Only manual bans can affect admin accounts
 - **Video Player UI Enhancement:** Removed gradient shadow overlay from video player controls for cleaner, more modern appearance
 - **Admin Attribution System:** Implemented comprehensive tracking of which administrator approved or rejected payments
   - Payment records now store `approvedBy`, `approvedById`, `rejectedBy`, `rejectedById` fields
