@@ -4,7 +4,21 @@ Easy Education is a Progressive Web Application (PWA) designed to deliver free o
 
 # Recent Changes
 
-**November 20, 2025:** Fixed critical device limit enforcement bug
+**November 20, 2025 (Session 2):** Improved IP geolocation accuracy and reliability
+- **Issue:** IP geolocation was using only ipapi.co which had rate limits (1000/day) and provided inaccurate location data, especially for Bangladesh users. No fallback mechanism existed.
+- **Root Cause:** Single API dependency with HTTP/HTTPS mixed-content issues and poor regional coverage.
+- **Fix:**
+  - Implemented multi-API fallback system with 3 HTTPS geolocation APIs:
+    - ipwho.is (primary) - Free, unlimited, accurate for Bangladesh
+    - freeipapi.com (secondary) - Free, unlimited, HTTPS
+    - ipapi.co (tertiary) - Original API as fallback
+  - All APIs use HTTPS to prevent mixed-content browser blocking
+  - Sequential fallback ensures location data is always available
+  - Added 'source' field to track which API provided the data
+  - 8-second timeout per API with proper error handling
+- **Location:** `src/lib/deviceTracking.js` in the `getIPGeolocation` function
+
+**November 20, 2025 (Session 1):** Fixed critical device limit enforcement bug
 - **Issue:** Device tracking was not properly counting unique devices. Users could login from 3+ devices without triggering the 2-device limit ban.
 - **Root Cause:** The system was checking for new IPs while online but not actually counting total unique devices. Additionally, banned devices were being persisted in the database, allowing them to bypass restrictions after ban expiry.
 - **Fix:** 
