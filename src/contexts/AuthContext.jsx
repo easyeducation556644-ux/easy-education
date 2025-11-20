@@ -57,11 +57,27 @@ export function AuthProvider({ children }) {
       const banExpiresAt = userData.banExpiresAt
 
       if (permanentBan) {
+        const banData = {
+          isBanned: true,
+          type: 'permanent',
+          reason: banHistory[banHistory.length - 1]?.reason || 'Multiple violations of simultaneous login policy',
+          banCount: banCount
+        }
+        localStorage.setItem('banInfo', JSON.stringify(banData))
+        setBanInfo(banData)
         await firebaseSignOut(auth)
         throw new Error("PERMANENT_BAN")
       }
 
       if (userData.banned === true && !banExpiresAt) {
+        const banData = {
+          isBanned: true,
+          type: 'permanent',
+          reason: banHistory[banHistory.length - 1]?.reason || 'Account manually banned by administrator',
+          banCount: banCount
+        }
+        localStorage.setItem('banInfo', JSON.stringify(banData))
+        setBanInfo(banData)
         await firebaseSignOut(auth)
         throw new Error("MANUAL_BAN")
       }
@@ -75,7 +91,17 @@ export function AuthProvider({ children }) {
             banned: false,
             banExpiresAt: null
           })
+          localStorage.removeItem('banInfo')
         } else {
+          const banData = {
+            isBanned: true,
+            type: 'temporary',
+            reason: banHistory[banHistory.length - 1]?.reason || 'Simultaneous login from multiple devices detected',
+            bannedUntil: banExpiresAt,
+            banCount: banCount
+          }
+          localStorage.setItem('banInfo', JSON.stringify(banData))
+          setBanInfo(banData)
           await firebaseSignOut(auth)
           throw new Error("TEMP_BAN")
         }
@@ -161,6 +187,15 @@ export function AuthProvider({ children }) {
             isRead: false
           })
 
+          const banData = {
+            isBanned: true,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            bannedUntil: newBanCount >= 3 ? null : banExpires,
+            banCount: newBanCount
+          }
+          localStorage.setItem('banInfo', JSON.stringify(banData))
+          setBanInfo(banData)
           await firebaseSignOut(auth)
           throw new Error(newBanCount >= 3 ? "PERMANENT_BAN" : "TEMP_BAN")
         } else {
@@ -532,6 +567,27 @@ export function AuthProvider({ children }) {
   }, [currentUser])
 
   useEffect(() => {
+    const storedBanInfo = localStorage.getItem('banInfo')
+    if (storedBanInfo) {
+      try {
+        const parsed = JSON.parse(storedBanInfo)
+        if (parsed.bannedUntil) {
+          const bannedUntilDate = new Date(parsed.bannedUntil)
+          const now = new Date()
+          if (bannedUntilDate <= now) {
+            localStorage.removeItem('banInfo')
+          } else {
+            setBanInfo(parsed)
+          }
+        } else {
+          setBanInfo(parsed)
+        }
+      } catch (e) {
+        console.error('Error parsing ban info:', e)
+        localStorage.removeItem('banInfo')
+      }
+    }
+
     const loadingTimeout = setTimeout(() => {
       if (loading) {
         console.error("Auth loading timeout - forcing completion")
@@ -640,18 +696,10 @@ export function AuthProvider({ children }) {
   }
 
   const handleUnban = async () => {
-    if (currentUser && banInfo?.type === 'temporary') {
-      try {
-        const userRef = doc(db, "users", currentUser.uid)
-        await updateDoc(userRef, {
-          banned: false,
-          banExpiresAt: null
-        })
-        setBanInfo(null)
-        window.location.reload()
-      } catch (error) {
-        console.error("Error clearing ban:", error)
-      }
+    if (banInfo?.type === 'temporary') {
+      localStorage.removeItem('banInfo')
+      setBanInfo(null)
+      window.location.reload()
     }
   }
 

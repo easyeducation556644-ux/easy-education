@@ -35,17 +35,69 @@ export async function getUserIP() {
   }
 }
 
+export function getDeviceName() {
+  const ua = navigator.userAgent
+  
+  if (/android/i.test(ua)) {
+    return 'Android'
+  }
+  if (/iPad|iPhone|iPod/.test(ua) && !window.MSStream) {
+    return 'iOS'
+  }
+  if (/Win/.test(navigator.platform)) {
+    return 'Windows'
+  }
+  if (/Mac/.test(navigator.platform)) {
+    return 'MacOS'
+  }
+  if (/Linux/.test(navigator.platform) && !/android/i.test(ua)) {
+    return 'Linux'
+  }
+  
+  return navigator.platform || 'Unknown'
+}
+
+export async function getIPGeolocation(ipAddress) {
+  try {
+    const response = await fetch(`https://ipapi.co/${ipAddress}/json/`)
+    const data = await response.json()
+    
+    return {
+      country: data.country_name || 'Unknown',
+      region: data.region || 'Unknown',
+      city: data.city || 'Unknown',
+      latitude: data.latitude || 0,
+      longitude: data.longitude || 0,
+      timezone: data.timezone || 'Unknown',
+      org: data.org || 'Unknown'
+    }
+  } catch (error) {
+    console.error('Failed to get IP geolocation:', error)
+    return {
+      country: 'Unknown',
+      region: 'Unknown',
+      city: 'Unknown',
+      latitude: 0,
+      longitude: 0,
+      timezone: 'Unknown',
+      org: 'Unknown'
+    }
+  }
+}
+
 export async function getDeviceInfo() {
   const navigator = window.navigator
   const screen = window.screen
   
   const ipAddress = await getUserIP()
+  const geolocation = ipAddress !== 'unknown' ? await getIPGeolocation(ipAddress) : null
   
   return {
     fingerprint: generateDeviceFingerprint(),
     ipAddress: ipAddress,
+    geolocation: geolocation,
     userAgent: navigator.userAgent,
-    platform: navigator.platform,
+    platform: getDeviceName(),
     screenResolution: `${screen.width}x${screen.height}`,
     language: navigator.language,
     timestamp: new Date().toISOString()

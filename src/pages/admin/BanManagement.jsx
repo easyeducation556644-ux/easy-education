@@ -437,7 +437,35 @@ export default function BanManagement() {
                           <p><span className="font-medium">Platform:</span> {device.platform}</p>
                           <p><span className="font-medium">Resolution:</span> {device.screenResolution}</p>
                           <p><span className="font-medium">Language:</span> {device.language}</p>
-                          <p><span className="font-medium">IP Address:</span> {device.ipAddress || 'Unknown'}</p>
+                          <p><span className="font-medium">IP Address:</span> <span className="text-blue-500">{device.ipAddress || 'Unknown'}</span></p>
+                          {device.geolocation && (
+                            <>
+                              <p><span className="font-medium">Location:</span> {device.geolocation.city}, {device.geolocation.region}, {device.geolocation.country}</p>
+                              <p><span className="font-medium">Timezone:</span> {device.geolocation.timezone}</p>
+                              {device.geolocation.latitude && device.geolocation.longitude && device.geolocation.latitude !== 0 && device.geolocation.longitude !== 0 && (
+                                <div className="mt-2">
+                                  <a
+                                    href={`https://www.google.com/maps?q=${device.geolocation.latitude},${device.geolocation.longitude}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs"
+                                  >
+                                    📍 View on Google Maps
+                                  </a>
+                                  <div className="mt-2 rounded-lg overflow-hidden border border-border">
+                                    <iframe
+                                      width="100%"
+                                      height="150"
+                                      frameBorder="0"
+                                      style={{ border: 0 }}
+                                      src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=${device.geolocation.latitude},${device.geolocation.longitude}&zoom=10`}
+                                      allowFullScreen
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )}
                           <p><span className="font-medium">Last Seen:</span> {device.lastSeen ? new Date(device.lastSeen).toLocaleString() : new Date(device.timestamp).toLocaleString()}</p>
                           <p className="text-xs text-muted-foreground"><span className="font-medium">Fingerprint:</span> {device.fingerprint}</p>
                         </div>
