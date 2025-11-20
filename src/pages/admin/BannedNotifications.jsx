@@ -11,6 +11,7 @@ export default function BannedNotifications() {
   const [filter, setFilter] = useState("all")
 
   useEffect(() => {
+    let isMounted = true
     const fetchBanNotifications = () => {
       const notificationsQuery = query(
         collection(db, "banNotifications"),
@@ -20,21 +21,32 @@ export default function BannedNotifications() {
       const unsubscribe = onSnapshot(
         notificationsQuery,
         (snapshot) => {
-          const notificationsData = snapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }))
-          setNotifications(notificationsData)
-          setLoading(false)
+          if (!isMounted) return
+          try {
+            const notificationsData = snapshot.docs.map((doc) => ({
+              id: doc.id,
+              ...doc.data(),
+            }))
+            setNotifications(notificationsData)
+            setLoading(false)
+          } catch (error) {
+            console.error("Error processing notifications:", error)
+            if (isMounted) {
+              setLoading(false)
+            }
+          }
         },
         (error) => {
           console.error("Error fetching ban notifications:", error)
-          toast({
-            variant: "error",
-            title: "Error",
-            description: "Failed to fetch ban notifications",
-          })
-          setLoading(false)
+          if (isMounted) {
+            toast({
+              variant: "error",
+              title: "Error",
+              description: "Failed to fetch ban notifications. Retrying...",
+            })
+            setLoading(false)
+            setNotifications([])
+          }
         }
       )
 
@@ -43,6 +55,7 @@ export default function BannedNotifications() {
 
     const unsubscribe = fetchBanNotifications()
     return () => {
+      isMounted = false
       if (unsubscribe) unsubscribe()
     }
   }, [])

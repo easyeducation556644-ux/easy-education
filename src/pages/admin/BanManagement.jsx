@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Search, Ban, Clock, Smartphone, Trash2, Shield, AlertTriangle, CheckCircle, User, X } from "lucide-react"
+import { Search, Ban, Clock, Smartphone, Trash2, Shield, AlertTriangle, CheckCircle, User, X, MapPin } from "lucide-react"
 import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
+import { DeviceLocationMap } from "../../components/DeviceLocationMap"
 
 export default function BanManagement() {
   const { userProfile } = useAuth()
@@ -323,22 +324,39 @@ export default function BanManagement() {
                   </div>
 
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
                       <h3 className="font-semibold text-lg">{user.name}</h3>
                       {user.role === "admin" && (
-                        <span className="px-2 py-1 bg-purple-500 text-white text-xs rounded-full">
+                        <span className="px-2.5 py-0.5 bg-purple-500 text-white text-xs font-medium rounded-full">
                           Admin
                         </span>
                       )}
                       {user.online && (
-                        <span className="px-2 py-1 bg-green-500 text-white text-xs rounded-full flex items-center gap-1">
-                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                        <span className="px-2.5 py-0.5 bg-green-500 text-white text-xs font-medium rounded-full flex items-center gap-1.5">
+                          <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
                           Online
                         </span>
                       )}
+                      {!user.online && (
+                        <span className="px-2.5 py-0.5 bg-gray-500 text-white text-xs font-medium rounded-full">
+                          Offline
+                        </span>
+                      )}
+                      {(user.devices?.length || 0) > 0 && (
+                        <span className="px-2.5 py-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-medium rounded-full border border-blue-500/30 flex items-center gap-1">
+                          <Smartphone className="w-3 h-3" />
+                          {user.devices.length}
+                        </span>
+                      )}
+                      {user.banCount > 0 && (
+                        <span className="px-2.5 py-0.5 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 text-xs font-medium rounded-full border border-yellow-500/30 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" />
+                          {user.banCount}
+                        </span>
+                      )}
                       {isBanned && (
-                        <span className="px-2 py-1 bg-red-500 text-white text-xs rounded-full">
-                          {user.permanentBan ? "Permanently Banned" : "Banned"}
+                        <span className="px-2.5 py-0.5 bg-red-500 text-white text-xs font-medium rounded-full animate-pulse">
+                          {user.permanentBan ? "⛔ Permanent Ban" : "🚫 Banned"}
                         </span>
                       )}
                     </div>
@@ -443,25 +461,26 @@ export default function BanManagement() {
                               <p><span className="font-medium">Location:</span> {device.geolocation.city}, {device.geolocation.region}, {device.geolocation.country}</p>
                               <p><span className="font-medium">Timezone:</span> {device.geolocation.timezone}</p>
                               {device.geolocation.latitude && device.geolocation.longitude && device.geolocation.latitude !== 0 && device.geolocation.longitude !== 0 && (
-                                <div className="mt-2">
+                                <div className="mt-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <MapPin className="w-4 h-4 text-blue-500" />
+                                    <span className="font-medium text-sm">Device Location</span>
+                                  </div>
+                                  <DeviceLocationMap 
+                                    latitude={device.geolocation.latitude}
+                                    longitude={device.geolocation.longitude}
+                                    city={device.geolocation.city}
+                                    country={device.geolocation.country}
+                                  />
                                   <a
                                     href={`https://www.google.com/maps?q=${device.geolocation.latitude},${device.geolocation.longitude}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs"
+                                    className="inline-flex items-center gap-1 mt-2 px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs"
                                   >
-                                    📍 View on Google Maps
+                                    <MapPin className="w-3 h-3" />
+                                    Open in Google Maps
                                   </a>
-                                  <div className="mt-2 rounded-lg overflow-hidden border border-border">
-                                    <iframe
-                                      width="100%"
-                                      height="150"
-                                      frameBorder="0"
-                                      style={{ border: 0 }}
-                                      src={`https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=${device.geolocation.latitude},${device.geolocation.longitude}&zoom=10`}
-                                      allowFullScreen
-                                    />
-                                  </div>
                                 </div>
                               )}
                             </>

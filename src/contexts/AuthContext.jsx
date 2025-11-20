@@ -50,6 +50,36 @@ export function AuthProvider({ children }) {
       
       const userData = userDoc.data()
       const isAdmin = userData.role === "admin"
+      
+      if (isAdmin) {
+        const devices = userData.devices || []
+        const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
+        
+        if (!existingDevice) {
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          const updatedDevices = [...devices.filter(d => {
+            if (!d.lastSeen && !d.timestamp) return false
+            try {
+              const deviceTime = new Date(d.lastSeen || d.timestamp)
+              if (isNaN(deviceTime.getTime())) return false
+              return deviceTime >= thirtyDaysAgo
+            } catch (e) {
+              return false
+            }
+          }), deviceInfo]
+          
+          await updateDoc(userRef, { devices: updatedDevices })
+        } else {
+          const updatedDevices = devices.map(d => 
+            d.fingerprint === deviceInfo.fingerprint
+              ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
+              : d
+          )
+          await updateDoc(userRef, { devices: updatedDevices })
+        }
+        return deviceInfo
+      }
+      
       const devices = userData.devices || []
       const banCount = userData.banCount || 0
       const banHistory = userData.banHistory || []
@@ -65,7 +95,6 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        await firebaseSignOut(auth)
         throw new Error("PERMANENT_BAN")
       }
 
@@ -78,7 +107,6 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        await firebaseSignOut(auth)
         throw new Error("MANUAL_BAN")
       }
 
@@ -102,7 +130,6 @@ export function AuthProvider({ children }) {
           }
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
-          await firebaseSignOut(auth)
           throw new Error("TEMP_BAN")
         }
       }
@@ -196,7 +223,6 @@ export function AuthProvider({ children }) {
           }
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
-          await firebaseSignOut(auth)
           throw new Error(newBanCount >= 3 ? "PERMANENT_BAN" : "TEMP_BAN")
         } else {
           await updateDoc(userRef, {

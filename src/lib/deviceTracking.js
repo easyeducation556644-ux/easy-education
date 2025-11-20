@@ -36,25 +36,32 @@ export async function getUserIP() {
 }
 
 export function getDeviceName() {
-  const ua = navigator.userAgent
+  const ua = navigator.userAgent.toLowerCase()
+  const platform = navigator.platform
   
-  if (/android/i.test(ua)) {
+  if (ua.includes('android')) {
     return 'Android'
   }
-  if (/iPad|iPhone|iPod/.test(ua) && !window.MSStream) {
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream) {
     return 'iOS'
   }
-  if (/Win/.test(navigator.platform)) {
+  if (ua.includes('windows phone') || ua.includes('wpdesktop')) {
+    return 'Windows Phone'
+  }
+  if (/Win/.test(platform)) {
     return 'Windows'
   }
-  if (/Mac/.test(navigator.platform)) {
+  if (/Mac/.test(platform) && !ua.includes('iphone') && !ua.includes('ipad')) {
     return 'MacOS'
   }
-  if (/Linux/.test(navigator.platform) && !/android/i.test(ua)) {
-    return 'Linux'
+  if (/Linux/.test(platform)) {
+    return 'Linux Desktop'
+  }
+  if (ua.includes('cros')) {
+    return 'Chrome OS'
   }
   
-  return navigator.platform || 'Unknown'
+  return platform || 'Unknown'
 }
 
 export async function getIPGeolocation(ipAddress) {

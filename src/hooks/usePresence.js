@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, updateDoc, serverTimestamp, onDisconnect } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 
 export function usePresence(currentUser) {
@@ -7,7 +7,6 @@ export function usePresence(currentUser) {
     if (!currentUser) return
 
     const userRef = doc(db, 'users', currentUser.uid)
-    let isVisible = !document.hidden
     let heartbeatInterval = null
 
     const setOnlineStatus = async (online) => {
@@ -21,42 +20,28 @@ export function usePresence(currentUser) {
       }
     }
 
-    const handleVisibilityChange = () => {
-      isVisible = !document.hidden
-      setOnlineStatus(isVisible)
-    }
-
     const handleBeforeUnload = () => {
+      navigator.sendBeacon(`/api/user-offline?uid=${currentUser.uid}`)
       setOnlineStatus(false)
     }
 
-    const handleFocus = () => {
-      setOnlineStatus(true)
-    }
-
-    const handleBlur = () => {
+    const handlePageHide = () => {
       setOnlineStatus(false)
     }
 
     setOnlineStatus(true)
 
     heartbeatInterval = setInterval(() => {
-      if (isVisible) {
-        setOnlineStatus(true)
-      }
+      setOnlineStatus(true)
     }, 30000)
 
-    document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('beforeunload', handleBeforeUnload)
-    window.addEventListener('focus', handleFocus)
-    window.addEventListener('blur', handleBlur)
+    window.addEventListener('pagehide', handlePageHide)
 
     return () => {
       clearInterval(heartbeatInterval)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('beforeunload', handleBeforeUnload)
-      window.removeEventListener('focus', handleFocus)
-      window.removeEventListener('blur', handleBlur)
+      window.removeEventListener('pagehide', handlePageHide)
       setOnlineStatus(false)
     }
   }, [currentUser])
