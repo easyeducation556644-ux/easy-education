@@ -4,12 +4,14 @@ import { toast } from "../../hooks/use-toast"
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { CreditCard, Check, X, Clock, Download, Trash2 } from "lucide-react"
-import { collection, getDocs, updateDoc, doc, setDoc, serverTimestamp, query, orderBy, deleteDoc } from "firebase/firestore"
+import { collection, getDocs, updateDoc, doc, setDoc, serverTimestamp, query, orderBy, deleteDoc, where, addDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { sendPaymentConfirmationEmail } from "../../lib/email"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
 
 export default function ManagePayments() {
+  const { userProfile } = useAuth()
   const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState("all")
@@ -43,6 +45,8 @@ export default function ManagePayments() {
           await updateDoc(doc(db, "payments", payment.id), {
             status: "approved",
             approvedAt: serverTimestamp(),
+            approvedBy: userProfile?.name || userProfile?.email || "Admin",
+            approvedById: userProfile?.uid || null,
           })
 
           for (const course of payment.courses) {
@@ -64,6 +68,36 @@ export default function ManagePayments() {
             })
           } catch (error) {
             console.error('Email notification failed:', error)
+          }
+
+          try {
+            const existingApprovalQuery = query(
+              collection(db, "notifications"),
+              where("transactionId", "==", payment.transactionId),
+              where("type", "==", "payment_approved")
+            )
+            const approvalSnapshot = await getDocs(existingApprovalQuery)
+            
+            if (approvalSnapshot.empty) {
+              await addDoc(collection(db, "notifications"), {
+                type: "payment_approved",
+                title: "Payment Approved ✅",
+                message: `Your payment of ৳${payment.finalAmount} for ${payment.courses?.length} course(s) has been approved! You now have access to your courses.`,
+                userId: payment.userId,
+                userName: payment.userName,
+                userEmail: payment.userEmail,
+                amount: payment.finalAmount,
+                transactionId: payment.transactionId,
+                approvedBy: userProfile?.name || userProfile?.email || "Admin",
+                approvedById: userProfile?.uid || null,
+                isFree: false,
+                isRead: false,
+                createdAt: serverTimestamp(),
+                link: "/courses"
+              })
+            }
+          } catch (error) {
+            console.error('Failed to create learner approval notification:', error)
           }
 
           toast({
@@ -91,11 +125,45 @@ export default function ManagePayments() {
       variant: "destructive",
       onConfirm: async () => {
         try {
+          const paymentDoc = payments.find(p => p.id === paymentId)
+          
           await updateDoc(doc(db, "payments", paymentId), {
             status: "rejected",
             rejectedAt: serverTimestamp(),
             rejectionReason: "Payment verification failed",
+            rejectedBy: userProfile?.name || userProfile?.email || "Admin",
+            rejectedById: userProfile?.uid || null,
           })
+
+          try {
+            const existingRejectionQuery = query(
+              collection(db, "notifications"),
+              where("transactionId", "==", paymentDoc.transactionId),
+              where("type", "==", "payment_rejected")
+            )
+            const rejectionSnapshot = await getDocs(existingRejectionQuery)
+            
+            if (rejectionSnapshot.empty) {
+              await addDoc(collection(db, "notifications"), {
+                type: "payment_rejected",
+                title: "Payment Rejected ❌",
+                message: `Your payment of ৳${paymentDoc.finalAmount} has been rejected. Please contact support for more information.`,
+                userId: paymentDoc.userId,
+                userName: paymentDoc.userName,
+                userEmail: paymentDoc.userEmail,
+                amount: paymentDoc.finalAmount,
+                transactionId: paymentDoc.transactionId,
+                rejectedBy: userProfile?.name || userProfile?.email || "Admin",
+                rejectedById: userProfile?.uid || null,
+                isFree: false,
+                isRead: false,
+                createdAt: serverTimestamp(),
+                link: "/payment-history"
+              })
+            }
+          } catch (error) {
+            console.error('Failed to create learner rejection notification:', error)
+          }
 
           toast({
             title: "Success",
@@ -309,6 +377,32 @@ export default function ManagePayments() {
                   ))}
                 </div>
               </div>
+
+              {payment.status === "approved" && payment.approvedBy && (
+                <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+                  <p className="text-xs sm:text-sm text-green-600">
+                    <strong>Approved by:</strong> {payment.approvedBy}
+                  </p>
+                  {payment.approvedAt && (
+                    <p className="text-xs text-green-600/70 mt-1">
+                      {payment.approvedAt?.toDate?.()?.toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {payment.status === "rejected" && payment.rejectedBy && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                  <p className="text-xs sm:text-sm text-red-600">
+                    <strong>Rejected by:</strong> {payment.rejectedBy}
+                  </p>
+                  {payment.rejectedAt && (
+                    <p className="text-xs text-red-600/70 mt-1">
+                      {payment.rejectedAt?.toDate?.()?.toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {payment.rejectionReason && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">

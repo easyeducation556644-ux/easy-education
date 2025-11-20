@@ -248,6 +248,21 @@ export default function Notifications() {
                       )}
                     </div>
 
+                    {(notification.approvedBy || notification.rejectedBy) && (
+                      <div className={`p-2 rounded-lg mb-3 text-xs ${
+                        notification.approvedBy 
+                          ? "bg-green-500/10 text-green-600" 
+                          : "bg-red-500/10 text-red-600"
+                      }`}>
+                        <p className="font-semibold">
+                          {notification.approvedBy 
+                            ? `✅ Access granted by: ${notification.approvedBy}`
+                            : `❌ Rejected by: ${notification.rejectedBy}`
+                          }
+                        </p>
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap gap-2">
                       {notification.link && (
                         <button

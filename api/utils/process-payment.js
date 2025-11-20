@@ -161,7 +161,8 @@ export async function processPaymentAndEnrollUser(paymentData) {
       currency: currency || 'BDT'
     };
 
-    await db.collection('payments').add(paymentRecord);
+    const paymentDocRef = await db.collection('payments').add(paymentRecord);
+    const paymentId = paymentDocRef.id;
 
     if (courses && courses.length > 0) {
       const batch = db.batch();
@@ -213,6 +214,8 @@ export async function processPaymentAndEnrollUser(paymentData) {
             userEmail: (userEmail || 'unknown').substring(0, 100),
             courses: courses?.map(c => ({ id: c.id, title: (c.title || 'Untitled').substring(0, 100) })) || [],
             amount: parseFloat(finalAmount) || 0,
+            transactionId: transactionId,
+            paymentId: paymentId,
             isFree,
             isRead: false,
             createdAt: FieldValue.serverTimestamp(),
