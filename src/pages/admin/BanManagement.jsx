@@ -1,0 +1,554 @@
+import { useState, useEffect } from "react"
+import { motion } from "framer-motion"
+import { Search, Ban, Clock, Smartphone, Trash2, Shield, AlertTriangle, CheckCircle, User, X } from "lucide-react"
+import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc } from "firebase/firestore"
+import { db } from "../../lib/firebase"
+import { toast } from "../../hooks/use-toast"
+import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+
+export default function BanManagement() {
+  const { userProfile } = useAuth()
+  const [users, setUsers] = useState([])
+  const [filteredUsers, setFilteredUsers] = useState([])
+  const [searchQuery, setSearchQuery] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState("all")
+  const [selectedUser, setSelectedUser] = useState(null)
+  const [showDevicesModal, setShowDevicesModal] = useState(false)
+  const [showBanModal, setShowBanModal] = useState(false)
+  const [banReason, setBanReason] = useState("")
+  const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+
+  useEffect(() => {
+    fetchUsers()
+  }, [])
+
+  useEffect(() => {
+    filterUsers()
+  }, [users, searchQuery, filter])
+
+  const fetchUsers = async () => {
+    try {
+      const usersSnapshot = await getDocs(collection(db, "users"))
+      const usersData = usersSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }))
+      setUsers(usersData)
+    } catch (error) {
+      console.error("Error fetching users:", error)
+      toast({
+        variant: "error",
+        title: "Error",
+        description: "Failed to fetch users",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const filterUsers = () => {
+    let filtered = users
+
+    if (searchQuery) {
+      filtered = filtered.filter(
+        (user) =>
+          user.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          user.email?.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    }
+
+    if (filter === "banned") {
+      filtered = filtered.filter((user) => user.banned === true || user.permanentBan === true)
+    } else if (filter === "online") {
+      filtered = filtered.filter((user) => user.online === true)
+    } else if (filter === "offline") {
+      filtered = filtered.filter((user) => user.online === false)
+    }
+
+    setFilteredUsers(filtered)
+  }
+
+  const handleBanUser = async () => {
+    if (!selectedUser || !banReason.trim()) {
+      toast({
+        variant: "warning",
+        title: "Missing Information",
+        description: "Please provide a ban reason",
+      })
+      return
+    }
+
+    try {
+      const now = new Date()
+      const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
+      const userData = users.find(u => u.id === selectedUser.id)
+      const banHistory = userData?.banHistory || []
+
+      await updateDoc(doc(db, "users", selectedUser.id), {
+        banned: true,
+        banExpiresAt: banExpires,
+        banHistory: [...banHistory, {
+          timestamp: now.toISOString(),
+          reason: `Manual ban by admin: ${banReason}`,
+          adminId: userProfile?.id || 'unknown',
+          adminName: userProfile?.name || 'Admin',
+          bannedUntil: banExpires.toISOString(),
+          type: 'manual'
+        }]
+      })
+
+      await addDoc(collection(db, "banNotifications"), {
+        userId: selectedUser.id,
+        userEmail: selectedUser.email,
+        userName: selectedUser.name,
+        type: 'temporary',
+        reason: `Manual ban by admin: ${banReason}`,
+        adminId: userProfile?.id || 'unknown',
+        adminName: userProfile?.name || 'Admin',
+        bannedUntil: banExpires.toISOString(),
+        createdAt: serverTimestamp(),
+        isRead: false
+      })
+
+      toast({
+        title: "Success",
+        description: `User banned for 30 minutes`,
+      })
+
+      setShowBanModal(false)
+      setBanReason("")
+      setSelectedUser(null)
+      await fetchUsers()
+    } catch (error) {
+      console.error("Error banning user:", error)
+      toast({
+        variant: "error",
+        title: "Error",
+        description: "Failed to ban user",
+      })
+    }
+  }
+
+  const handleUnbanUser = async (user) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Unban User",
+      message: `Are you sure you want to unban ${user.name}? This will clear all ban records.`,
+      variant: "default",
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, "users", user.id), {
+            banned: false,
+            banExpiresAt: null,
+            permanentBan: false,
+          })
+
+          toast({
+            title: "Success",
+            description: "User unbanned successfully",
+          })
+
+          await fetchUsers()
+        } catch (error) {
+          console.error("Error unbanning user:", error)
+          toast({
+            variant: "error",
+            title: "Error",
+            description: "Failed to unban user",
+          })
+        }
+      }
+    })
+  }
+
+  const handleKickDevice = async (userId, deviceFingerprint) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Kick Device",
+      message: "This will remove the device from the user's account. The user will need to log in again from that device.",
+      variant: "destructive",
+      onConfirm: async () => {
+        try {
+          const user = users.find(u => u.id === userId)
+          const updatedDevices = (user.devices || []).filter(d => d.fingerprint !== deviceFingerprint)
+
+          await updateDoc(doc(db, "users", userId), {
+            devices: updatedDevices
+          })
+
+          toast({
+            title: "Success",
+            description: "Device kicked successfully",
+          })
+
+          await fetchUsers()
+          if (selectedUser?.id === userId) {
+            setSelectedUser({...user, devices: updatedDevices})
+          }
+        } catch (error) {
+          console.error("Error kicking device:", error)
+          toast({
+            variant: "error",
+            title: "Error",
+            description: "Failed to kick device",
+          })
+        }
+      }
+    })
+  }
+
+  const formatTimeRemaining = (banExpiresAt) => {
+    if (!banExpiresAt) return null
+    
+    const now = new Date()
+    const banEnd = banExpiresAt.toDate()
+    const diff = banEnd - now
+
+    if (diff <= 0) return "Ban expired"
+
+    const minutes = Math.floor(diff / (1000 * 60))
+    const hours = Math.floor(minutes / 60)
+    const remainingMinutes = minutes % 60
+
+    if (hours > 0) {
+      return `${hours}h ${remainingMinutes}m remaining`
+    }
+    return `${remainingMinutes}m remaining`
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">Ban Management & Device Control</h1>
+        <p className="text-muted-foreground">
+          Manage user bans, monitor devices, and control access
+        </p>
+      </div>
+
+      <div className="mb-6 space-y-4">
+        <div className="flex gap-2">
+          <button
+            onClick={() => setFilter("all")}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              filter === "all"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card border border-border hover:bg-muted"
+            }`}
+          >
+            All Users ({users.length})
+          </button>
+          <button
+            onClick={() => setFilter("banned")}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              filter === "banned"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card border border-border hover:bg-muted"
+            }`}
+          >
+            Banned ({users.filter((u) => u.banned === true || u.permanentBan === true).length})
+          </button>
+          <button
+            onClick={() => setFilter("online")}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              filter === "online"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card border border-border hover:bg-muted"
+            }`}
+          >
+            Online ({users.filter((u) => u.online === true).length})
+          </button>
+          <button
+            onClick={() => setFilter("offline")}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              filter === "offline"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card border border-border hover:bg-muted"
+            }`}
+          >
+            Offline ({users.filter((u) => u.online === false).length})
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            placeholder="Search users by name or email..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 bg-card border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4">
+        {filteredUsers.map((user) => {
+          const isBanned = user.banned === true || user.permanentBan === true
+          const timeRemaining = user.banExpiresAt ? formatTimeRemaining(user.banExpiresAt) : null
+
+          return (
+            <motion.div
+              key={user.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`bg-card border rounded-xl p-6 ${
+                isBanned ? "border-red-500/50 bg-red-500/5" : "border-border"
+              }`}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-start gap-4 flex-1">
+                  <div className={`p-3 rounded-full ${user.role === "admin" ? "bg-purple-500/10" : "bg-primary/10"}`}>
+                    {user.role === "admin" ? (
+                      <Shield className="w-6 h-6 text-purple-500" />
+                    ) : (
+                      <User className="w-6 h-6 text-primary" />
+                    )}
+                  </div>
+
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h3 className="font-semibold text-lg">{user.name}</h3>
+                      {user.role === "admin" && (
+                        <span className="px-2 py-1 bg-purple-500 text-white text-xs rounded-full">
+                          Admin
+                        </span>
+                      )}
+                      {user.online && (
+                        <span className="px-2 py-1 bg-green-500 text-white text-xs rounded-full flex items-center gap-1">
+                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                          Online
+                        </span>
+                      )}
+                      {isBanned && (
+                        <span className="px-2 py-1 bg-red-500 text-white text-xs rounded-full">
+                          {user.permanentBan ? "Permanently Banned" : "Banned"}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-sm text-muted-foreground mb-2">{user.email}</p>
+
+                    <div className="flex items-center gap-4 text-sm">
+                      <div className="flex items-center gap-2">
+                        <Smartphone className="w-4 h-4 text-muted-foreground" />
+                        <span>{user.devices?.length || 0} devices</span>
+                      </div>
+                      {user.banCount > 0 && (
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-yellow-500" />
+                          <span className="text-yellow-600">Ban count: {user.banCount}</span>
+                        </div>
+                      )}
+                      {timeRemaining && (
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-4 h-4 text-red-500" />
+                          <span className="text-red-600 font-medium">{timeRemaining}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedUser(user)
+                      setShowDevicesModal(true)
+                    }}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                  >
+                    View Devices
+                  </button>
+                  {isBanned ? (
+                    <button
+                      onClick={() => handleUnbanUser(user)}
+                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm flex items-center gap-2"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      Unban
+                    </button>
+                  ) : user.role !== "admin" && (
+                    <button
+                      onClick={() => {
+                        setSelectedUser(user)
+                        setShowBanModal(true)
+                      }}
+                      className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-sm flex items-center gap-2"
+                    >
+                      <Ban className="w-4 h-4" />
+                      Ban
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )
+        })}
+      </div>
+
+      {showDevicesModal && selectedUser && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+          >
+            <div className="p-6 border-b border-border flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">{selectedUser.name}'s Devices</h2>
+                <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+              </div>
+              <button
+                onClick={() => setShowDevicesModal(false)}
+                className="p-2 hover:bg-muted rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {selectedUser.devices && selectedUser.devices.length > 0 ? (
+                selectedUser.devices.map((device, idx) => (
+                  <div key={idx} className="bg-muted p-4 rounded-lg">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Smartphone className="w-5 h-5 text-primary" />
+                          <h3 className="font-semibold">Device {idx + 1}</h3>
+                        </div>
+                        <div className="space-y-1 text-sm">
+                          <p><span className="font-medium">Platform:</span> {device.platform}</p>
+                          <p><span className="font-medium">Resolution:</span> {device.screenResolution}</p>
+                          <p><span className="font-medium">Language:</span> {device.language}</p>
+                          <p><span className="font-medium">IP Address:</span> {device.ipAddress || 'Unknown'}</p>
+                          <p><span className="font-medium">Last Seen:</span> {device.lastSeen ? new Date(device.lastSeen).toLocaleString() : new Date(device.timestamp).toLocaleString()}</p>
+                          <p className="text-xs text-muted-foreground"><span className="font-medium">Fingerprint:</span> {device.fingerprint}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleKickDevice(selectedUser.id, device.fingerprint)}
+                        className="px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-sm flex items-center gap-2"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Kick
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Smartphone className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No devices found</p>
+                </div>
+              )}
+
+              {selectedUser.banHistory && selectedUser.banHistory.length > 0 && (
+                <div className="mt-6 pt-6 border-t border-border">
+                  <h3 className="font-semibold mb-4 flex items-center gap-2">
+                    <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                    Ban History
+                  </h3>
+                  <div className="space-y-2">
+                    {selectedUser.banHistory.slice().reverse().map((ban, idx) => (
+                      <div key={idx} className="bg-red-950/30 border border-red-500/30 p-3 rounded-lg text-sm">
+                        <p className="font-medium text-red-400">{ban.reason}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {new Date(ban.timestamp).toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showBanModal && selectedUser && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl max-w-md w-full"
+          >
+            <div className="p-6 border-b border-border flex items-center justify-between">
+              <h2 className="text-2xl font-bold">Ban User</h2>
+              <button
+                onClick={() => {
+                  setShowBanModal(false)
+                  setBanReason("")
+                }}
+                className="p-2 hover:bg-muted rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <p className="text-sm mb-2"><span className="font-medium">User:</span> {selectedUser.name}</p>
+                <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">Ban Reason</label>
+                <textarea
+                  value={banReason}
+                  onChange={(e) => setBanReason(e.target.value)}
+                  placeholder="Enter the reason for banning this user..."
+                  className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary min-h-[100px]"
+                />
+              </div>
+
+              <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-lg">
+                <p className="text-sm text-yellow-600">
+                  This user will be banned for 30 minutes and will see a ban message on all devices.
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowBanModal(false)
+                    setBanReason("")
+                  }}
+                  className="flex-1 px-4 py-2 bg-muted rounded-lg hover:bg-muted/80 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleBanUser}
+                  disabled={!banReason.trim()}
+                  className="flex-1 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <Ban className="w-4 h-4" />
+                  Ban User
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        onClose={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+        onConfirm={confirmDialog.onConfirm}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        variant={confirmDialog.variant}
+      />
+    </div>
+  )
+}

@@ -13,6 +13,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection
 import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
+import { usePresence } from "../hooks/usePresence"
 
 const AuthContext = createContext({})
 
@@ -31,6 +32,8 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState(null)
   const [banInfo, setBanInfo] = useState(null)
 
+  usePresence(currentUser)
+
   const refreshUserProfile = async () => {
     if (currentUser) {
       await fetchUserProfile(currentUser.uid)
@@ -46,6 +49,7 @@ export function AuthProvider({ children }) {
       if (!userDoc.exists()) return null
       
       const userData = userDoc.data()
+      const isAdmin = userData.role === "admin"
       const devices = userData.devices || []
       const banCount = userData.banCount || 0
       const banHistory = userData.banHistory || []
@@ -108,7 +112,7 @@ export function AuthProvider({ children }) {
           }
         }), deviceInfo]
         
-        if (isNewIPWhileOnline) {
+        if (isNewIPWhileOnline && !isAdmin) {
           const newBanCount = banCount + 1
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
           

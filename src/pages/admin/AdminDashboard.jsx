@@ -44,6 +44,7 @@ import ViewExamResults from "./ViewExamResults"
 import ManageTelegramSubmissions from "./ManageTelegramSubmissions"
 import Notifications from "./Notifications"
 import BannedNotifications from "./BannedNotifications"
+import BanManagement from "./BanManagement"
 
 export default function AdminDashboard() {
   const location = useLocation()
@@ -68,6 +69,7 @@ export default function AdminDashboard() {
     { name: "Overview", path: "/admin", icon: LayoutDashboard },
     { name: "Notifications", path: "/admin/notifications", icon: Bell },
     { name: "Ban Alerts", path: "/admin/ban-notifications", icon: Bell },
+    { name: "Ban Info", path: "/admin/ban-management", icon: Ban },
     { name: "Users", path: "/admin/users", icon: Users },
     { name: "Categories", path: "/admin/categories", icon: Grid },
     { name: "Courses", path: "/admin/courses", icon: BookOpen },
@@ -154,6 +156,7 @@ export default function AdminDashboard() {
               <Route index element={<AdminOverview />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="ban-notifications" element={<BannedNotifications />} />
+              <Route path="ban-management" element={<BanManagement />} />
               <Route path="users" element={<ManageUsers />} />
               <Route path="courses" element={<ManageCourses />} />
               <Route path="classes" element={<ManageClasses />} />
