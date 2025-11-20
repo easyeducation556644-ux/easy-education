@@ -37,7 +37,7 @@ export function AuthProvider({ children }) {
 
   const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
     try {
-      const deviceInfo = getDeviceInfo()
+      const deviceInfo = await getDeviceInfo()
       const userRef = doc(db, "users", userId)
       const userDoc = await getDoc(userRef)
       
@@ -77,7 +77,9 @@ export function AuthProvider({ children }) {
         }
       }
 
-      const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
+      const existingDevice = devices.find(d => 
+        d.fingerprint === deviceInfo.fingerprint || d.ipAddress === deviceInfo.ipAddress
+      )
       
       if (!existingDevice) {
         const updatedDevices = [...devices, deviceInfo]
@@ -89,9 +91,10 @@ export function AuthProvider({ children }) {
           
           const banRecord = {
             timestamp: now.toISOString(),
-            reason: 'Multiple device login detected',
+            reason: 'Multiple device/IP login detected',
             deviceCount: updatedDevices.length,
-            bannedUntil: banExpires.toISOString()
+            bannedUntil: banExpires.toISOString(),
+            ipAddress: deviceInfo.ipAddress
           }
 
           const updateData = {
@@ -134,8 +137,8 @@ export function AuthProvider({ children }) {
         }
       } else {
         const updatedDevices = devices.map(d =>
-          d.fingerprint === deviceInfo.fingerprint
-            ? { ...d, lastSeen: deviceInfo.timestamp }
+          (d.fingerprint === deviceInfo.fingerprint || d.ipAddress === deviceInfo.ipAddress)
+            ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
             : d
         )
         await updateDoc(userRef, {
@@ -177,7 +180,7 @@ export function AuthProvider({ children }) {
       const user = userCredential.user
 
       const isDefaultAdmin = email === "admin@gmail.com"
-      const deviceInfo = getDeviceInfo()
+      const deviceInfo = await getDeviceInfo()
 
       const newUserData = {
         name: userData.name || "",
@@ -216,7 +219,7 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
-      const deviceInfo = getDeviceInfo()
+      const deviceInfo = await getDeviceInfo()
 
       try {
         const userDoc = await getDoc(userRef)
@@ -288,7 +291,7 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
-      const deviceInfo = getDeviceInfo()
+      const deviceInfo = await getDeviceInfo()
 
       try {
         const userRef = doc(db, "users", user.uid)

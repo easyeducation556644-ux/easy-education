@@ -24,12 +24,26 @@ export function generateDeviceFingerprint() {
   return Math.abs(hash).toString(36)
 }
 
-export function getDeviceInfo() {
+export async function getUserIP() {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json')
+    const data = await response.json()
+    return data.ip
+  } catch (error) {
+    console.error('Failed to get IP address:', error)
+    return 'unknown'
+  }
+}
+
+export async function getDeviceInfo() {
   const navigator = window.navigator
   const screen = window.screen
   
+  const ipAddress = await getUserIP()
+  
   return {
     fingerprint: generateDeviceFingerprint(),
+    ipAddress: ipAddress,
     userAgent: navigator.userAgent,
     platform: navigator.platform,
     screenResolution: `${screen.width}x${screen.height}`,
