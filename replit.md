@@ -1,61 +1,6 @@
 # Overview
 
-Easy Education is a Progressive Web Application (PWA) for delivering free online courses. The platform features a React-based frontend with Vite build tooling, Express.js backend for API routes, and Firebase for authentication, database, and push notifications. The application supports payment processing through RupantorPay, image uploads via ImgBB, and includes comprehensive admin capabilities for course management and enrollment tracking.
-
-# Recent Changes
-
-**November 20, 2025:**
-- **Real-Time Presence Detection System:** Implemented comprehensive online/offline status tracking
-  - Created `usePresence` hook that monitors tab visibility, window focus, and page visibility changes
-  - Automatic status updates when user switches tabs, minimizes window, or closes browser
-  - 30-second heartbeat to maintain accurate online status for active users
-  - Real-time synchronization with Firestore for live presence indicators
-- **Enhanced Ban Management Admin Panel:** New dedicated "Ban Info" admin page (`/admin/ban-management`)
-  - Real-time user list with live online/offline status indicators
-  - Filter users by: All, Banned, Online, or Offline status
-  - View detailed device information for each user (platform, IP address, resolution, last seen)
-  - Manual ban functionality with custom reason (30-minute temporary ban)
-  - Manual unban functionality with full ban record clearing
-  - Device kick functionality to remotely log out specific devices
-  - Live updates via Firestore onSnapshot - no manual refresh needed
-  - Ban countdown timers showing remaining ban time
-- **Admin Immunity from Auto-Ban:** Admins can now use multiple devices without triggering auto-ban
-  - Role-based check added to device login detection
-  - Admins bypass the simultaneous login ban rule
-  - Device tracking still functions normally for admins
-  - Only manual bans can affect admin accounts
-- **Video Player UI Enhancement:** Removed gradient shadow overlay from video player controls for cleaner, more modern appearance
-- **Admin Attribution System:** Implemented comprehensive tracking of which administrator approved or rejected payments
-  - Payment records now store `approvedBy`, `approvedById`, `rejectedBy`, `rejectedById` fields
-  - Admin dashboard displays color-coded boxes (green for approvals, red for rejections) showing admin name and timestamp
-  - Learner notifications include admin attribution when payments are approved/rejected
-  - Separate notification channels: admin enrollment alerts (type: "enrollment") vs learner approval/rejection notifications (type: "payment_approved"/"payment_rejected")
-  - Uses `transactionId` as stable identifier for reliable notification deduplication across all payment creation methods (webhooks, manual entry, imports)
-- **Admin Features Verification and Enhancement:**
-  - Verified all admin course grant features are functional (grant access icon visible in ManageUsers table)
-  - Enhanced Notifications page to display admin information for course grant actions alongside payment approvals/rejections
-  - Confirmed Ban Notifications page (`/admin/ban-notifications`) displays comprehensive ban history and device tracking
-  - Verified ManageUsers user details modal shows ban count, ban history, remaining time, and device information
-  - Multi-device login detection system functional: 2 devices trigger 30-minute ban, 3 bans result in permanent ban
-  - Ban notifications automatically created in `banNotifications` collection with full device details
-- **Enhanced Ban System with IP Tracking and Full-Screen Overlay:**
-  - **IP Address Tracking:** Integrated ipify API to track user IP addresses alongside device fingerprints for dual-factor authentication
-  - **Full-Screen Ban Overlay:** Created `BanOverlay.jsx` component that displays full-screen ban message blocking all website access
-    - Shows ban reason in both English and Bengali for user clarity
-    - Real-time countdown timer for temporary bans with automatic page reload when ban expires
-    - Different visual treatment for permanent vs temporary bans with color-coded UI
-  - **Real-Time Ban Monitoring:** AuthContext now monitors user ban status in real-time using Firestore onSnapshot
-    - Admin users are exempted from ban system
-    - Automatic detection and display of ban overlay when user becomes banned
-    - Handles both temporary (30-minute) and permanent bans seamlessly
-  - **Advanced Device Detection:** Device matching uses both fingerprint AND IP address for reliable multi-device detection
-    - Backward compatibility: Falls back to fingerprint-only matching for legacy device records without IP data
-    - Gradual migration: Existing devices get IP addresses backfilled on next login
-    - Strict matching: Both fingerprint and IP must match for device to be considered "existing"
-  - **Admin Panel IP Display:** ManageUsers modal now displays IP addresses in both device list and ban history
-    - IP addresses highlighted in blue for easy identification
-    - Full device tracking information visible to admins including platform, resolution, and last seen timestamp
-  - **External API:** Uses ipify.org for reliable IP address detection (free public API, no authentication required)
+Easy Education is a Progressive Web Application (PWA) designed to deliver free online courses. It features a React-based frontend using Vite, an Express.js backend for API services, and Firebase for authentication, database management, and push notifications. The platform integrates with RupantorPay for payment processing, ImgBB for image uploads, and includes a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities.
 
 # User Preferences
 
@@ -65,124 +10,68 @@ Preferred communication style: Simple, everyday language.
 
 ## Frontend Architecture
 
-**Technology Stack:** React 18 with Vite as the build tool and bundler.
-
-**Rationale:** Vite provides fast development server with hot module replacement and optimized production builds. React offers component-based architecture ideal for building interactive educational interfaces.
-
-**UI Framework:** Radix UI primitives with Tailwind CSS for styling.
-
-**Rationale:** Radix UI provides accessible, unstyled components that can be customized with Tailwind CSS. This combination ensures accessibility compliance while maintaining design flexibility. The application uses a custom design system based on Vercel's minimalist aesthetic with support for dark mode.
-
-**State Management:** React hooks and context for local state, Firebase Firestore for persistent data.
-
-**Rationale:** Avoids complexity of external state management libraries for this application size. Firebase real-time updates handle data synchronization across components.
-
+**Technology Stack:** React 18 with Vite.
+**UI Framework:** Radix UI primitives with Tailwind CSS, following a minimalist Vercel-inspired design system with dark mode support.
+**State Management:** React hooks and Context API for local state, Firebase Firestore for persistent data.
 **Internationalization:** Google Fonts (Hind Siliguri) for Bangla language support.
-
-**Rationale:** Ensures proper rendering of Bengali script across all devices and browsers.
-
-**Progressive Web App:** Service workers for offline functionality, web manifest for installability.
-
-**Rationale:** Enables app-like experience on mobile devices with offline course access and home screen installation.
+**Progressive Web App:** Service workers for offline functionality and web manifest for installability.
 
 ## Backend Architecture
 
-**Server Framework:** Express.js running on Node.js.
-
-**Rationale:** Lightweight, unopinionated framework suitable for API endpoints and middleware integration. Express handles CORS, JSON parsing, and routing efficiently.
-
-**Deployment Model:** Hybrid approach with Express server and Vercel serverless functions.
-
-**Rationale:** Express server (`server.js`) handles development environment, while `/api` directory contains Vercel serverless functions for production. This allows local development with full Express capabilities while maintaining serverless scalability in production.
-
-**API Structure:**
-- `/api/create-payment` - Initiates RupantorPay checkout
-- `/api/verify-payment` - Verifies payment status
-- `/api/payment-webhook` - Receives payment notifications
-- `/api/process-enrollment` - Handles manual enrollment and free course enrollment
-- `/api/upload-image` - Proxies image uploads to ImgBB
-- `/api/manifest.json` - Dynamically generates PWA manifest from database
-
-**Rationale:** Serverless functions provide automatic scaling and reduced infrastructure management. Each endpoint is isolated for better error handling and deployment.
+**Server Framework:** Express.js on Node.js.
+**Deployment Model:** Hybrid approach utilizing an Express server for development and Vercel serverless functions (located in `/api`) for production, offering scalability.
+**API Structure:** Endpoints for payment processing (`create-payment`, `verify-payment`, `payment-webhook`), enrollment (`process-enrollment`), image uploads (`upload-image`), and dynamic PWA manifest generation (`manifest.json`).
 
 ## Data Storage
 
-**Primary Database:** Firebase Firestore (NoSQL document database).
-
-**Collections:**
-- `users` - User profiles with role-based access control
-- `courses` - Course catalog with pricing and content
-- `payments` - Payment records and enrollment tracking
-- `settings` - Application configuration (PWA settings, branding)
-- `adminTokens` - FCM tokens for admin push notifications
-
-**Rationale:** Firestore provides real-time synchronization, offline support, and automatic scaling. Document model fits the nested structure of courses with lessons and modules. Firebase Security Rules enable granular access control.
-
+**Primary Database:** Firebase Firestore (NoSQL).
+**Collections:** `users`, `courses`, `payments`, `settings`, `adminTokens`.
 **Image Storage:** ImgBB API for hosting uploaded images.
-
-**Rationale:** External image hosting reduces Firebase Storage costs and provides CDN delivery. ImgBB offers free tier with generous limits suitable for educational content.
-
-**Alternatives Considered:** Firebase Storage was considered but rejected due to cost implications and complexity of managing file permissions.
 
 ## Authentication & Authorization
 
 **Authentication Provider:** Firebase Authentication with Google OAuth.
-
-**Rationale:** Reduces friction in user onboarding (no password to remember), provides trusted authentication, and integrates seamlessly with Firestore security rules.
-
-**Authorization Model:** Role-based access control (RBAC) with `isAdmin` and `role` fields in user documents.
-
-**Rationale:** Simple two-tier system (admin/user) sufficient for educational platform needs. Admins can manage courses, view payments, and send notifications.
-
+**Authorization Model:** Role-based access control (RBAC) using `isAdmin` and `role` fields in user documents.
 **Security:** Firebase Security Rules enforce server-side authorization.
 
-**Rationale:** Client-side checks are supplemented by database-level rules preventing unauthorized data access even if client code is compromised.
+## UI/UX Decisions
 
-## External Dependencies
+The application utilizes a custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode for user preference. Radix UI primitives ensure accessibility, while Tailwind CSS provides flexible styling.
+
+## Technical Implementations
+
+- **Real-Time Presence Detection:** `usePresence` hook tracks user online/offline status, tab visibility, and window focus, synchronizing with Firestore.
+- **Enhanced Ban Management:** Dedicated admin page `/admin/ban-management` for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Admins are immune to auto-ban.
+- **Device Detection:** Advanced device fingerprinting combined with IP address tracking (via ipify API) for multi-device login detection and ban enforcement. Full-screen ban overlay with countdown for temporary bans.
+- **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy` information for admin accountability, displayed in the dashboard and notifications.
+- **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
+- **IP Geolocation:** Robust IP geolocation with error handling, timeout, and Google Maps integration for device location tracking.
+
+# External Dependencies
 
 **Payment Gateway:** RupantorPay (Bangladesh payment processor)
-- **Integration:** RESTful API with webhook support
-- **Endpoints Used:**
-  - `POST https://payment.rupantorpay.com/api/payment/checkout` - Create payment session
-  - `POST https://payment.rupantorpay.com/api/payment/verify-payment` - Verify transaction status
-- **Authentication:** API key via `X-API-KEY` header
-- **Environment Variable:** `RUPANTORPAY_API_KEY`
-- **Webhook Events:** Receives `COMPLETED`, `PENDING`, `ERROR` status updates
-- **Purpose:** Handles paid course enrollments with mobile banking integration
+- **Integration:** RESTful API for checkout and verification, webhook support.
+- **Authentication:** API key via `X-API-KEY` header.
 
 **Image Hosting:** ImgBB API
-- **Integration:** RESTful API with Base64 image upload
-- **Endpoint:** `POST https://api.imgbb.com/1/upload`
-- **Authentication:** API key as query parameter
-- **Environment Variable:** `IMGBB_API_KEY`
-- **Constraints:** 32MB file size limit, standard image formats only (JPEG, PNG, GIF, BMP)
-- **Purpose:** Stores course thumbnails, user avatars, and instructional images
+- **Integration:** RESTful API for Base64 image uploads.
+- **Authentication:** API key as query parameter.
+
+**IP Address Tracking:** ipify.org (free public API).
 
 **Firebase Services:**
-- **Firebase Authentication:** Google OAuth provider for user login
-- **Firebase Firestore:** NoSQL database for all application data
-- **Firebase Cloud Messaging (FCM):** Push notifications for admin alerts
-  - **VAPID Key:** Used for browser push notification authorization
-  - **Service Worker:** `/firebase-messaging-sw.js` handles background messages
-  - **Admin SDK:** Server-side Firebase Admin for secure messaging operations
-  - **Environment Variables:** `FIREBASE_SERVICE_ACCOUNT` (JSON credentials)
+- **Firebase Authentication:** Google OAuth.
+- **Firebase Firestore:** Primary NoSQL database.
+- **Firebase Cloud Messaging (FCM):** Push notifications for admin alerts, uses VAPID key and `/firebase-messaging-sw.js` service worker. Admin SDK for server-side operations.
 
-**Analytics:** Vercel Analytics
-- **Integration:** `@vercel/analytics` package
-- **Purpose:** Track page views and user interactions without cookies
+**Analytics:** Vercel Analytics (`@vercel/analytics`).
 
 **Build & Development Tools:**
-- **Vite:** Frontend build tool and dev server
-- **Tailwind CSS:** Utility-first CSS framework with PostCSS/Autoprefixer
-- **Sharp:** Server-side image processing for PWA icon generation
-- **Class Variance Authority (CVA):** Type-safe component variants
+- **Vite:** Frontend build tool.
+- **Tailwind CSS:** Utility-first CSS framework.
+- **Sharp:** Server-side image processing for PWA icons.
+- **Class Variance Authority (CVA):** Type-safe component variants.
 
-**Email Service:** SendGrid (referenced in `/functions/send-grid`)
-- **Status:** Configured but not actively used in current codebase
-- **Environment Variables:** `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`
-- **Purpose:** Transactional email capabilities (payment confirmations, enrollment notifications)
+**Deployment Platform:** Vercel (uses `vercel.json` for configuration).
 
-**Deployment Platform:** Vercel
-- **Configuration:** `vercel.json` defines rewrites, headers, and function timeouts
-- **Serverless Functions:** 30-second max duration for payment and upload operations
-- **Environment:** Production uses serverless architecture, development uses Express server
+**Email Service:** SendGrid (configured but not actively used).
