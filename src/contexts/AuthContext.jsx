@@ -12,6 +12,7 @@ import {
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection, addDoc, query, where, getDocs } from "firebase/firestore"
 import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
+import { BanOverlay } from "../components/BanOverlay"
 
 const AuthContext = createContext({})
 
@@ -28,6 +29,7 @@ export function AuthProvider({ children }) {
   const [userProfile, setUserProfile] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [banInfo, setBanInfo] = useState(null)
 
   const refreshUserProfile = async () => {
     if (currentUser) {
@@ -77,9 +79,12 @@ export function AuthProvider({ children }) {
         }
       }
 
-      const existingDevice = devices.find(d => 
-        d.fingerprint === deviceInfo.fingerprint || d.ipAddress === deviceInfo.ipAddress
-      )
+      const existingDevice = devices.find(d => {
+        if (!d.ipAddress || !deviceInfo.ipAddress) {
+          return d.fingerprint === deviceInfo.fingerprint
+        }
+        return d.fingerprint === deviceInfo.fingerprint && d.ipAddress === deviceInfo.ipAddress
+      })
       
       if (!existingDevice) {
         const updatedDevices = [...devices, deviceInfo]
@@ -136,11 +141,15 @@ export function AuthProvider({ children }) {
           })
         }
       } else {
-        const updatedDevices = devices.map(d =>
-          (d.fingerprint === deviceInfo.fingerprint || d.ipAddress === deviceInfo.ipAddress)
+        const updatedDevices = devices.map(d => {
+          const isMatch = !d.ipAddress || !deviceInfo.ipAddress
+            ? d.fingerprint === deviceInfo.fingerprint
+            : (d.fingerprint === deviceInfo.fingerprint && d.ipAddress === deviceInfo.ipAddress)
+          
+          return isMatch
             ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
             : d
-        )
+        })
         await updateDoc(userRef, {
           devices: updatedDevices
         })
@@ -433,7 +442,10 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
-    if (!currentUser) return
+    if (!currentUser) {
+      setBanInfo(null)
+      return
+    }
 
     const userRef = doc(db, "users", currentUser.uid)
     const unsubscribe = onSnapshot(
@@ -443,8 +455,47 @@ export function AuthProvider({ children }) {
           const updatedProfile = { id: currentUser.uid, ...doc.data() }
           setUserProfile(updatedProfile)
 
-          if (updatedProfile.banned === true) {
-            signOut()
+          if (updatedProfile.role === "admin") {
+            setBanInfo(null)
+            return
+          }
+
+          if (updatedProfile.permanentBan) {
+            const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
+            setBanInfo({
+              isBanned: true,
+              type: 'permanent',
+              reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
+              banCount: updatedProfile.banCount || 0
+            })
+          } else if (updatedProfile.banned === true) {
+            const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
+            
+            if (updatedProfile.banExpiresAt) {
+              const banEndTime = updatedProfile.banExpiresAt.toDate()
+              const now = new Date()
+              
+              if (banEndTime <= now) {
+                setBanInfo(null)
+              } else {
+                setBanInfo({
+                  isBanned: true,
+                  type: 'temporary',
+                  bannedUntil: banEndTime,
+                  reason: latestBanHistory?.reason || 'Multiple device login detected',
+                  banCount: updatedProfile.banCount || 0
+                })
+              }
+            } else {
+              setBanInfo({
+                isBanned: true,
+                type: 'permanent',
+                reason: latestBanHistory?.reason || 'Manual ban by administrator',
+                banCount: updatedProfile.banCount || 0
+              })
+            }
+          } else {
+            setBanInfo(null)
           }
         }
       },
@@ -564,5 +615,26 @@ export function AuthProvider({ children }) {
     )
   }
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  const handleUnban = async () => {
+    if (currentUser && banInfo?.type === 'temporary') {
+      try {
+        const userRef = doc(db, "users", currentUser.uid)
+        await updateDoc(userRef, {
+          banned: false,
+          banExpiresAt: null
+        })
+        setBanInfo(null)
+        window.location.reload()
+      } catch (error) {
+        console.error("Error clearing ban:", error)
+      }
+    }
+  }
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      <BanOverlay banInfo={banInfo} onUnban={handleUnban} />
+    </AuthContext.Provider>
+  )
 }

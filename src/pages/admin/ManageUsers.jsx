@@ -903,6 +903,11 @@ export default function ManageUsers() {
                           <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
                             <p className="font-medium">Ban #{idx + 1}</p>
                             <p className="text-muted-foreground">Reason: {ban.reason}</p>
+                            {ban.ipAddress && (
+                              <p className="text-muted-foreground">
+                                <span className="font-semibold text-blue-500">IP Address:</span> {ban.ipAddress}
+                              </p>
+                            )}
                             <p className="text-muted-foreground">
                               Date: {new Date(ban.timestamp).toLocaleString()}
                             </p>
@@ -924,6 +929,11 @@ export default function ManageUsers() {
                         {selectedUser.devices.map((device, idx) => (
                           <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
                             <p className="font-medium">Device {idx + 1}</p>
+                            {device.ipAddress && (
+                              <p className="text-muted-foreground">
+                                <span className="font-semibold text-blue-500">IP Address:</span> {device.ipAddress}
+                              </p>
+                            )}
                             <p className="text-muted-foreground">Platform: {device.platform}</p>
                             <p className="text-muted-foreground">Resolution: {device.screenResolution}</p>
                             <p className="text-muted-foreground">
