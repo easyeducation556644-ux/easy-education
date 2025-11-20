@@ -48,50 +48,90 @@ export function getDeviceName() {
   if (ua.includes('windows phone') || ua.includes('wpdesktop')) {
     return 'Windows Phone'
   }
+  if (ua.includes('cros')) {
+    return 'Chrome OS'
+  }
   if (/Win/.test(platform)) {
     return 'Windows'
   }
   if (/Mac/.test(platform) && !ua.includes('iphone') && !ua.includes('ipad')) {
     return 'MacOS'
   }
-  if (/Linux/.test(platform)) {
+  if (/Linux/.test(platform) && !ua.includes('android')) {
     return 'Linux Desktop'
-  }
-  if (ua.includes('cros')) {
-    return 'Chrome OS'
   }
   
   return platform || 'Unknown'
 }
 
 export async function getIPGeolocation(ipAddress) {
-  try {
-    const response = await fetch(`https://ipapi.co/${ipAddress}/json/`)
-    const data = await response.json()
-    
+  if (!ipAddress || ipAddress === 'unknown') {
     return {
-      country: data.country_name || 'Unknown',
-      region: data.region || 'Unknown',
-      city: data.city || 'Unknown',
-      district: data.region_code || data.city || 'Unknown',
-      thana: data.postal || null,
-      latitude: data.latitude || 0,
-      longitude: data.longitude || 0,
-      timezone: data.timezone || 'Unknown',
-      org: data.org || 'Unknown'
-    }
-  } catch (error) {
-    console.error('Failed to get IP geolocation:', error)
-    return {
+      ip: ipAddress || 'Unknown',
       country: 'Unknown',
+      countryCode: 'Unknown',
       region: 'Unknown',
       city: 'Unknown',
       district: 'Unknown',
-      thana: null,
+      postalCode: null,
       latitude: 0,
       longitude: 0,
       timezone: 'Unknown',
-      org: 'Unknown'
+      isp: 'Unknown',
+      organization: 'Unknown'
+    }
+  }
+
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000)
+    
+    const response = await fetch(`https://ipapi.co/${ipAddress}/json/`, {
+      signal: controller.signal
+    })
+    clearTimeout(timeoutId)
+    
+    if (!response.ok) {
+      console.warn(`IP geolocation API returned ${response.status} for IP ${ipAddress}`)
+      throw new Error(`HTTP ${response.status}`)
+    }
+    
+    const data = await response.json()
+    
+    if (data.error) {
+      console.warn(`IP geolocation API error for IP ${ipAddress}: ${data.reason || 'Unknown error'}`)
+      throw new Error(data.reason || 'API Error')
+    }
+    
+    return {
+      ip: ipAddress,
+      country: data.country_name || 'Unknown',
+      countryCode: data.country_code || 'Unknown',
+      region: data.region || 'Unknown',
+      city: data.city || 'Unknown',
+      district: data.region || 'Unknown',
+      postalCode: data.postal || null,
+      latitude: data.latitude || 0,
+      longitude: data.longitude || 0,
+      timezone: data.timezone || 'Unknown',
+      isp: data.org || 'Not available',
+      organization: data.org || 'Not available'
+    }
+  } catch (error) {
+    console.error(`Failed to get IP geolocation for ${ipAddress}:`, error.message || error)
+    return {
+      ip: ipAddress,
+      country: 'Unknown (API Error)',
+      countryCode: 'Unknown',
+      region: 'Unknown',
+      city: 'Unknown',
+      district: 'Unknown',
+      postalCode: null,
+      latitude: 0,
+      longitude: 0,
+      timezone: 'Unknown',
+      isp: 'Not available',
+      organization: 'Not available'
     }
   }
 }

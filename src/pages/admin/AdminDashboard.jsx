@@ -20,6 +20,8 @@ import {
   FileQuestion,
   Send,
   Bell,
+  Ban,
+  AlertTriangle,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -51,6 +53,7 @@ export default function AdminDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
+  const [unreadBanCount, setUnreadBanCount] = useState(0)
 
   useEffect(() => {
     const notificationsQuery = query(
@@ -65,10 +68,23 @@ export default function AdminDashboard() {
     return () => unsubscribe()
   }, [])
 
+  useEffect(() => {
+    const banNotificationsQuery = query(
+      collection(db, "banNotifications"),
+      where("isRead", "==", false)
+    )
+    
+    const unsubscribe = onSnapshot(banNotificationsQuery, (snapshot) => {
+      setUnreadBanCount(snapshot.size)
+    })
+
+    return () => unsubscribe()
+  }, [])
+
   const navItems = [
     { name: "Overview", path: "/admin", icon: LayoutDashboard },
     { name: "Notifications", path: "/admin/notifications", icon: Bell },
-    { name: "Ban Alerts", path: "/admin/ban-notifications", icon: Bell },
+    { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle },
     { name: "Ban Info", path: "/admin/ban-management", icon: Ban },
     { name: "Users", path: "/admin/users", icon: Users },
     { name: "Categories", path: "/admin/categories", icon: Grid },
@@ -140,6 +156,11 @@ export default function AdminDashboard() {
                     {item.name === "Notifications" && unreadCount > 0 && (
                       <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
                         {unreadCount > 99 ? "99+" : unreadCount}
+                      </span>
+                    )}
+                    {item.name === "Ban Alerts" && unreadBanCount > 0 && (
+                      <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 animate-pulse">
+                        {unreadBanCount > 99 ? "99+" : unreadBanCount}
                       </span>
                     )}
                   </Link>
@@ -221,6 +242,11 @@ export default function AdminDashboard() {
                         {item.name === "Notifications" && unreadCount > 0 && (
                           <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] h-[20px] flex items-center justify-center px-1.5">
                             {unreadCount > 99 ? "99+" : unreadCount}
+                          </span>
+                        )}
+                        {item.name === "Ban Alerts" && unreadBanCount > 0 && (
+                          <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] h-[20px] flex items-center justify-center px-1.5 animate-pulse">
+                            {unreadBanCount > 99 ? "99+" : unreadBanCount}
                           </span>
                         )}
                       </Link>

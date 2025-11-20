@@ -5,6 +5,7 @@ import { db } from '../lib/firebase'
 export function usePresence(currentUser) {
   const heartbeatIntervalRef = useRef(null)
   const isOnlineRef = useRef(false)
+  const isSettingOfflineRef = useRef(false)
 
   useEffect(() => {
     if (!currentUser) return
@@ -20,6 +21,21 @@ export function usePresence(currentUser) {
         })
       } catch (error) {
         console.error('Error updating online status:', error)
+      }
+    }
+
+    const setOfflineStatus = async () => {
+      if (!isSettingOfflineRef.current && isOnlineRef.current) {
+        isSettingOfflineRef.current = true
+        try {
+          await updateDoc(userRef, {
+            online: false,
+            lastActive: serverTimestamp()
+          })
+          isOnlineRef.current = false
+        } catch (error) {
+          console.error('Error setting offline status:', error)
+        }
       }
     }
 
@@ -40,25 +56,37 @@ export function usePresence(currentUser) {
     }
 
     const handlePageHide = () => {
-      if (isOnlineRef.current) {
-        setOnlineStatus(false)
-      }
+      setOfflineStatus()
     }
 
     const handleVisibilityChange = () => {
-      if (!document.hidden) {
+      if (document.hidden) {
+        setOfflineStatus()
+      } else {
+        isSettingOfflineRef.current = false
         setOnlineStatus(true)
       }
+    }
+
+    const handleBlur = () => {
+      setTimeout(() => {
+        if (document.hidden) {
+          setOfflineStatus()
+        }
+      }, 1000)
     }
 
     setOnlineStatus(true)
 
     heartbeatIntervalRef.current = setInterval(() => {
-      setOnlineStatus(true)
-    }, 15000)
+      if (!document.hidden && isOnlineRef.current) {
+        setOnlineStatus(true)
+      }
+    }, 30000)
 
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener('pagehide', handlePageHide)
+    window.addEventListener('blur', handleBlur)
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
@@ -67,8 +95,9 @@ export function usePresence(currentUser) {
       }
       window.removeEventListener('beforeunload', handleBeforeUnload)
       window.removeEventListener('pagehide', handlePageHide)
+      window.removeEventListener('blur', handleBlur)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      setOnlineStatus(false)
+      setOfflineStatus()
     }
   }, [currentUser])
 }

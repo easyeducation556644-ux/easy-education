@@ -522,6 +522,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!currentUser) {
       setBanInfo(null)
+      localStorage.removeItem('banInfo')
       return
     }
 
@@ -535,17 +536,20 @@ export function AuthProvider({ children }) {
 
           if (updatedProfile.role === "admin") {
             setBanInfo(null)
+            localStorage.removeItem('banInfo')
             return
           }
 
           if (updatedProfile.permanentBan) {
             const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
-            setBanInfo({
+            const banData = {
               isBanned: true,
               type: 'permanent',
               reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
               banCount: updatedProfile.banCount || 0
-            })
+            }
+            setBanInfo(banData)
+            localStorage.setItem('banInfo', JSON.stringify(banData))
           } else if (updatedProfile.banned === true) {
             const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
             
@@ -555,25 +559,31 @@ export function AuthProvider({ children }) {
               
               if (banEndTime <= now) {
                 setBanInfo(null)
+                localStorage.removeItem('banInfo')
               } else {
-                setBanInfo({
+                const banData = {
                   isBanned: true,
                   type: 'temporary',
                   bannedUntil: banEndTime,
                   reason: latestBanHistory?.reason || 'Multiple device login detected',
                   banCount: updatedProfile.banCount || 0
-                })
+                }
+                setBanInfo(banData)
+                localStorage.setItem('banInfo', JSON.stringify(banData))
               }
             } else {
-              setBanInfo({
+              const banData = {
                 isBanned: true,
                 type: 'permanent',
                 reason: latestBanHistory?.reason || 'Manual ban by administrator',
                 banCount: updatedProfile.banCount || 0
-              })
+              }
+              setBanInfo(banData)
+              localStorage.setItem('banInfo', JSON.stringify(banData))
             }
           } else {
             setBanInfo(null)
+            localStorage.removeItem('banInfo')
           }
         }
       },
