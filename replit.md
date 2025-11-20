@@ -2,6 +2,19 @@
 
 Easy Education is a Progressive Web Application (PWA) designed to deliver free online courses. It features a React-based frontend using Vite, an Express.js backend for API services, and Firebase for authentication, database management, and push notifications. The platform integrates with RupantorPay for payment processing, ImgBB for image uploads, and includes a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities.
 
+# Recent Changes
+
+**November 20, 2025:** Fixed critical device limit enforcement bug
+- **Issue:** Device tracking was not properly counting unique devices. Users could login from 3+ devices without triggering the 2-device limit ban.
+- **Root Cause:** The system was checking for new IPs while online but not actually counting total unique devices. Additionally, banned devices were being persisted in the database, allowing them to bypass restrictions after ban expiry.
+- **Fix:** 
+  - Implemented proper unique device counting using fingerprint and IP combinations
+  - Enforced strict 2-device limit - attempting to login from a 3rd device now triggers a 30-minute ban
+  - Banned devices are no longer saved to the database, preventing post-ban bypass
+  - Added defensive check for existing devices to ensure total device count never exceeds the limit
+  - Ban escalation: 3 violations result in permanent account ban
+- **Location:** `src/contexts/AuthContext.jsx` in the `checkAndHandleDeviceLogin` function
+
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
