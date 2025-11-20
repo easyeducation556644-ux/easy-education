@@ -69,10 +69,8 @@ export function AuthProvider({ children }) {
         if (banEndTime <= now) {
           await updateDoc(userRef, {
             banned: false,
-            banExpiresAt: null,
-            devices: [deviceInfo]
+            banExpiresAt: null
           })
-          return deviceInfo
         } else {
           await firebaseSignOut(auth)
           throw new Error("TEMP_BAN")
@@ -87,19 +85,45 @@ export function AuthProvider({ children }) {
       })
       
       if (!existingDevice) {
-        const updatedDevices = [...devices, deviceInfo]
+        const now = new Date()
+        const isUserCurrentlyOnline = userData.online === true
         
-        if (updatedDevices.length > 1) {
+        const hasAnyKnownIP = devices.some(d => 
+          d.ipAddress && d.ipAddress !== 'unknown'
+        )
+        
+        const isNewIPWhileOnline = isUserCurrentlyOnline && hasAnyKnownIP &&
+          deviceInfo.ipAddress && deviceInfo.ipAddress !== 'unknown' &&
+          !devices.some(d => d.ipAddress === deviceInfo.ipAddress)
+        
+        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        const updatedDevices = [...devices.filter(d => {
+          if (!d.lastSeen && !d.timestamp) return false
+          try {
+            const deviceTime = new Date(d.lastSeen || d.timestamp)
+            if (isNaN(deviceTime.getTime())) return false
+            return deviceTime >= thirtyDaysAgo
+          } catch (e) {
+            return false
+          }
+        }), deviceInfo]
+        
+        if (isNewIPWhileOnline) {
           const newBanCount = banCount + 1
-          const now = new Date()
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
+          
+          const existingIPs = devices
+            .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
+            .map(d => d.ipAddress)
+            .join(', ')
           
           const banRecord = {
             timestamp: now.toISOString(),
-            reason: 'Multiple device/IP login detected',
+            reason: `Simultaneous login detected - new IP while user is online. New IP: ${deviceInfo.ipAddress}, Known IPs: ${existingIPs}`,
             deviceCount: updatedDevices.length,
             bannedUntil: banExpires.toISOString(),
-            ipAddress: deviceInfo.ipAddress
+            ipAddress: deviceInfo.ipAddress,
+            previousIP: devices.find(d => d.ipAddress && d.ipAddress !== 'unknown')?.ipAddress || 'unknown'
           }
 
           const updateData = {
@@ -114,7 +138,7 @@ export function AuthProvider({ children }) {
             updateData.permanentBan = true
             updateData.banned = true
             updateData.banExpiresAt = null
-            banRecord.reason = 'Permanent ban - 3 violations'
+            banRecord.reason = 'Permanent ban - 3 violations of simultaneous login policy'
           }
 
           await updateDoc(userRef, updateData)
@@ -261,13 +285,11 @@ export function AuthProvider({ children }) {
         } else {
           const userData = userDoc.data()
 
-          if (userData.role !== "admin") {
-            await checkAndHandleDeviceLogin(
-              userCredential.user.uid,
-              userCredential.user.email,
-              userData.name || "User"
-            )
-          }
+          await checkAndHandleDeviceLogin(
+            userCredential.user.uid,
+            userCredential.user.email,
+            userData.name || "User"
+          )
 
           const updateData = {
             online: true,
@@ -334,13 +356,11 @@ export function AuthProvider({ children }) {
         } else {
           const userData = userDoc.data()
 
-          if (userData.role !== "admin") {
-            await checkAndHandleDeviceLogin(
-              user.uid,
-              user.email,
-              userData.name || user.displayName || "User"
-            )
-          }
+          await checkAndHandleDeviceLogin(
+            user.uid,
+            user.email,
+            userData.name || user.displayName || "User"
+          )
 
           const updateData = {
             online: true,

@@ -171,17 +171,19 @@ export default function ManageUsers() {
       await updateDoc(doc(db, "users", userId), {
         banned: false,
         banExpiresAt: null,
-        devices: []
+        permanentBan: false,
+        banCount: 0,
+        banHistory: []
       })
       
       await fetchUsers()
       setShowUserDetailsModal(false)
       
-      showSuccess("User unbanned successfully and devices cleared!")
+      showSuccess("User unbanned successfully!")
       toast({
         variant: "success",
         title: "Success",
-        description: "User has been unbanned and can log in again",
+        description: "User has been completely unbanned with a clean slate",
       })
     } catch (error) {
       console.error("Error unbanning user:", error)
@@ -306,6 +308,7 @@ export default function ManageUsers() {
         })
         
         await fetchUserEnrollments()
+        await fetchUsers()
         setShowGrantAccessModal(false)
         setSelectedUser(null)
         setSelectedCoursesForGrant([])
@@ -454,6 +457,9 @@ export default function ManageUsers() {
                   <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
                     Status
                   </th>
+                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
+                    Devices
+                  </th>
                   <th className="px-3 sm:px-6 py-3 text-right text-xs sm:text-sm font-semibold whitespace-nowrap">
                     Actions
                   </th>
@@ -508,22 +514,27 @@ export default function ManageUsers() {
                       </span>
                     </td>
                     <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <div className="flex items-center justify-end gap-1 sm:gap-2">
+                      <span className="text-xs sm:text-sm font-medium">
+                        {user.devices?.length || 0}
+                      </span>
+                    </td>
+                    <td className="px-3 sm:px-6 py-3 sm:py-4">
+                      <div className="flex items-center justify-end gap-1 sm:gap-2 flex-wrap">
                         {user.role === "admin" ? (
                           <button
                             onClick={() => handleDemoteToUser(user.id)}
-                            className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                            title="Demote to User"
+                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-orange-500 border border-orange-500/20 flex items-center gap-1"
                           >
-                            <ShieldOff className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-orange-500" />
+                            <ShieldOff className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Demote</span>
                           </button>
                         ) : (
                           <button
                             onClick={() => handlePromoteToAdmin(user.id)}
-                            className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                            title="Promote to Admin"
+                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-primary border border-primary/20 flex items-center gap-1"
                           >
-                            <Shield className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary" />
+                            <Shield className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Promote</span>
                           </button>
                         )}
                         <button
@@ -531,19 +542,21 @@ export default function ManageUsers() {
                             setSelectedUser(user)
                             setShowUserDetailsModal(true)
                           }}
-                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                          title="View User Details"
+                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-blue-500 border border-blue-500/20 flex items-center gap-1"
                         >
-                          <Info className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-500" />
+                          <Info className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Info</span>
                         </button>
                         <button
                           onClick={() => handleBanUser(user.id, user.banned)}
-                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                          title={user.banned ? "Unban User" : "Ban User"}
+                          className={`px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium border flex items-center gap-1 ${
+                            user.banned 
+                              ? "text-green-500 border-green-500/20" 
+                              : "text-yellow-500 border-yellow-500/20"
+                          }`}
                         >
-                          <Ban
-                            className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${user.banned ? "text-green-500" : "text-yellow-500"}`}
-                          />
+                          <Ban className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">{user.banned ? "Unban" : "Ban"}</span>
                         </button>
                         <button
                           onClick={() => {
@@ -551,10 +564,10 @@ export default function ManageUsers() {
                             setSelectedCoursesForGrant([])
                             setShowGrantAccessModal(true)
                           }}
-                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                          title="Grant Course Access"
+                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-green-500 border border-green-500/20 flex items-center gap-1"
                         >
-                          <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-500" />
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Grant Access</span>
                         </button>
                         {userEnrollments[user.id] && userEnrollments[user.id].length > 0 && (
                           <button
@@ -562,21 +575,21 @@ export default function ManageUsers() {
                               setSelectedUser(user)
                               setShowRemoveModal(true)
                             }}
-                            className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors relative"
-                            title={`Manage Courses (${userEnrollments[user.id].length})`}
+                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-blue-500 border border-blue-500/20 flex items-center gap-1 relative"
                           >
-                            <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-500" />
-                            <span className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
+                            <BookOpen className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Manage Courses</span>
+                            <span className="ml-1 px-1.5 py-0.5 bg-blue-500 text-white text-[10px] rounded-full font-bold">
                               {userEnrollments[user.id].length}
                             </span>
                           </button>
                         )}
                         <button
                           onClick={() => handleDeleteUser(user.id)}
-                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
-                          title="Delete User"
+                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-red-500 border border-red-500/20 flex items-center gap-1"
                         >
-                          <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-500" />
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Delete</span>
                         </button>
                       </div>
                     </td>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { User, Building, Phone, Facebook, Linkedin, Github, Camera } from "lucide-react"
+import { User, Building, Phone, Facebook, Linkedin, Github, Camera, Monitor, MapPin, Calendar } from "lucide-react"
 import { doc, updateDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { uploadImageToImgBB } from "../lib/imgbb"
@@ -307,6 +307,61 @@ export default function Profile() {
             </button>
           </form>
         </motion.div>
+
+        {userProfile?.devices && userProfile.devices.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+            className="bg-card border border-border rounded-xl p-8 mt-6"
+          >
+            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+              <Monitor className="w-6 h-6" />
+              Active Devices ({userProfile.devices.length})
+            </h2>
+            <div className="space-y-4">
+              {userProfile.devices.map((device, idx) => (
+                <div key={idx} className="p-4 bg-muted/50 rounded-lg border border-border">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Monitor className="w-5 h-5 text-primary" />
+                        <p className="font-semibold">Device {idx + 1}</p>
+                      </div>
+                      <div className="space-y-1 text-sm text-muted-foreground">
+                        {device.ipAddress && device.ipAddress !== 'unknown' && (
+                          <div className="flex items-center gap-2">
+                            <MapPin className="w-4 h-4" />
+                            <span className="font-medium">IP:</span>
+                            <span className="font-mono">{device.ipAddress}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <Monitor className="w-4 h-4" />
+                          <span className="font-medium">Platform:</span>
+                          <span>{device.platform || 'Unknown'}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Monitor className="w-4 h-4" />
+                          <span className="font-medium">Resolution:</span>
+                          <span>{device.screenResolution || 'Unknown'}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Calendar className="w-4 h-4" />
+                          <span className="font-medium">Last Seen:</span>
+                          <span>{new Date(device.timestamp || device.lastSeen).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-sm text-muted-foreground">
+              If you see a device you don't recognize, please contact support immediately.
+            </p>
+          </motion.div>
+        )}
       </div>
     </div>
   )
