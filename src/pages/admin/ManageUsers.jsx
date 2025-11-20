@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X } from "lucide-react"
+import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check } from "lucide-react"
 import { collection, getDocs, doc, updateDoc, deleteDoc, query, where } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
@@ -16,8 +16,11 @@ export default function ManageUsers() {
   const [successMessage, setSuccessMessage] = useState("")
   const [courses, setCourses] = useState([])
   const [showRemoveModal, setShowRemoveModal] = useState(false)
+  const [showGrantAccessModal, setShowGrantAccessModal] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedCourse, setSelectedCourse] = useState("")
+  const [selectedCoursesForGrant, setSelectedCoursesForGrant] = useState([])
+  const [grantingAccess, setGrantingAccess] = useState(false)
   const [userEnrollments, setUserEnrollments] = useState({})
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
 
@@ -185,6 +188,76 @@ export default function ManageUsers() {
     })
   }
 
+  const handleGrantAccess = async () => {
+    if (!selectedUser || selectedCoursesForGrant.length === 0) {
+      toast({
+        variant: "warning",
+        title: "Selection Required",
+        description: "Please select both user and at least one course",
+      })
+      return
+    }
+
+    setGrantingAccess(true)
+    try {
+      const coursesToEnroll = selectedCoursesForGrant.map(courseId => {
+        const course = courses.find(c => c.id === courseId)
+        return {
+          id: course.id,
+          title: course.title,
+          price: course.price || 0
+        }
+      })
+
+      const transactionId = `MANUAL_${Date.now()}_${selectedUser.id}`
+      
+      const response = await fetch('/api/process-enrollment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          transaction_id: transactionId,
+          userId: selectedUser.id,
+          userName: selectedUser.name,
+          userEmail: selectedUser.email,
+          skipPaymentVerification: true,
+          finalAmount: 0,
+          subtotal: 0,
+          discount: 0,
+          couponCode: 'MANUAL_ADMIN_GRANT',
+          paymentMethod: 'Manual Grant by Admin',
+          courses: coursesToEnroll
+        })
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        toast({
+          title: "Success",
+          description: `Successfully granted access to ${coursesToEnroll.length} course(s)!`,
+        })
+        
+        await fetchUserEnrollments()
+        setShowGrantAccessModal(false)
+        setSelectedUser(null)
+        setSelectedCoursesForGrant([])
+      } else {
+        throw new Error(result.error || 'Failed to grant access')
+      }
+    } catch (error) {
+      console.error("Error granting course access:", error)
+      toast({
+        variant: "error",
+        title: "Grant Access Failed",
+        description: error.message || "Failed to grant course access",
+      })
+    } finally {
+      setGrantingAccess(false)
+    }
+  }
+
   const handleRemoveFromCourse = async (courseId) => {
     if (!selectedUser || !courseId) {
       toast({
@@ -239,11 +312,30 @@ export default function ManageUsers() {
     })
   }
 
+  const toggleCourseSelection = (courseId) => {
+    setSelectedCoursesForGrant(prev => {
+      if (prev.includes(courseId)) {
+        return prev.filter(id => id !== courseId)
+      } else {
+        return [...prev, courseId]
+      }
+    })
+  }
+
+  const getAvailableCoursesForUser = (userId) => {
+    const enrolledCourseIds = userEnrollments[userId]?.map(e => e.id) || []
+    return courses.filter(c => !enrolledCourseIds.includes(c.id))
+  }
+
   return (
     <div>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Manage Users</h1>
-        <p className="text-muted-foreground">View and manage all platform users</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Manage Users</h1>
+            <p className="text-muted-foreground">View and manage all platform users</p>
+          </div>
+        </div>
       </motion.div>
 
       {successMessage && (
@@ -377,6 +469,17 @@ export default function ManageUsers() {
                             className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${user.banned ? "text-green-500" : "text-yellow-500"}`}
                           />
                         </button>
+                        <button
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setSelectedCoursesForGrant([])
+                            setShowGrantAccessModal(true)
+                          }}
+                          className="p-1.5 sm:p-2 hover:bg-muted rounded-lg transition-colors"
+                          title="Grant Course Access"
+                        >
+                          <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-green-500" />
+                        </button>
                         {userEnrollments[user.id] && userEnrollments[user.id].length > 0 && (
                           <button
                             onClick={() => {
@@ -412,6 +515,128 @@ export default function ManageUsers() {
               <p>No users found</p>
             </div>
           )}
+        </div>
+      )}
+
+      {showGrantAccessModal && selectedUser && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold">Grant Course Access</h2>
+              <button
+                onClick={() => {
+                  setShowGrantAccessModal(false)
+                  setSelectedUser(null)
+                  setSelectedCoursesForGrant([])
+                }}
+                className="p-2 hover:bg-muted rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mb-6 p-4 bg-muted/50 rounded-lg">
+              <div className="flex items-center gap-3">
+                {selectedUser.photoURL ? (
+                  <img
+                    src={selectedUser.photoURL}
+                    alt={selectedUser.name}
+                    className="w-12 h-12 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
+                    <span className="text-primary font-semibold text-lg">
+                      {selectedUser.name?.[0] || "U"}
+                    </span>
+                  </div>
+                )}
+                <div>
+                  <p className="font-semibold text-lg">{selectedUser.name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+                </div>
+              </div>
+            </div>
+
+            {getAvailableCoursesForUser(selectedUser.id).length > 0 ? (
+              <>
+                <div className="space-y-3 mb-6">
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Select courses to grant access ({getAvailableCoursesForUser(selectedUser.id).length} available)
+                  </p>
+                  <div className="max-h-[400px] overflow-y-auto space-y-2">
+                    {getAvailableCoursesForUser(selectedUser.id).map((course) => (
+                      <div
+                        key={course.id}
+                        onClick={() => toggleCourseSelection(course.id)}
+                        className={`flex items-center justify-between p-4 border rounded-lg cursor-pointer transition-all ${
+                          selectedCoursesForGrant.includes(course.id)
+                            ? 'bg-primary/10 border-primary'
+                            : 'bg-background border-border hover:border-primary/50'
+                        }`}
+                      >
+                        <div className="flex-1">
+                          <h3 className="font-semibold mb-1">{course.title}</h3>
+                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            <span>Price: ৳{course.price || 0}</span>
+                            {course.instructor && <span>Instructor: {course.instructor}</span>}
+                          </div>
+                        </div>
+                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                          selectedCoursesForGrant.includes(course.id)
+                            ? 'bg-primary border-primary'
+                            : 'border-muted-foreground/30'
+                        }`}>
+                          {selectedCoursesForGrant.includes(course.id) && (
+                            <Check className="w-4 h-4 text-white" />
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setShowGrantAccessModal(false)
+                      setSelectedUser(null)
+                      setSelectedCoursesForGrant([])
+                    }}
+                    className="flex-1 py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleGrantAccess}
+                    disabled={selectedCoursesForGrant.length === 0 || grantingAccess}
+                    className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {grantingAccess ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Granting...
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-4 h-4" />
+                        Grant Access ({selectedCoursesForGrant.length})
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="text-center py-12 text-muted-foreground">
+                <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>No available courses to grant access</p>
+                <p className="text-sm mt-2">This user is already enrolled in all courses</p>
+              </div>
+            )}
+          </motion.div>
         </div>
       )}
 

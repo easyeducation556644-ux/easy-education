@@ -32,9 +32,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
   const [isBuffering, setIsBuffering] = useState(false)
   const [isSeekingLoading, setIsSeekingLoading] = useState(false)
-  const [brightness, setBrightness] = useState(100)
   const [showVolumeIndicator, setShowVolumeIndicator] = useState(false)
-  const [showBrightnessIndicator, setShowBrightnessIndicator] = useState(false)
   const [isSwiping, setIsSwiping] = useState(false)
   const [swipeStartY, setSwipeStartY] = useState(0)
   const [swipeStartX, setSwipeStartX] = useState(0)
@@ -467,9 +465,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     const containerWidth = containerRef.current?.clientWidth || 0
     const touchX = touch.clientX - containerRef.current?.getBoundingClientRect().left
     
-    if (touchX < containerWidth * 0.15) {
-      setSwipeType('brightness')
-    } else if (touchX > containerWidth * 0.85) {
+    if (touchX > containerWidth * 0.85) {
       setSwipeType('volume')
     } else {
       setSwipeType('seek')
@@ -500,11 +496,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         handleVolumeChange(newVolume)
         setShowVolumeIndicator(true)
         setSwipeStartY(touch.clientY)
-      } else if (swipeType === 'brightness') {
-        const newBrightness = Math.min(150, Math.max(20, brightness + deltaY))
-        setBrightness(newBrightness)
-        setShowBrightnessIndicator(true)
-        setSwipeStartY(touch.clientY)
       }
     }
   }
@@ -512,9 +503,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const handleTouchEnd = () => {
     if (showVolumeIndicator) {
       setTimeout(() => setShowVolumeIndicator(false), 1000)
-    }
-    if (showBrightnessIndicator) {
-      setTimeout(() => setShowBrightnessIndicator(false), 1000)
     }
     
     if (showSeekIndicator && seekDelta !== 0) {
@@ -1078,8 +1066,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           <>
             <div 
               id="yt-player" 
-              className="absolute inset-0 w-full h-full transition-all duration-100" 
-              style={{ filter: `brightness(${brightness}%)` }}
+              className="absolute inset-0 w-full h-full transition-all duration-100"
             />
             {!hasStartedPlaying && <div className="absolute inset-0 bg-black z-10 pointer-events-none" />}
             <div className="absolute inset-0 pointer-events-none z-[10] bg-transparent" />
@@ -1097,7 +1084,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           <video
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-contain transition-all duration-100"
-            style={{ filter: `brightness(${brightness}%)` }}
             playsInline
             preload="metadata"
             autoPlay
@@ -1160,34 +1146,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                     />
                   </div>
                   <span className="text-white font-bold text-sm">{Math.round(volume)}%</span>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Brightness Indicator - Left side of center */}
-        <AnimatePresence>
-          {showBrightnessIndicator && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="absolute top-1/2 left-1/2 -translate-y-1/2 -translate-x-[144px] z-[55] pointer-events-none"
-            >
-              <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
-                <div className="flex flex-col items-center gap-3">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                  </svg>
-                  <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
-                    <motion.div 
-                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-yellow-500 to-yellow-300 rounded-full"
-                      style={{ height: `${((brightness - 20) / 130) * 100}%` }}
-                      transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                    />
-                  </div>
-                  <span className="text-white font-bold text-sm">{Math.round(brightness)}%</span>
                 </div>
               </div>
             </motion.div>
