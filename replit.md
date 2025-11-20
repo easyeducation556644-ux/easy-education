@@ -19,6 +19,24 @@ Easy Education is a Progressive Web Application (PWA) for delivering free online
   - Verified ManageUsers user details modal shows ban count, ban history, remaining time, and device information
   - Multi-device login detection system functional: 2 devices trigger 30-minute ban, 3 bans result in permanent ban
   - Ban notifications automatically created in `banNotifications` collection with full device details
+- **Enhanced Ban System with IP Tracking and Full-Screen Overlay:**
+  - **IP Address Tracking:** Integrated ipify API to track user IP addresses alongside device fingerprints for dual-factor authentication
+  - **Full-Screen Ban Overlay:** Created `BanOverlay.jsx` component that displays full-screen ban message blocking all website access
+    - Shows ban reason in both English and Bengali for user clarity
+    - Real-time countdown timer for temporary bans with automatic page reload when ban expires
+    - Different visual treatment for permanent vs temporary bans with color-coded UI
+  - **Real-Time Ban Monitoring:** AuthContext now monitors user ban status in real-time using Firestore onSnapshot
+    - Admin users are exempted from ban system
+    - Automatic detection and display of ban overlay when user becomes banned
+    - Handles both temporary (30-minute) and permanent bans seamlessly
+  - **Advanced Device Detection:** Device matching uses both fingerprint AND IP address for reliable multi-device detection
+    - Backward compatibility: Falls back to fingerprint-only matching for legacy device records without IP data
+    - Gradual migration: Existing devices get IP addresses backfilled on next login
+    - Strict matching: Both fingerprint and IP must match for device to be considered "existing"
+  - **Admin Panel IP Display:** ManageUsers modal now displays IP addresses in both device list and ban history
+    - IP addresses highlighted in blue for easy identification
+    - Full device tracking information visible to admins including platform, resolution, and last seen timestamp
+  - **External API:** Uses ipify.org for reliable IP address detection (free public API, no authentication required)
 
 # User Preferences
 
