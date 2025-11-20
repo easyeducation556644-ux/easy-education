@@ -55,16 +55,26 @@ export function AuthProvider({ children }) {
         throw new Error("PERMANENT_BAN")
       }
 
-      if (banExpiresAt && banExpiresAt.toDate() > new Date()) {
+      if (userData.banned === true && !banExpiresAt) {
         await firebaseSignOut(auth)
-        throw new Error("TEMP_BAN")
+        throw new Error("MANUAL_BAN")
       }
 
-      if (banExpiresAt && banExpiresAt.toDate() <= new Date()) {
-        await updateDoc(userRef, {
-          banned: false,
-          banExpiresAt: null
-        })
+      if (banExpiresAt) {
+        const banEndTime = banExpiresAt.toDate()
+        const now = new Date()
+        
+        if (banEndTime <= now) {
+          await updateDoc(userRef, {
+            banned: false,
+            banExpiresAt: null,
+            devices: [deviceInfo]
+          })
+          return deviceInfo
+        } else {
+          await firebaseSignOut(auth)
+          throw new Error("TEMP_BAN")
+        }
       }
 
       const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
@@ -238,10 +248,6 @@ export function AuthProvider({ children }) {
           await setDoc(userRef, newUserData)
         } else {
           const userData = userDoc.data()
-          if (userData.banned === true) {
-            await firebaseSignOut(auth)
-            throw new Error("BANNED_USER")
-          }
 
           if (userData.role !== "admin") {
             await checkAndHandleDeviceLogin(
@@ -263,7 +269,7 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "BANNED_USER" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
+        if (firestoreError.message === "MANUAL_BAN" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
           throw firestoreError
         }
         console.error("Firestore error during sign in:", firestoreError)
@@ -315,10 +321,6 @@ export function AuthProvider({ children }) {
           await setDoc(userRef, newUserData)
         } else {
           const userData = userDoc.data()
-          if (userData.banned === true) {
-            await firebaseSignOut(auth)
-            throw new Error("BANNED_USER")
-          }
 
           if (userData.role !== "admin") {
             await checkAndHandleDeviceLogin(
@@ -340,7 +342,7 @@ export function AuthProvider({ children }) {
           await updateDoc(userRef, updateData)
         }
       } catch (firestoreError) {
-        if (firestoreError.message === "BANNED_USER" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
+        if (firestoreError.message === "MANUAL_BAN" || firestoreError.message === "TEMP_BAN" || firestoreError.message === "PERMANENT_BAN") {
           throw firestoreError
         }
         console.error("Firestore error during Google sign in:", firestoreError)

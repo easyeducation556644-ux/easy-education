@@ -41,8 +41,8 @@ export default function Login() {
       }, 200)
     } catch (err) {
       console.error(" Google login error:", err)
-      if (err.message === "BANNED_USER") {
-        setError("Your account has been banned. Please contact support.")
+      if (err.message === "MANUAL_BAN") {
+        setError("Your account has been banned by an admin. Please contact support.")
       } else if (err.message === "TEMP_BAN") {
         setError("Multiple device login detected! Your account has been temporarily banned for 30 minutes.")
       } else if (err.message === "PERMANENT_BAN") {
