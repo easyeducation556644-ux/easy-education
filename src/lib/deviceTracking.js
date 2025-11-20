@@ -64,42 +64,97 @@ export function getDeviceName() {
   return platform || 'Unknown'
 }
 
-export async function getIPGeolocation(ipAddress) {
-  if (!ipAddress || ipAddress === 'unknown') {
-    return {
-      ip: ipAddress || 'Unknown',
-      country: 'Unknown',
-      countryCode: 'Unknown',
-      region: 'Unknown',
-      city: 'Unknown',
-      district: 'Unknown',
-      postalCode: null,
-      latitude: 0,
-      longitude: 0,
-      timezone: 'Unknown',
-      isp: 'Unknown',
-      organization: 'Unknown'
-    }
-  }
-
+async function tryFreeIPAPI(ipAddress) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 8000)
+  
   try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000)
+    const response = await fetch(`https://freeipapi.com/api/json/${ipAddress}`, {
+      signal: controller.signal
+    })
+    clearTimeout(timeoutId)
     
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    
+    const data = await response.json()
+    
+    return {
+      ip: ipAddress,
+      country: data.countryName || 'Unknown',
+      countryCode: data.countryCode || 'Unknown',
+      region: data.regionName || 'Unknown',
+      city: data.cityName || 'Unknown',
+      district: data.regionName || 'Unknown',
+      postalCode: data.zipCode || null,
+      latitude: data.latitude || 0,
+      longitude: data.longitude || 0,
+      timezone: data.timeZone || 'Unknown',
+      isp: 'Not available',
+      organization: 'Not available',
+      source: 'freeipapi.com'
+    }
+  } catch (error) {
+    clearTimeout(timeoutId)
+    console.warn(`freeipapi.com failed for ${ipAddress}:`, error.message)
+    throw error
+  }
+}
+
+async function tryIPWhois(ipAddress) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 8000)
+  
+  try {
+    const response = await fetch(`https://ipwho.is/${ipAddress}`, {
+      signal: controller.signal
+    })
+    clearTimeout(timeoutId)
+    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    
+    const data = await response.json()
+    
+    if (!data.success) {
+      throw new Error(data.message || 'API returned success:false')
+    }
+    
+    return {
+      ip: data.ip || ipAddress,
+      country: data.country || 'Unknown',
+      countryCode: data.country_code || 'Unknown',
+      region: data.region || 'Unknown',
+      city: data.city || 'Unknown',
+      district: data.region || 'Unknown',
+      postalCode: data.postal || null,
+      latitude: data.latitude || 0,
+      longitude: data.longitude || 0,
+      timezone: data.timezone?.id || 'Unknown',
+      isp: data.connection?.isp || 'Not available',
+      organization: data.connection?.org || data.connection?.isp || 'Not available',
+      source: 'ipwho.is'
+    }
+  } catch (error) {
+    clearTimeout(timeoutId)
+    console.warn(`ipwho.is failed for ${ipAddress}:`, error.message)
+    throw error
+  }
+}
+
+async function tryIPApiCo(ipAddress) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 8000)
+  
+  try {
     const response = await fetch(`https://ipapi.co/${ipAddress}/json/`, {
       signal: controller.signal
     })
     clearTimeout(timeoutId)
     
-    if (!response.ok) {
-      console.warn(`IP geolocation API returned ${response.status} for IP ${ipAddress}`)
-      throw new Error(`HTTP ${response.status}`)
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
     
     const data = await response.json()
     
     if (data.error) {
-      console.warn(`IP geolocation API error for IP ${ipAddress}: ${data.reason || 'Unknown error'}`)
       throw new Error(data.reason || 'API Error')
     }
     
@@ -115,13 +170,21 @@ export async function getIPGeolocation(ipAddress) {
       longitude: data.longitude || 0,
       timezone: data.timezone || 'Unknown',
       isp: data.org || 'Not available',
-      organization: data.org || 'Not available'
+      organization: data.org || 'Not available',
+      source: 'ipapi.co'
     }
   } catch (error) {
-    console.error(`Failed to get IP geolocation for ${ipAddress}:`, error.message || error)
+    clearTimeout(timeoutId)
+    console.warn(`ipapi.co failed for ${ipAddress}:`, error.message)
+    throw error
+  }
+}
+
+export async function getIPGeolocation(ipAddress) {
+  if (!ipAddress || ipAddress === 'unknown') {
     return {
-      ip: ipAddress,
-      country: 'Unknown (API Error)',
+      ip: ipAddress || 'Unknown',
+      country: 'Unknown',
       countryCode: 'Unknown',
       region: 'Unknown',
       city: 'Unknown',
@@ -130,9 +193,45 @@ export async function getIPGeolocation(ipAddress) {
       latitude: 0,
       longitude: 0,
       timezone: 'Unknown',
-      isp: 'Not available',
-      organization: 'Not available'
+      isp: 'Unknown',
+      organization: 'Unknown',
+      source: 'none'
     }
+  }
+
+  const apis = [
+    { name: 'ipwho.is', fn: tryIPWhois },
+    { name: 'freeipapi.com', fn: tryFreeIPAPI },
+    { name: 'ipapi.co', fn: tryIPApiCo }
+  ]
+
+  for (const api of apis) {
+    try {
+      console.log(`Trying ${api.name} for IP ${ipAddress}...`)
+      const result = await api.fn(ipAddress)
+      console.log(`✓ Successfully got geolocation from ${api.name}`)
+      return result
+    } catch (error) {
+      console.warn(`✗ ${api.name} failed, trying next API...`)
+      continue
+    }
+  }
+
+  console.error(`All IP geolocation APIs failed for ${ipAddress}`)
+  return {
+    ip: ipAddress,
+    country: 'Unknown (All APIs Failed)',
+    countryCode: 'Unknown',
+    region: 'Unknown',
+    city: 'Unknown',
+    district: 'Unknown',
+    postalCode: null,
+    latitude: 0,
+    longitude: 0,
+    timezone: 'Unknown',
+    isp: 'Not available',
+    organization: 'Not available',
+    source: 'fallback'
   }
 }
 
