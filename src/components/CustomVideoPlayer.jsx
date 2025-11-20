@@ -41,6 +41,9 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [swipeType, setSwipeType] = useState(null)
   const [seekDelta, setSeekDelta] = useState(0)
   const [showSeekIndicator, setShowSeekIndicator] = useState(false)
+  const [showDoubleTapLeft, setShowDoubleTapLeft] = useState(false)
+  const [showDoubleTapRight, setShowDoubleTapRight] = useState(false)
+  const [doubleTapCount, setDoubleTapCount] = useState({ left: 0, right: 0 })
 
   const videoRef = useRef(null)
   const containerRef = useRef(null)
@@ -1104,6 +1107,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             onDoubleClick={(e) => {
               e.preventDefault()
               skipBackward()
+              setShowDoubleTapLeft(true)
+              setDoubleTapCount(prev => ({ ...prev, left: prev.left + 1 }))
+              setTimeout(() => {
+                setShowDoubleTapLeft(false)
+                setDoubleTapCount(prev => ({ ...prev, left: 0 }))
+              }, 800)
             }}
           />
           <div 
@@ -1116,6 +1125,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             onDoubleClick={(e) => {
               e.preventDefault()
               skipForward()
+              setShowDoubleTapRight(true)
+              setDoubleTapCount(prev => ({ ...prev, right: prev.right + 1 }))
+              setTimeout(() => {
+                setShowDoubleTapRight(false)
+                setDoubleTapCount(prev => ({ ...prev, right: 0 }))
+              }, 800)
             }}
           />
         </div>
@@ -1199,6 +1214,70 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                     )}
                   </div>
                   <span className="text-white/70 text-xs">{formatTime(currentTime + seekDelta)}</span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Double Tap Left Indicator - YouTube Style */}
+        <AnimatePresence>
+          {showDoubleTapLeft && (
+            <motion.div
+              key="double-tap-left"
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.5 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className="absolute top-1/2 left-[12%] -translate-y-1/2 z-[60] pointer-events-none"
+            >
+              <div className="bg-white/20 backdrop-blur-md rounded-full p-8 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center gap-1">
+                    <RotateCcw className="w-10 h-10 text-white" strokeWidth={2.5} />
+                    <RotateCcw className="w-10 h-10 text-white -ml-6 opacity-60" strokeWidth={2.5} />
+                    <RotateCcw className="w-10 h-10 text-white -ml-6 opacity-30" strokeWidth={2.5} />
+                  </div>
+                  <motion.span 
+                    key={doubleTapCount.left}
+                    initial={{ scale: 1.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="text-white font-bold text-xl"
+                  >
+                    {10 * (doubleTapCount.left || 1)} seconds
+                  </motion.span>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Double Tap Right Indicator - YouTube Style */}
+        <AnimatePresence>
+          {showDoubleTapRight && (
+            <motion.div
+              key="double-tap-right"
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.5 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className="absolute top-1/2 right-[12%] -translate-y-1/2 z-[60] pointer-events-none"
+            >
+              <div className="bg-white/20 backdrop-blur-md rounded-full p-8 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center gap-1">
+                    <RotateCw className="w-10 h-10 text-white opacity-30" strokeWidth={2.5} />
+                    <RotateCw className="w-10 h-10 text-white -ml-6 opacity-60" strokeWidth={2.5} />
+                    <RotateCw className="w-10 h-10 text-white -ml-6" strokeWidth={2.5} />
+                  </div>
+                  <motion.span 
+                    key={doubleTapCount.right}
+                    initial={{ scale: 1.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="text-white font-bold text-xl"
+                  >
+                    {10 * (doubleTapCount.right || 1)} seconds
+                  </motion.span>
                 </div>
               </div>
             </motion.div>
@@ -1291,27 +1370,27 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 )}
               </motion.button>
 
-              <div className="hidden md:flex items-center gap-2 border-l border-white/20 pl-3">
+              <div className="flex items-center gap-1 md:gap-2 border-l border-white/20 pl-2 md:pl-3">
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={skipBackward}
-                  className="text-white hover:text-red-500 transition-colors p-1 relative"
+                  className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
                   aria-label="Skip backward 10 seconds"
                 >
-                  <RotateCcw className="w-5 h-5 sm:w-6 sm:h-6" />
-                  <span className="absolute text-[8px] sm:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                  <RotateCcw className="w-4 h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                  <span className="absolute text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
 
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={skipForward}
-                  className="text-white hover:text-red-500 transition-colors p-1 relative"
+                  className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
                   aria-label="Skip forward 10 seconds"
                 >
-                  <RotateCw className="w-5 h-5 sm:w-6 sm:h-6" />
-                  <span className="absolute text-[8px] sm:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                  <RotateCw className="w-4 h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                  <span className="absolute text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
                 </motion.button>
               </div>
 
@@ -1351,7 +1430,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                     />
                     <div className="volume-slider-thumb" style={{ left: `${volume}%` }} />
                   </div>
-                  <span className="text-white text-xs font-medium min-w-[3ch]">{volume}%</span>
+                  <span className="text-white text-xs font-medium min-w-[3ch]">{Math.round(volume)}%</span>
                 </div>
 
                 {/* Mobile volume slider popup */}
@@ -1384,7 +1463,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                         </div>
                         <Volume2 className="w-4 h-4 text-white" />
                       </div>
-                      <div className="text-center text-white text-sm font-medium mt-2">{volume}%</div>
+                      <div className="text-center text-white text-sm font-medium mt-2">{Math.round(volume)}%</div>
                     </motion.div>
                   )}
                 </AnimatePresence>
