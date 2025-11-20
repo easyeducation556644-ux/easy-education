@@ -248,16 +248,20 @@ export default function Notifications() {
                       )}
                     </div>
 
-                    {(notification.approvedBy || notification.rejectedBy) && (
+                    {(notification.approvedBy || notification.rejectedBy || notification.adminName) && (
                       <div className={`p-2 rounded-lg mb-3 text-xs ${
-                        notification.approvedBy 
+                        notification.approvedBy || notification.adminName
                           ? "bg-green-500/10 text-green-600" 
                           : "bg-red-500/10 text-red-600"
                       }`}>
                         <p className="font-semibold">
                           {notification.approvedBy 
-                            ? `✅ Access granted by: ${notification.approvedBy}`
-                            : `❌ Rejected by: ${notification.rejectedBy}`
+                            ? `✅ Payment approved by: ${notification.approvedBy}`
+                            : notification.rejectedBy
+                              ? `❌ Payment rejected by: ${notification.rejectedBy}`
+                              : notification.adminName
+                                ? `👨‍💼 Course access granted by: ${notification.adminName} (${notification.adminEmail || ''})`
+                                : ''
                           }
                         </p>
                       </div>
