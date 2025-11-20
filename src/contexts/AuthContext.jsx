@@ -134,57 +134,63 @@ export function AuthProvider({ children }) {
         }
       }
 
-      const existingDevice = devices.find(d => {
-        if (!d.ipAddress || !deviceInfo.ipAddress) {
-          return d.fingerprint === deviceInfo.fingerprint
+      const now = new Date()
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+      
+      const activeDevices = devices.filter(d => {
+        if (!d.lastSeen && !d.timestamp) return false
+        try {
+          const deviceTime = new Date(d.lastSeen || d.timestamp)
+          if (isNaN(deviceTime.getTime())) return false
+          return deviceTime >= thirtyDaysAgo
+        } catch (e) {
+          return false
         }
-        return d.fingerprint === deviceInfo.fingerprint && d.ipAddress === deviceInfo.ipAddress
       })
       
-      if (!existingDevice) {
-        const now = new Date()
-        const isUserCurrentlyOnline = userData.online === true
-        
-        const hasAnyKnownIP = devices.some(d => 
-          d.ipAddress && d.ipAddress !== 'unknown'
-        )
-        
-        const isNewIPWhileOnline = isUserCurrentlyOnline && hasAnyKnownIP &&
-          deviceInfo.ipAddress && deviceInfo.ipAddress !== 'unknown' &&
-          !devices.some(d => d.ipAddress === deviceInfo.ipAddress)
-        
-        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-        const updatedDevices = [...devices.filter(d => {
-          if (!d.lastSeen && !d.timestamp) return false
-          try {
-            const deviceTime = new Date(d.lastSeen || d.timestamp)
-            if (isNaN(deviceTime.getTime())) return false
-            return deviceTime >= thirtyDaysAgo
-          } catch (e) {
-            return false
+      const existingDevice = activeDevices.find(d => {
+        if (d.fingerprint === deviceInfo.fingerprint) {
+          if (!d.ipAddress || !deviceInfo.ipAddress || d.ipAddress === 'unknown' || deviceInfo.ipAddress === 'unknown') {
+            return true
           }
-        }), deviceInfo]
+          return d.ipAddress === deviceInfo.ipAddress
+        }
+        return false
+      })
+      
+      const uniqueDevices = new Map()
+      
+      activeDevices.forEach(d => {
+        const key = d.fingerprint + (d.ipAddress && d.ipAddress !== 'unknown' ? `_${d.ipAddress}` : '')
+        uniqueDevices.set(key, d)
+      })
+      
+      const currentDeviceCount = uniqueDevices.size
+      const MAX_ALLOWED_DEVICES = 2
+      
+      if (!existingDevice) {
+        const shouldBan = currentDeviceCount >= MAX_ALLOWED_DEVICES && !isAdmin
         
-        if (isNewIPWhileOnline && !isAdmin) {
+        if (shouldBan) {
           const newBanCount = banCount + 1
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
           
-          const existingIPs = devices
+          const existingIPs = activeDevices
             .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
-            .map(d => d.ipAddress)
+            .map(d => `${d.ipAddress} (${d.platform || 'Unknown'})`)
             .join(', ')
           
           const banRecord = {
             timestamp: now.toISOString(),
-            reason: `Simultaneous login detected - new IP while user is online. New IP: ${deviceInfo.ipAddress}, Known IPs: ${existingIPs}`,
-            deviceCount: updatedDevices.length,
+            reason: `Device limit exceeded - Maximum ${MAX_ALLOWED_DEVICES} devices allowed. Current devices: ${currentDeviceCount}, Attempting to add: ${deviceInfo.ipAddress} (${deviceInfo.platform}). Existing devices: ${existingIPs}`,
+            deviceCount: currentDeviceCount,
             bannedUntil: banExpires.toISOString(),
             ipAddress: deviceInfo.ipAddress,
-            previousIP: devices.find(d => d.ipAddress && d.ipAddress !== 'unknown')?.ipAddress || 'unknown'
+            platform: deviceInfo.platform
           }
 
           const updateData = {
-            devices: updatedDevices,
+            devices: activeDevices,
             banCount: newBanCount,
             banHistory: [...banHistory, banRecord],
             banned: true,
@@ -195,7 +201,7 @@ export function AuthProvider({ children }) {
             updateData.permanentBan = true
             updateData.banned = true
             updateData.banExpiresAt = null
-            banRecord.reason = 'Permanent ban - 3 violations of simultaneous login policy'
+            banRecord.reason = `Permanent ban - ${newBanCount} violations of ${MAX_ALLOWED_DEVICES}-device limit policy`
           }
 
           await updateDoc(userRef, updateData)
@@ -206,10 +212,10 @@ export function AuthProvider({ children }) {
             userName,
             type: newBanCount >= 3 ? 'permanent' : 'temporary',
             reason: banRecord.reason,
-            deviceCount: updatedDevices.length,
+            deviceCount: currentDeviceCount,
             banCount: newBanCount,
             bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
-            devices: updatedDevices,
+            devices: activeDevices,
             createdAt: serverTimestamp(),
             isRead: false
           })
@@ -224,23 +230,78 @@ export function AuthProvider({ children }) {
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
         } else {
+          const updatedDevices = [...activeDevices, deviceInfo]
           await updateDoc(userRef, {
             devices: updatedDevices
           })
         }
       } else {
-        const updatedDevices = devices.map(d => {
-          const isMatch = !d.ipAddress || !deviceInfo.ipAddress
-            ? d.fingerprint === deviceInfo.fingerprint
-            : (d.fingerprint === deviceInfo.fingerprint && d.ipAddress === deviceInfo.ipAddress)
+        if (currentDeviceCount > MAX_ALLOWED_DEVICES && !isAdmin) {
+          const newBanCount = banCount + 1
+          const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
           
-          return isMatch
-            ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
-            : d
-        })
-        await updateDoc(userRef, {
-          devices: updatedDevices
-        })
+          const banRecord = {
+            timestamp: now.toISOString(),
+            reason: `Device limit exceeded - More than ${MAX_ALLOWED_DEVICES} devices detected. Current devices: ${currentDeviceCount}`,
+            deviceCount: currentDeviceCount,
+            bannedUntil: banExpires.toISOString(),
+            ipAddress: deviceInfo.ipAddress,
+            platform: deviceInfo.platform
+          }
+
+          const updateData = {
+            devices: activeDevices,
+            banCount: newBanCount,
+            banHistory: [...banHistory, banRecord],
+            banned: true,
+            banExpiresAt: banExpires
+          }
+
+          if (newBanCount >= 3) {
+            updateData.permanentBan = true
+            updateData.banned = true
+            updateData.banExpiresAt = null
+            banRecord.reason = `Permanent ban - ${newBanCount} violations of ${MAX_ALLOWED_DEVICES}-device limit policy`
+          }
+
+          await updateDoc(userRef, updateData)
+
+          await addDoc(collection(db, "banNotifications"), {
+            userId,
+            userEmail,
+            userName,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            deviceCount: currentDeviceCount,
+            banCount: newBanCount,
+            bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
+            devices: activeDevices,
+            createdAt: serverTimestamp(),
+            isRead: false
+          })
+
+          const banData = {
+            isBanned: true,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            bannedUntil: newBanCount >= 3 ? null : banExpires,
+            banCount: newBanCount
+          }
+          localStorage.setItem('banInfo', JSON.stringify(banData))
+          setBanInfo(banData)
+        } else {
+          const updatedDevices = activeDevices.map(d => {
+            const isMatch = d.fingerprint === deviceInfo.fingerprint && 
+              (!d.ipAddress || !deviceInfo.ipAddress || d.ipAddress === 'unknown' || deviceInfo.ipAddress === 'unknown' || d.ipAddress === deviceInfo.ipAddress)
+            
+            return isMatch
+              ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
+              : d
+          })
+          await updateDoc(userRef, {
+            devices: updatedDevices
+          })
+        }
       }
 
       return deviceInfo
