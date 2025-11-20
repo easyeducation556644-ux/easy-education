@@ -27,7 +27,6 @@ export function usePresence(currentUser) {
     }
 
     const handleBeforeUnload = () => {
-      navigator.sendBeacon?.('/api/user-offline', JSON.stringify({ userId: currentUser.uid }))
       setOnlineStatus(false)
     }
 

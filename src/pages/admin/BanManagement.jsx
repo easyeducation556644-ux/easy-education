@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { Search, Ban, Clock, Smartphone, Trash2, Shield, AlertTriangle, CheckCircle, User, X } from "lucide-react"
-import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc } from "firebase/firestore"
+import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
@@ -21,31 +21,42 @@ export default function BanManagement() {
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
 
   useEffect(() => {
-    fetchUsers()
+    const unsubscribe = fetchUsers()
+    return () => {
+      if (unsubscribe) unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
     filterUsers()
   }, [users, searchQuery, filter])
 
-  const fetchUsers = async () => {
-    try {
-      const usersSnapshot = await getDocs(collection(db, "users"))
-      const usersData = usersSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
-      setUsers(usersData)
-    } catch (error) {
-      console.error("Error fetching users:", error)
-      toast({
-        variant: "error",
-        title: "Error",
-        description: "Failed to fetch users",
-      })
-    } finally {
-      setLoading(false)
-    }
+  const fetchUsers = () => {
+    setLoading(true)
+    const usersQuery = query(collection(db, "users"), orderBy("createdAt", "desc"))
+    
+    const unsubscribe = onSnapshot(
+      usersQuery,
+      (snapshot) => {
+        const usersData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }))
+        setUsers(usersData)
+        setLoading(false)
+      },
+      (error) => {
+        console.error("Error fetching users:", error)
+        toast({
+          variant: "error",
+          title: "Error",
+          description: "Failed to fetch users",
+        })
+        setLoading(false)
+      }
+    )
+
+    return unsubscribe
   }
 
   const filterUsers = () => {
@@ -120,7 +131,6 @@ export default function BanManagement() {
       setShowBanModal(false)
       setBanReason("")
       setSelectedUser(null)
-      await fetchUsers()
     } catch (error) {
       console.error("Error banning user:", error)
       toast({
@@ -149,8 +159,6 @@ export default function BanManagement() {
             title: "Success",
             description: "User unbanned successfully",
           })
-
-          await fetchUsers()
         } catch (error) {
           console.error("Error unbanning user:", error)
           toast({
@@ -182,8 +190,7 @@ export default function BanManagement() {
             title: "Success",
             description: "Device kicked successfully",
           })
-
-          await fetchUsers()
+          
           if (selectedUser?.id === userId) {
             setSelectedUser({...user, devices: updatedDevices})
           }
