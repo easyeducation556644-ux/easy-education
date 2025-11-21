@@ -567,32 +567,39 @@ export function AuthProvider({ children }) {
     try {
       if (currentUser) {
         const userRef = doc(db, "users", currentUser.uid)
+        let deviceID = localStorage.getItem('deviceID')
         let fingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
         
         try {
           const deviceInfo = await getDeviceInfo()
-          if (deviceInfo && deviceInfo.fingerprint) {
-            fingerprint = deviceInfo.fingerprint
+          if (deviceInfo) {
+            if (deviceInfo.id) deviceID = deviceInfo.id
+            if (deviceInfo.fingerprint) fingerprint = deviceInfo.fingerprint
           }
         } catch (deviceError) {
-          console.warn("getDeviceInfo failed during logout, using stored fingerprint:", deviceError)
+          console.warn("getDeviceInfo failed during logout, using stored identifiers:", deviceError)
         }
         
         try {
-          if (fingerprint) {
+          if (deviceID || fingerprint) {
             const userDoc = await getDoc(userRef)
             
             if (userDoc.exists()) {
               const userData = userDoc.data()
               const devices = userData.devices || []
-              const updatedDevices = devices.filter(d => d.fingerprint !== fingerprint)
+              
+              const updatedDevices = devices.filter(d => {
+                if (deviceID && d.id === deviceID) return false
+                if (fingerprint && d.fingerprint === fingerprint) return false
+                return true
+              })
               
               await updateDoc(userRef, {
                 online: false,
                 lastActive: serverTimestamp(),
                 devices: updatedDevices
               })
-              console.log('✅ Device removed from database during logout')
+              console.log('✅ Device removed from database during logout (using ID or fingerprint)')
             } else {
               await updateDoc(userRef, {
                 online: false,
@@ -604,7 +611,7 @@ export function AuthProvider({ children }) {
               online: false,
               lastActive: serverTimestamp(),
             })
-            console.warn("No device fingerprint available, could not remove device from database")
+            console.warn("No device identifier available, could not remove device from database")
           }
         } catch (firestoreError) {
           console.error("Firestore error during sign out:", firestoreError)
@@ -619,6 +626,7 @@ export function AuthProvider({ children }) {
         }
         
         localStorage.removeItem('currentDeviceFingerprint')
+        localStorage.removeItem('deviceID')
         setCurrentDeviceFingerprint(null)
       }
       await firebaseSignOut(auth)
@@ -1008,12 +1016,9 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const effectiveUser = banInfo?.isBanned ? null : currentUser
-  const effectiveProfile = banInfo?.isBanned ? null : userProfile
-  
   const value = {
-    currentUser: effectiveUser,
-    userProfile: effectiveProfile,
+    currentUser,
+    userProfile,
     signUp,
     signIn,
     signUpWithEmail,
@@ -1022,7 +1027,9 @@ export function AuthProvider({ children }) {
     sendPasswordResetEmail,
     signOut,
     loading,
-    isAdmin: userProfile?.role === "admin" && !banInfo?.isBanned,
+    isAdmin: userProfile?.role === "admin",
+    isBanned: banInfo?.isBanned || false,
+    banInfo,
     refreshUserProfile,
     error,
   }

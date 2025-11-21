@@ -2,7 +2,7 @@ import { Navigate } from "react-router-dom"
 import { useAuth } from "../contexts/AuthContext"
 
 export default function ProtectedRoute({ children, adminOnly = false }) {
-  const { currentUser, userProfile, loading } = useAuth()
+  const { currentUser, userProfile, loading, isBanned } = useAuth()
 
   if (loading) {
     return (
@@ -14,6 +14,14 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
 
   if (!currentUser) {
     return <Navigate to="/login" replace />
+  }
+
+  if (isBanned) {
+    return (
+      <div className="min-h-screen bg-background">
+        {/* Empty container - BanOverlay from AuthContext will show on top */}
+      </div>
+    )
   }
 
   if (adminOnly && userProfile?.role !== "admin") {

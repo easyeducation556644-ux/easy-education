@@ -1,3 +1,7 @@
+export function generateDeviceID() {
+  return 'dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 15)
+}
+
 export function generateDeviceFingerprint() {
   const navigator = window.navigator
   const screen = window.screen
@@ -263,14 +267,21 @@ export async function getIPGeolocation(ipAddress) {
   }
 }
 
-export async function getDeviceInfo() {
+export async function getDeviceInfo(existingDeviceID = null) {
   const navigator = window.navigator
   const screen = window.screen
   
   const ipAddress = await getUserIP()
   const geolocation = ipAddress !== 'unknown' ? await getIPGeolocation(ipAddress) : null
   
+  const deviceID = existingDeviceID || localStorage.getItem('deviceID') || generateDeviceID()
+  
+  if (!existingDeviceID && !localStorage.getItem('deviceID')) {
+    localStorage.setItem('deviceID', deviceID)
+  }
+  
   return {
+    id: deviceID,
     fingerprint: generateDeviceFingerprint(),
     ipAddress: ipAddress,
     geolocation: geolocation,
