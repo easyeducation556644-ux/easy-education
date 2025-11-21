@@ -619,8 +619,8 @@ export function AuthProvider({ children }) {
           const devices = updatedProfile.devices || []
           const deviceExists = devices.some(d => d.fingerprint === currentDeviceInfo.fingerprint)
           
-          if (!deviceExists && devices.length >= 0) {
-            console.log('Device has been kicked, logging out...')
+          if (devices.length === 0 || !deviceExists) {
+            console.log('✅ Device has been removed or kicked - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             await firebaseSignOut(auth)
@@ -834,6 +834,24 @@ export function AuthProvider({ children }) {
 
   const handleUnban = async () => {
     if (banInfo?.type === 'temporary') {
+      try {
+        if (currentUser) {
+          const userRef = doc(db, "users", currentUser.uid)
+          const userDoc = await getDoc(userRef)
+          
+          if (userDoc.exists()) {
+            await updateDoc(userRef, {
+              devices: [],
+              banned: false,
+              banExpiresAt: null
+            })
+            console.log('✅ Ban expired: Cleared all devices from Firebase')
+          }
+        }
+      } catch (error) {
+        console.error('Error clearing devices after ban expiry:', error)
+      }
+      
       localStorage.removeItem('banInfo')
       setBanInfo(null)
       window.location.reload()
