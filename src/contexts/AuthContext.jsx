@@ -122,13 +122,14 @@ export function AuthProvider({ children }) {
 
       // Check for temporary ban
       if (banExpiresAt) {
-        const banEndTime = banExpiresAt.toDate()
+        // 🔥 CRITICAL FIX: Add toDate() fallback to prevent crash
+        const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
         const now = new Date()
 
         if (banEndTime <= now) {
           // 💡 FIX: Ban expired - clear ban flags and set forceLogoutAt. 
           // Do NOT clear 'devices' array here. The useEffect listener will handle the logout.
-          console.log('✅ Ban has expired during login - setting forceLogoutAt for all devices')
+          console.log('✅ Ban expired - clearing ban and triggering logout')
           await updateDoc(userRef, {
             banned: false,
             banExpiresAt: null,
@@ -145,7 +146,7 @@ export function AuthProvider({ children }) {
             isBanned: true,
             type: 'temporary',
             reason: banHistory[banHistory.length - 1]?.reason || 'Simultaneous login from multiple devices detected',
-            bannedUntil: banExpiresAt,
+            bannedUntil: banEndTime,
             banCount: banCount
           }
           localStorage.setItem('banInfo', JSON.stringify(banData))
@@ -162,13 +163,7 @@ export function AuthProvider({ children }) {
       const now = new Date()
       const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
 
-      console.log('🔍 Device Login Check:', {
-        userName,
-        devicesCount: devices.length,
-        currentDevice: deviceInfo.fingerprint,
-        currentIP: deviceInfo.ipAddress,
-        existingDevice: !!existingDevice
-      })
+      // 🚫 SECURITY: Removed sensitive device logging
 
       // NEW DEVICE DETECTED - This is where ban happens
       if (!existingDevice) {
@@ -176,18 +171,12 @@ export function AuthProvider({ children }) {
           const newBanCount = banCount + 1
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
 
-          const existingIPs = devices
-            .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
-            .map(d => `${d.ipAddress} (${d.platform || 'Unknown'})`)
-            .join(', ')
-
+          // 🚫 SECURITY FIX: Don't include IP addresses or platform details in ban reason
           const banRecord = {
             timestamp: now.toISOString(),
-            reason: `একাধিক ডিভাইস থেকে লগইন সনাক্ত করা হয়েছে। বর্তমান ডিভাইস: ${devices.length}, নতুন ডিভাইস: ${deviceInfo.ipAddress} (${deviceInfo.platform}). বিদ্যমান ডিভাইস: ${existingIPs}`,
+            reason: `একাধিক ডিভাইস থেকে একই সময়ে লগইন সনাক্ত করা হয়েছে। মোট ডিভাইস: ${devices.length + 1}টি`,
             deviceCount: devices.length,
-            bannedUntil: banExpires.toISOString(),
-            ipAddress: deviceInfo.ipAddress,
-            platform: deviceInfo.platform
+            bannedUntil: banExpires.toISOString()
           }
 
           const updateData = {
@@ -203,40 +192,31 @@ export function AuthProvider({ children }) {
             updateData.permanentBan = true
             updateData.banned = true
             updateData.banExpiresAt = null
-            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার একাধিক ডিভাইস থেকে লগইন করার চেষ্টা করা হয়েছে`
+            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার নীতি লঙ্ঘনের কারণে`
           } else {
             // 🔥 FIX: Store as Firestore Timestamp instead of plain Date
             const banExpiresTimestamp = new Date(banExpires.getTime())
             updateData.banExpiresAt = banExpiresTimestamp
           }
 
-          console.log('🔥 MULTIPLE DEVICE DETECTED - Triggering BAN')
-          console.log('🔥 Current devices:', devices.length, '+ New device = Total:', devices.length + 1)
-          console.log('🔥 Ban count will be:', newBanCount)
-          console.log('🔥 Update data:', {
-            devicesCount: updateData.devices.length,
-            banned: updateData.banned,
-            banExpiresAt: updateData.banExpiresAt ? 'SET' : 'NULL',
-            permanentBan: updateData.permanentBan
-          })
+          // 🚫 SECURITY FIX: Minimal logging
+          console.log('Multiple device login detected')
 
           await updateDoc(userRef, updateData)
-          console.log('🔥 Firestore updated with ban data')
 
+          // 🚫 SECURITY FIX: Don't include full devices array or sensitive data in notifications
           await addDoc(collection(db, "banNotifications"), {
             userId,
             userEmail,
             userName,
             type: newBanCount >= 3 ? 'permanent' : 'temporary',
             reason: banRecord.reason,
-            deviceCount: devices.length,
+            deviceCount: devices.length + 1,
             banCount: newBanCount,
             bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
-            devices: devices,
             createdAt: serverTimestamp(),
             isRead: false
           })
-          console.log('🔥 Ban notification created')
 
           const banData = {
             isBanned: true,
@@ -245,12 +225,9 @@ export function AuthProvider({ children }) {
             bannedUntil: newBanCount >= 3 ? null : banExpires,
             banCount: newBanCount
           }
-          console.log('🔥 Setting ban info on this device:', banData)
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
 
-          console.log('🔥 BAN TRIGGERED - User stays logged in, ban overlay will show')
-          console.log('🔥 Returning deviceInfo - onSnapshot listeners on all devices will fire')
           // CRITICAL: Return deviceInfo so user stays logged in to see ban overlay
           return deviceInfo
         } else {
@@ -763,13 +740,8 @@ export function AuthProvider({ children }) {
 
           // 🔥 FIX: If user is actively banned, show ban overlay and STOP here
           if (isBanActive) {
-            console.log('🚫 User is actively banned - showing ban overlay, keeping user logged in')
-            console.log('🚫 Ban details:', {
-              banned: updatedProfile.banned,
-              permanentBan: updatedProfile.permanentBan,
-              banExpiresAt: updatedProfile.banExpiresAt,
-              banCount: updatedProfile.banCount
-            })
+            console.log('🚫 User is banned - showing overlay')
+            console.log('🚫 Ban type:', updatedProfile.permanentBan ? 'permanent' : 'temporary')
 
             if (updatedProfile.permanentBan) {
               const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
@@ -779,7 +751,6 @@ export function AuthProvider({ children }) {
                 reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
                 banCount: updatedProfile.banCount || 0
               }
-              console.log('🚫 Setting PERMANENT ban info:', banData)
               setBanInfo(banData)
               localStorage.setItem('banInfo', JSON.stringify(banData))
             } else if (updatedProfile.banned === true) {
@@ -798,11 +769,10 @@ export function AuthProvider({ children }) {
                     reason: latestBanHistory?.reason || 'Multiple device login detected',
                     banCount: updatedProfile.banCount || 0
                   }
-                  console.log('🚫 Setting TEMPORARY ban info:', banData)
                   setBanInfo(banData)
                   localStorage.setItem('banInfo', JSON.stringify(banData))
                 } catch (e) {
-                  console.error('🔥 Error parsing banExpiresAt:', e)
+                  console.error('Error parsing ban expiration date')
                   // Fallback to permanent ban if we can't parse the date
                   const banData = {
                     isBanned: true,
@@ -810,7 +780,6 @@ export function AuthProvider({ children }) {
                     reason: latestBanHistory?.reason || 'Ban date parsing error',
                     banCount: updatedProfile.banCount || 0
                   }
-                  console.log('🚫 Setting PERMANENT ban info (fallback):', banData)
                   setBanInfo(banData)
                   localStorage.setItem('banInfo', JSON.stringify(banData))
                 }
@@ -821,14 +790,12 @@ export function AuthProvider({ children }) {
                   reason: latestBanHistory?.reason || 'Manual ban by administrator',
                   banCount: updatedProfile.banCount || 0
                 }
-                console.log('🚫 Setting PERMANENT ban info (no expiry):', banData)
                 setBanInfo(banData)
                 localStorage.setItem('banInfo', JSON.stringify(banData))
               }
             }
 
             // 💡 CRITICAL: Return here! Don't check force logout or device removal
-            console.log('🚫 Returning early - user stays logged in with ban overlay')
             return
           }
 
@@ -877,17 +844,8 @@ export function AuthProvider({ children }) {
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
           const isRecentLogin = timeSinceLogin < 30000 // 30 seconds grace period
 
-          console.log('🔍 Device removal check:', {
-            deviceFingerprint: deviceFingerprint ? deviceFingerprint.substring(0, 10) + '...' : 'NONE',
-            deviceExists,
-            devicesInFirestore: devices.length,
-            isRecentLogin,
-            timeSinceLoginMs: timeSinceLogin === Infinity ? 'Infinity' : timeSinceLogin
-          })
-
           if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
-            console.log('❌ Device has been removed (not banned) - Auto logout triggered')
-            console.log('❌ This should NOT happen during a ban!')
+            console.log('Device removed - logging out')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
@@ -895,8 +853,6 @@ export function AuthProvider({ children }) {
             window.location.reload()
             return
           }
-
-          console.log('✅ Device check passed - user stays logged in')
         }
       },
       (error) => {
