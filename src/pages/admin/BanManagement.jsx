@@ -289,33 +289,8 @@ export default function BanManagement() {
           
           toast({
             title: "Completed",
-            description: `Successfully logged out ${successCount} users${failCount > 0 ? `. ${failCount} failed: ${failedUsers.join(', ')}` : ''}. Flags will auto-clear in 5 seconds.`,
+            description: `Successfully logged out ${successCount} users${failCount > 0 ? `. ${failCount} failed: ${failedUsers.join(', ')}` : ''}. Users can log back in after 1 minute, or click "Clear Logout Flags" for immediate access.`,
           })
-
-          setTimeout(async () => {
-            try {
-              let clearCount = 0
-              for (let i = 0; i < nonAdminUsers.length; i += BATCH_SIZE) {
-                const batch = nonAdminUsers.slice(i, i + BATCH_SIZE)
-                const promises = batch.map(async (user) => {
-                  try {
-                    await updateDoc(doc(db, "users", user.id), {
-                      forceLogoutAt: deleteField(),
-                      forceLogoutReason: deleteField(),
-                      forcedBy: deleteField()
-                    })
-                    clearCount++
-                  } catch (error) {
-                    console.error(`Error clearing flags for user ${user.name}:`, error)
-                  }
-                })
-                await Promise.allSettled(promises)
-              }
-              console.log(`✅ Auto-cleared logout flags for ${clearCount} users`)
-            } catch (error) {
-              console.error("Error auto-clearing logout flags:", error)
-            }
-          }, 5000)
         } catch (error) {
           console.error("Error logging out all users:", error)
           toast({

@@ -9,7 +9,7 @@ import {
   signOut as firebaseSignOut,
   sendPasswordResetEmail as firebaseSendPasswordResetEmail,
 } from "firebase/auth"
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection, addDoc, query, where, getDocs } from "firebase/firestore"
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection, addDoc, query, where, getDocs, deleteField } from "firebase/firestore"
 import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
@@ -670,7 +670,22 @@ export function AuthProvider({ children }) {
               updatedProfile.forceLogoutAt.toMillis() : 
               new Date(updatedProfile.forceLogoutAt).getTime()
             
-            if (lastAckedTimestamp === null) {
+            const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
+            const AUTO_CLEAR_THRESHOLD = 60000
+            
+            if (timeSinceForceLogout > AUTO_CLEAR_THRESHOLD) {
+              console.log('🔄 Auto-clearing expired forceLogoutAt flag (older than 1 minute)')
+              try {
+                await updateDoc(userRef, {
+                  forceLogoutAt: deleteField(),
+                  forceLogoutReason: deleteField(),
+                  forcedBy: deleteField()
+                })
+                localStorage.removeItem('lastAckedLogoutAt')
+              } catch (error) {
+                console.error('Error auto-clearing forceLogoutAt:', error)
+              }
+            } else if (lastAckedTimestamp === null) {
               localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
             } else if (forceLogoutTimestamp > lastAckedTimestamp) {
               const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
