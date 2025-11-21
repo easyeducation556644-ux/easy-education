@@ -682,20 +682,23 @@ export function AuthProvider({ children }) {
                   forcedBy: deleteField()
                 })
                 localStorage.removeItem('lastAckedLogoutAt')
+                console.log('✅ Successfully cleared expired logout flags - user can continue')
               } catch (error) {
                 console.error('Error auto-clearing forceLogoutAt:', error)
               }
-            } else if (lastAckedTimestamp === null) {
-              localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
-            } else if (forceLogoutTimestamp > lastAckedTimestamp) {
-              const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
-              console.log(`✅ Force logout triggered: ${reason}`)
-              localStorage.removeItem('deviceWarning')
-              localStorage.removeItem('banInfo')
-              localStorage.removeItem('lastAckedLogoutAt')
-              await firebaseSignOut(auth)
-              window.location.reload()
-              return
+            } else {
+              if (lastAckedTimestamp === null) {
+                localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+              } else if (forceLogoutTimestamp > lastAckedTimestamp) {
+                const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
+                console.log(`✅ Force logout triggered: ${reason}`)
+                localStorage.removeItem('deviceWarning')
+                localStorage.removeItem('banInfo')
+                localStorage.removeItem('lastAckedLogoutAt')
+                await firebaseSignOut(auth)
+                window.location.reload()
+                return
+              }
             }
           } else if (lastAckedTimestamp === null) {
             localStorage.setItem('lastAckedLogoutAt', Date.now().toString())
