@@ -624,11 +624,28 @@ export function AuthProvider({ children }) {
             }
           }
 
-          const currentDeviceInfo = await getDeviceInfo()
           const kickedDevices = updatedProfile.kickedDevices || []
+          const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
           
-          if (kickedDevices.includes(currentDeviceInfo.fingerprint)) {
+          if (storedFingerprint && kickedDevices.includes(storedFingerprint)) {
             console.log('✅ This device has been kicked - logging out immediately')
+            localStorage.removeItem('deviceWarning')
+            localStorage.removeItem('banInfo')
+            localStorage.removeItem('lastAckedLogoutAt')
+            
+            const updatedKickedDevices = kickedDevices.filter(fp => fp !== storedFingerprint)
+            await updateDoc(userRef, {
+              kickedDevices: updatedKickedDevices
+            })
+            
+            await firebaseSignOut(auth)
+            window.location.reload()
+            return
+          }
+          
+          const currentDeviceInfo = await getDeviceInfo()
+          if (currentDeviceInfo && kickedDevices.includes(currentDeviceInfo.fingerprint)) {
+            console.log('✅ This device has been kicked (via getDeviceInfo) - logging out immediately')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
@@ -719,7 +736,7 @@ export function AuthProvider({ children }) {
             return
           }
           
-          if (!deviceExists && devices.length > 0 && !isRecentLogin && !isBanActive) {
+          if (!deviceExists && devices.length > 0 && !isRecentLogin && !isBanActive && !isBanned) {
             console.log('✅ Device has been removed - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
