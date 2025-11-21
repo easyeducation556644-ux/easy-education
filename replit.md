@@ -4,6 +4,33 @@ Easy Education is a Progressive Web Application (PWA) designed to deliver free o
 
 # Recent Changes
 
+**November 21, 2025 (Session 3):** Fixed critical ban management bugs preventing login after unban/logout
+- **Issue 1:** Users unable to login after being unbanned by admin
+- **Root Cause:** The `handleBanUser` toggle function in ManageUsers.jsx only changed the `banned` field but didn't clear other ban-related fields (`banExpiresAt`, `permanentBan`, `banCount`, `banHistory`, `devices`), leaving stale ban data that blocked re-login
+- **Fix:**
+  - Completely rewrote `handleBanUser` in ManageUsers.jsx to properly clear ALL ban-related fields when unbanning
+  - Added `clearBanCacheAt` and `forceLogoutAt` fields to force clients to clear cached ban info and logout
+  - Added confirmation dialogs for ban/unban operations
+- **Location:** `src/pages/admin/ManageUsers.jsx` (handleBanUser function)
+
+- **Issue 2:** "All device log out" button preventing users from logging back in
+- **Root Cause:** The mass logout function cleared devices and forced logout but didn't set `clearBanCacheAt`, leaving stale ban info in browser localStorage
+- **Fix:**
+  - Added `clearBanCacheAt` field to mass logout function
+  - Also clears `kickedDevices` array to prevent re-login issues
+- **Location:** `src/pages/admin/BanManagement.jsx` (handleLogoutAllUsers function)
+
+- **Issue 3:** Cached ban info persisting in browser after unban
+- **Root Cause:** The ban cache checking logic ran only once on page load, before the user profile was fetched. When unbanned users refreshed their browser, stale ban info from localStorage was loaded and never cleared
+- **Fix:**
+  - Split the AuthContext useEffect into two separate effects
+  - Created a dedicated effect that checks cached ban info whenever `currentUser` or `userProfile` updates
+  - This effect now automatically clears stale ban cache if the user is not banned or the ban has expired
+  - Ensures real-time cache invalidation when admin unbans users
+- **Location:** `src/contexts/AuthContext.jsx` (new useEffect at lines 793-824)
+
+- **Impact:** All ban management functions now work correctly. Users can successfully log in after being unbanned or logged out by admin. The system properly clears all ban-related data from both Firebase and browser cache.
+
 **November 21, 2025 (Session 2):** Enhanced device detection and ban management system
 - **Issue 1:** Android devices showing as "Linux Desktop" in admin panel, especially Android browsers in desktop mode
 - **Root Cause:** Device detection logic relied only on user agent strings without checking modern browser APIs
