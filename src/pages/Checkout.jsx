@@ -20,6 +20,7 @@ export default function Checkout() {
   const [couponError, setCouponError] = useState("")
   const [purchasedCourses, setPurchasedCourses] = useState(new Set())
   const [isCouponLoaded, setIsCouponLoaded] = useState(false)
+  const [isPurchasedLoaded, setIsPurchasedLoaded] = useState(false)
 
   useEffect(() => {
     const storedCoupon = sessionStorage.getItem("appliedCoupon")
@@ -52,23 +53,23 @@ export default function Checkout() {
 
     const fetchPurchasedCourses = async () => {
       try {
-        const approvedPaymentQuery = query(
-          collection(db, "payments"),
-          where("userId", "==", currentUser.uid),
-          where("status", "==", "approved"),
+        setIsPurchasedLoaded(false)
+        const userCoursesQuery = query(
+          collection(db, "userCourses"),
+          where("userId", "==", currentUser.uid)
         )
-        const approvedSnapshot = await getDocs(approvedPaymentQuery)
+        const userCoursesSnapshot = await getDocs(userCoursesQuery)
 
         const purchased = new Set()
-        approvedSnapshot.docs.forEach((doc) => {
-          const payment = doc.data()
-          payment.courses?.forEach((c) => {
-            purchased.add(c.id)
-          })
+        userCoursesSnapshot.docs.forEach((doc) => {
+          const userCourse = doc.data()
+          purchased.add(userCourse.courseId)
         })
         setPurchasedCourses(purchased)
+        setIsPurchasedLoaded(true)
       } catch (error) {
         console.error("Error fetching purchased courses:", error)
+        setIsPurchasedLoaded(true)
       }
     }
 
@@ -80,6 +81,11 @@ export default function Checkout() {
   const validateCoupon = useCallback(async () => {
     if (!couponCode.trim()) {
       setCouponError("Please enter a coupon code")
+      return
+    }
+
+    if (!isCartLoaded || !isCouponLoaded || !isPurchasedLoaded) {
+      setCouponError("Loading cart data, please wait...")
       return
     }
 
@@ -107,6 +113,35 @@ export default function Checkout() {
         return
       }
 
+      if (coupon.couponType === "unique") {
+        if (coupon.specificUsers && coupon.specificUsers.length > 0) {
+          const userMatch = coupon.specificUsers.some(
+            (u) => u === currentUser.email || u === currentUser.uid
+          )
+          if (!userMatch) {
+            setCouponError("This coupon is not available for your account")
+            return
+          }
+        }
+
+        if (coupon.requiredPurchasedCourses && coupon.requiredPurchasedCourses.length > 0) {
+          const hasRequiredCourses = coupon.requiredPurchasedCourses.every((courseId) =>
+            purchasedCourses.has(courseId)
+          )
+          if (!hasRequiredCourses) {
+            setCouponError("You need to purchase specific courses first to use this coupon")
+            return
+          }
+        }
+
+        if (coupon.minCoursePurchaseCount && coupon.minCoursePurchaseCount > 0) {
+          if (purchasedCourses.size < coupon.minCoursePurchaseCount) {
+            setCouponError(`You need to purchase at least ${coupon.minCoursePurchaseCount} courses to use this coupon`)
+            return
+          }
+        }
+      }
+
       const subtotal = getTotal()
       if (coupon.minCartValue && subtotal < coupon.minCartValue) {
         setCouponError(`Minimum cart value of ৳${coupon.minCartValue} required for this coupon`)
@@ -128,7 +163,7 @@ export default function Checkout() {
       console.error("Error validating coupon:", error)
       setCouponError("Failed to validate coupon")
     }
-  }, [couponCode, cartItems, getTotal])
+  }, [couponCode, cartItems, getTotal, currentUser, purchasedCourses, isCartLoaded, isCouponLoaded, isPurchasedLoaded])
 
   const calculateDiscount = useMemo(() => {
     if (!appliedCoupon) return 0

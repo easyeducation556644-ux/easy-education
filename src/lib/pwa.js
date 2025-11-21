@@ -5,11 +5,35 @@ export function registerServiceWorker() {
         .register('/service-worker.js')
         .then((registration) => {
           console.log('Service Worker registered successfully:', registration.scope);
+          
+          registration.addEventListener('updatefound', () => {
+            const newWorker = registration.installing;
+            console.log('New Service Worker found, installing...');
+            
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('New Service Worker installed, showing update notification');
+                window.dispatchEvent(new CustomEvent('swUpdateAvailable', { 
+                  detail: { registration } 
+                }));
+              }
+            });
+          });
+
+          setInterval(() => {
+            registration.update();
+          }, 60000);
         })
         .catch((error) => {
           console.log('Service Worker registration failed:', error);
         });
       
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'RELOAD_PAGE') {
+          window.location.reload();
+        }
+      });
+
       navigator.serviceWorker
         .register('/firebase-messaging-sw.js')
         .then((registration) => {
@@ -19,6 +43,12 @@ export function registerServiceWorker() {
           console.log('Firebase Messaging Service Worker registration failed:', error);
         });
     });
+  }
+}
+
+export function updateServiceWorker(registration) {
+  if (registration && registration.waiting) {
+    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
   }
 }
 

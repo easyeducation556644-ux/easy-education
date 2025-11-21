@@ -1,4 +1,5 @@
-const CACHE_NAME = 'easy-education-v6';
+const CACHE_VERSION = 'v7';
+const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
 const STATIC_CACHE = [
   '/',
   '/index.html',
@@ -141,6 +142,25 @@ self.addEventListener('message', (event) => {
   
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+
+  if (event.data && event.data.type === 'GET_VERSION') {
+    event.ports[0].postMessage({ version: CACHE_VERSION });
+  }
+
+  if (event.data && event.data.type === 'FORCE_UPDATE') {
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => caches.delete(cacheName))
+      );
+    }).then(() => {
+      self.skipWaiting();
+      self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => {
+          client.postMessage({ type: 'RELOAD_PAGE' });
+        });
+      });
+    });
   }
 });
 

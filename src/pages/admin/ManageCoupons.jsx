@@ -18,11 +18,15 @@ export default function ManageCoupons() {
 
   const [formData, setFormData] = useState({
     code: "",
+    couponType: "universal",
     discountPercent: 10,
     discountType: "percentage",
     discountAmount: 0,
     minCartValue: 0,
     applicableCourses: [],
+    specificUsers: "",
+    requiredPurchasedCourses: [],
+    minCoursePurchaseCount: 0,
     active: true,
     expiryDate: "",
   })
@@ -60,11 +64,21 @@ export default function ManageCoupons() {
     try {
       const couponData = {
         code: formData.code.toUpperCase(),
+        couponType: formData.couponType,
         discountPercent: Number(formData.discountPercent),
         discountType: formData.discountType,
         discountAmount: Number(formData.discountAmount),
         minCartValue: Number(formData.minCartValue),
         applicableCourses: formData.applicableCourses,
+        specificUsers: formData.couponType === "unique" && formData.specificUsers 
+          ? formData.specificUsers.split(',').map(u => u.trim()).filter(Boolean)
+          : [],
+        requiredPurchasedCourses: formData.couponType === "unique" 
+          ? formData.requiredPurchasedCourses 
+          : [],
+        minCoursePurchaseCount: formData.couponType === "unique" 
+          ? Number(formData.minCoursePurchaseCount) 
+          : 0,
         active: formData.active,
         expiryDate: formData.expiryDate ? Timestamp.fromDate(new Date(formData.expiryDate)) : null,
         updatedAt: serverTimestamp(),
@@ -91,11 +105,15 @@ export default function ManageCoupons() {
       setEditingId(null)
       setFormData({
         code: "",
+        couponType: "universal",
         discountPercent: 10,
         discountType: "percentage",
         discountAmount: 0,
         minCartValue: 0,
         applicableCourses: [],
+        specificUsers: "",
+        requiredPurchasedCourses: [],
+        minCoursePurchaseCount: 0,
         active: true,
         expiryDate: "",
       })
@@ -113,11 +131,15 @@ export default function ManageCoupons() {
   const handleEdit = (coupon) => {
     setFormData({
       code: coupon.code || "",
+      couponType: coupon.couponType || "universal",
       discountPercent: coupon.discountPercent || 10,
       discountType: coupon.discountType || "percentage",
       discountAmount: coupon.discountAmount || 0,
       minCartValue: coupon.minCartValue || 0,
       applicableCourses: coupon.applicableCourses || [],
+      specificUsers: Array.isArray(coupon.specificUsers) ? coupon.specificUsers.join(', ') : "",
+      requiredPurchasedCourses: coupon.requiredPurchasedCourses || [],
+      minCoursePurchaseCount: coupon.minCoursePurchaseCount || 0,
       active: coupon.active !== false,
       expiryDate: coupon.expiryDate?.toDate?.()?.toISOString().split("T")[0] || "",
     })
@@ -156,11 +178,15 @@ export default function ManageCoupons() {
     setEditingId(null)
     setFormData({
       code: "",
+      couponType: "universal",
       discountPercent: 10,
       discountType: "percentage",
       discountAmount: 0,
       minCartValue: 0,
       applicableCourses: [],
+      specificUsers: "",
+      requiredPurchasedCourses: [],
+      minCoursePurchaseCount: 0,
       active: true,
       expiryDate: "",
     })
@@ -223,6 +249,20 @@ export default function ManageCoupons() {
               </div>
 
               <div>
+                <label className="block text-sm font-medium mb-2">Coupon Type</label>
+                <select
+                  value={formData.couponType}
+                  onChange={(e) => setFormData({ ...formData, couponType: e.target.value })}
+                  className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="universal">Universal (All Users)</option>
+                  <option value="unique">Unique (Specific Conditions)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
                 <label className="block text-sm font-medium mb-2">Discount Type</label>
                 <select
                   value={formData.discountType}
@@ -233,9 +273,7 @@ export default function ManageCoupons() {
                   <option value="fixed">Fixed Amount (BDT)</option>
                 </select>
               </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium mb-2">
                   {formData.discountType === "percentage" ? "Discount %" : "Discount Amount (BDT)"}
@@ -256,18 +294,18 @@ export default function ManageCoupons() {
                   required
                 />
               </div>
+            </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Minimum Cart Value (BDT)</label>
-                <input
-                  type="number"
-                  value={formData.minCartValue}
-                  onChange={(e) => setFormData({ ...formData, minCartValue: e.target.value })}
-                  min="0"
-                  className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                  placeholder="0 for no minimum"
-                />
-              </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">Minimum Cart Value (BDT)</label>
+              <input
+                type="number"
+                value={formData.minCartValue}
+                onChange={(e) => setFormData({ ...formData, minCartValue: e.target.value })}
+                min="0"
+                className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                placeholder="0 for no minimum"
+              />
             </div>
 
             <div>
@@ -286,6 +324,74 @@ export default function ManageCoupons() {
                 ))}
               </div>
             </div>
+
+            {formData.couponType === "unique" && (
+              <div className="space-y-4 p-4 border border-blue-500 rounded-lg bg-blue-500/5">
+                <h3 className="font-semibold text-blue-600">Unique Coupon Conditions</h3>
+                
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Specific Users (Optional - Email/UID, comma separated)
+                  </label>
+                  <textarea
+                    value={formData.specificUsers}
+                    onChange={(e) => setFormData({ ...formData, specificUsers: e.target.value })}
+                    className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                    placeholder="user1@example.com, user2@example.com, uid123"
+                    rows="2"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Leave empty to allow all users. Enter user emails or UIDs separated by commas.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Required Purchased Courses (Optional)
+                  </label>
+                  <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-3 bg-input border border-border rounded-lg">
+                    {courses.map((course) => (
+                      <label key={course.id} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formData.requiredPurchasedCourses.includes(course.id)}
+                          onChange={() => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              requiredPurchasedCourses: prev.requiredPurchasedCourses.includes(course.id)
+                                ? prev.requiredPurchasedCourses.filter((id) => id !== course.id)
+                                : [...prev.requiredPurchasedCourses, course.id],
+                            }))
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-sm truncate">{course.title}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    User must have purchased these courses to use this coupon.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Minimum Course Purchase Count (Optional)
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.minCoursePurchaseCount}
+                    onChange={(e) => setFormData({ ...formData, minCoursePurchaseCount: e.target.value })}
+                    min="0"
+                    className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                    placeholder="0 for no minimum"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    User must have purchased at least this many courses (e.g., 3, 5).
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium mb-2">Expiry Date (Optional)</label>

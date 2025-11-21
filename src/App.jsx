@@ -9,6 +9,7 @@ import CartDrawer from "./components/CartDrawer"
 import FloatingCartButton from "./components/FloatingCartButton"
 import ProtectedRoute from "./components/ProtectedRoute"
 import PWAInstallPrompt from "./components/PWAInstallPrompt"
+import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
 
 // Pages
@@ -186,6 +187,7 @@ function App() {
               <CartDrawer />
               <FloatingCartButton />
               <PWAInstallPrompt />
+              <UpdateNotification />
               <Toaster />
               <Footer />
             </div>

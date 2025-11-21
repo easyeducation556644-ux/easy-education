@@ -27,59 +27,95 @@ export default function MyCourses() {
       const paymentsQuery = query(
         collection(db, "payments"),
         where("userId", "==", currentUser.uid),
-        where("status", "==", "approved"),
+        where("status", "==", "approved")
       )
       const paymentsSnapshot = await getDocs(paymentsQuery)
-
-      const coursesData = await Promise.all(
-        paymentsSnapshot.docs.flatMap(async (paymentDoc) => {
-          const payment = paymentDoc.data()
-
-          return Promise.all(
-            (payment.courses || []).map(async (courseItem) => {
-              try {
-                const courseDoc = await getDoc(doc(db, "courses", courseItem.id))
-
-                if (courseDoc.exists()) {
-                  const courseData = { id: courseDoc.id, ...courseDoc.data() }
-
-                  // Get all classes for this course
-                  const classesQuery = query(collection(db, "classes"), where("courseId", "==", courseItem.id))
-                  const classesSnapshot = await getDocs(classesQuery)
-                  const totalClasses = classesSnapshot.size
-
-                  // Get watched classes by user
-                  const watchedQuery = query(
-                    collection(db, "watched"),
-                    where("userId", "==", currentUser.uid),
-                    where("courseId", "==", courseItem.id),
-                  )
-                  const watchedSnapshot = await getDocs(watchedQuery)
-                  const watchedClasses = watchedSnapshot.size
-
-                  const progressPercent = totalClasses > 0 ? Math.round((watchedClasses / totalClasses) * 100) : 0
-
-                  return {
-                    ...courseData,
-                    paymentId: paymentDoc.id,
-                    purchaseDate: payment.createdAt,
-                    totalClasses,
-                    watchedClasses,
-                    progressPercent,
-                    isCompleted: progressPercent === 100,
-                  }
+      
+      const bundleMap = new Map()
+      
+      for (const paymentDoc of paymentsSnapshot.docs) {
+        const payment = paymentDoc.data()
+        if (payment.courses) {
+          for (const courseItem of payment.courses) {
+            try {
+              const courseDoc = await getDoc(doc(db, "courses", courseItem.id))
+              if (courseDoc.exists()) {
+                const courseData = courseDoc.data()
+                if (courseData.courseFormat === 'bundle' && courseData.bundledCourses) {
+                  courseData.bundledCourses.forEach((bundledId) => {
+                    bundleMap.set(bundledId, {
+                      bundleId: courseItem.id,
+                      bundleTitle: courseData.title
+                    })
+                  })
                 }
-                return null
-              } catch (error) {
-                console.error("Error fetching course:", error)
-                return null
               }
-            }),
-          )
-        }),
-      )
+            } catch (error) {
+              console.error("Error checking bundle:", error)
+            }
+          }
+        }
+      }
 
-      setPurchasedCourses(coursesData.flat().filter(Boolean))
+      const userCoursesQuery = query(
+        collection(db, "userCourses"),
+        where("userId", "==", currentUser.uid)
+      )
+      const userCoursesSnapshot = await getDocs(userCoursesQuery)
+
+      const courseMap = new Map()
+
+      for (const userCourseDoc of userCoursesSnapshot.docs) {
+        const userCourse = userCourseDoc.data()
+        const courseId = userCourse.courseId
+
+        if (courseMap.has(courseId)) {
+          continue
+        }
+
+        try {
+          const courseDoc = await getDoc(doc(db, "courses", courseId))
+
+          if (courseDoc.exists()) {
+            const courseData = { id: courseDoc.id, ...courseDoc.data() }
+
+            if (courseData.courseFormat === 'bundle') {
+              continue
+            }
+
+            const classesQuery = query(collection(db, "classes"), where("courseId", "==", courseId))
+            const classesSnapshot = await getDocs(classesQuery)
+            const totalClasses = classesSnapshot.size
+
+            const watchedQuery = query(
+              collection(db, "watched"),
+              where("userId", "==", currentUser.uid),
+              where("courseId", "==", courseId),
+            )
+            const watchedSnapshot = await getDocs(watchedQuery)
+            const watchedClasses = watchedSnapshot.size
+
+            const progressPercent = totalClasses > 0 ? Math.round((watchedClasses / totalClasses) * 100) : 0
+
+            const bundleInfo = bundleMap.get(courseId)
+
+            courseMap.set(courseId, {
+              ...courseData,
+              enrolledAt: userCourse.enrolledAt,
+              totalClasses,
+              watchedClasses,
+              progressPercent,
+              isCompleted: progressPercent === 100,
+              fromBundle: bundleInfo ? bundleInfo.bundleTitle : null,
+              bundleId: bundleInfo ? bundleInfo.bundleId : null,
+            })
+          }
+        } catch (error) {
+          console.error("Error fetching course:", error)
+        }
+      }
+
+      setPurchasedCourses(Array.from(courseMap.values()))
     } catch (error) {
       console.error("Error fetching purchased courses:", error)
     } finally {
