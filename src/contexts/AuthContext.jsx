@@ -205,10 +205,23 @@ export function AuthProvider({ children }) {
             updateData.banExpiresAt = null
             banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার একাধিক ডিভাইস থেকে লগইন করার চেষ্টা করা হয়েছে`
           } else {
-            updateData.banExpiresAt = banExpires
+            // 🔥 FIX: Store as Firestore Timestamp instead of plain Date
+            const banExpiresTimestamp = new Date(banExpires.getTime())
+            updateData.banExpiresAt = banExpiresTimestamp
           }
 
+          console.log('🔥 MULTIPLE DEVICE DETECTED - Triggering BAN')
+          console.log('🔥 Current devices:', devices.length, '+ New device = Total:', devices.length + 1)
+          console.log('🔥 Ban count will be:', newBanCount)
+          console.log('🔥 Update data:', {
+            devicesCount: updateData.devices.length,
+            banned: updateData.banned,
+            banExpiresAt: updateData.banExpiresAt ? 'SET' : 'NULL',
+            permanentBan: updateData.permanentBan
+          })
+
           await updateDoc(userRef, updateData)
+          console.log('🔥 Firestore updated with ban data')
 
           await addDoc(collection(db, "banNotifications"), {
             userId,
@@ -223,6 +236,7 @@ export function AuthProvider({ children }) {
             createdAt: serverTimestamp(),
             isRead: false
           })
+          console.log('🔥 Ban notification created')
 
           const banData = {
             isBanned: true,
@@ -231,9 +245,12 @@ export function AuthProvider({ children }) {
             bannedUntil: newBanCount >= 3 ? null : banExpires,
             banCount: newBanCount
           }
+          console.log('🔥 Setting ban info on this device:', banData)
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
 
+          console.log('🔥 BAN TRIGGERED - User stays logged in, ban overlay will show')
+          console.log('🔥 Returning deviceInfo - onSnapshot listeners on all devices will fire')
           // CRITICAL: Return deviceInfo so user stays logged in to see ban overlay
           return deviceInfo
         } else {
@@ -746,7 +763,13 @@ export function AuthProvider({ children }) {
 
           // 🔥 FIX: If user is actively banned, show ban overlay and STOP here
           if (isBanActive) {
-            console.log('ℹ️ User is actively banned - showing ban overlay, NO logout')
+            console.log('🚫 User is actively banned - showing ban overlay, keeping user logged in')
+            console.log('🚫 Ban details:', {
+              banned: updatedProfile.banned,
+              permanentBan: updatedProfile.permanentBan,
+              banExpiresAt: updatedProfile.banExpiresAt,
+              banCount: updatedProfile.banCount
+            })
 
             if (updatedProfile.permanentBan) {
               const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
@@ -756,22 +779,41 @@ export function AuthProvider({ children }) {
                 reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
                 banCount: updatedProfile.banCount || 0
               }
+              console.log('🚫 Setting PERMANENT ban info:', banData)
               setBanInfo(banData)
               localStorage.setItem('banInfo', JSON.stringify(banData))
             } else if (updatedProfile.banned === true) {
               const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
 
               if (updatedProfile.banExpiresAt) {
-                const banEndTime = updatedProfile.banExpiresAt.toDate()
-                const banData = {
-                  isBanned: true,
-                  type: 'temporary',
-                  bannedUntil: banEndTime,
-                  reason: latestBanHistory?.reason || 'Multiple device login detected',
-                  banCount: updatedProfile.banCount || 0
+                // 🔥 FIX: Add fallback for toDate() like line 727
+                try {
+                  const banEndTime = updatedProfile.banExpiresAt.toDate ? 
+                    updatedProfile.banExpiresAt.toDate() : 
+                    new Date(updatedProfile.banExpiresAt)
+                  const banData = {
+                    isBanned: true,
+                    type: 'temporary',
+                    bannedUntil: banEndTime,
+                    reason: latestBanHistory?.reason || 'Multiple device login detected',
+                    banCount: updatedProfile.banCount || 0
+                  }
+                  console.log('🚫 Setting TEMPORARY ban info:', banData)
+                  setBanInfo(banData)
+                  localStorage.setItem('banInfo', JSON.stringify(banData))
+                } catch (e) {
+                  console.error('🔥 Error parsing banExpiresAt:', e)
+                  // Fallback to permanent ban if we can't parse the date
+                  const banData = {
+                    isBanned: true,
+                    type: 'permanent',
+                    reason: latestBanHistory?.reason || 'Ban date parsing error',
+                    banCount: updatedProfile.banCount || 0
+                  }
+                  console.log('🚫 Setting PERMANENT ban info (fallback):', banData)
+                  setBanInfo(banData)
+                  localStorage.setItem('banInfo', JSON.stringify(banData))
                 }
-                setBanInfo(banData)
-                localStorage.setItem('banInfo', JSON.stringify(banData))
               } else {
                 const banData = {
                   isBanned: true,
@@ -779,12 +821,14 @@ export function AuthProvider({ children }) {
                   reason: latestBanHistory?.reason || 'Manual ban by administrator',
                   banCount: updatedProfile.banCount || 0
                 }
+                console.log('🚫 Setting PERMANENT ban info (no expiry):', banData)
                 setBanInfo(banData)
                 localStorage.setItem('banInfo', JSON.stringify(banData))
               }
             }
 
             // 💡 CRITICAL: Return here! Don't check force logout or device removal
+            console.log('🚫 Returning early - user stays logged in with ban overlay')
             return
           }
 
@@ -833,8 +877,17 @@ export function AuthProvider({ children }) {
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
           const isRecentLogin = timeSinceLogin < 30000 // 30 seconds grace period
 
+          console.log('🔍 Device removal check:', {
+            deviceFingerprint: deviceFingerprint ? deviceFingerprint.substring(0, 10) + '...' : 'NONE',
+            deviceExists,
+            devicesInFirestore: devices.length,
+            isRecentLogin,
+            timeSinceLoginMs: timeSinceLogin === Infinity ? 'Infinity' : timeSinceLogin
+          })
+
           if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
-            console.log('✅ Device has been removed (not banned) - Auto logout triggered')
+            console.log('❌ Device has been removed (not banned) - Auto logout triggered')
+            console.log('❌ This should NOT happen during a ban!')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
@@ -842,6 +895,8 @@ export function AuthProvider({ children }) {
             window.location.reload()
             return
           }
+
+          console.log('✅ Device check passed - user stays logged in')
         }
       },
       (error) => {
