@@ -4,6 +4,16 @@ Easy Education is a Progressive Web Application (PWA) designed to deliver free o
 
 # Recent Changes
 
+**November 21, 2025:** Fixed critical React Hooks ordering error causing blank screen
+- **Issue:** Website showing blank screen with React error #310 after Firebase quota was exceeded and refreshed. The minified error indicated "rendered more hooks than during the previous render."
+- **Root Cause:** The device warning `useEffect` hook was placed after the loading/error early return statements in AuthContext. During initial render when `loading=true`, the component returned early and the device warning hook never executed. After auth state changed and `loading=false`, the component no longer returned early, and the device warning hook executed for the first time, creating inconsistent hook ordering.
+- **Fix:** 
+  - Moved the device warning `useEffect` hook to execute before the early return statements
+  - Ensured all hooks (6 useState, 1 usePresence, 3 useEffect) always execute in the same order on every render
+  - Removed duplicate device warning `useEffect` that was causing the ordering violation
+- **Location:** `src/contexts/AuthContext.jsx` - repositioned device warning useEffect from line 863 to line 689
+- **Impact:** Website now loads properly without React Hooks errors. This also resolved the Firebase quota issue since the hooks error was likely causing infinite re-renders that consumed quota.
+
 **November 20, 2025 (Session 2):** Improved IP geolocation accuracy and reliability
 - **Issue:** IP geolocation was using only ipapi.co which had rate limits (1000/day) and provided inaccurate location data, especially for Bangladesh users. No fallback mechanism existed.
 - **Root Cause:** Single API dependency with HTTP/HTTPS mixed-content issues and poor regional coverage.

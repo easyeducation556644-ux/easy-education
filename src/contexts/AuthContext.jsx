@@ -684,6 +684,26 @@ export function AuthProvider({ children }) {
   }, [currentUser])
 
   useEffect(() => {
+    const storedWarning = localStorage.getItem('deviceWarning')
+    if (storedWarning) {
+      try {
+        const parsed = JSON.parse(storedWarning)
+        const expiresAt = new Date(parsed.expiresAt)
+        const now = new Date()
+        
+        if (expiresAt <= now) {
+          localStorage.removeItem('deviceWarning')
+        } else {
+          setDeviceWarning(parsed)
+        }
+      } catch (e) {
+        console.error('Error parsing device warning:', e)
+        localStorage.removeItem('deviceWarning')
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     const storedBanInfo = localStorage.getItem('banInfo')
     if (storedBanInfo) {
       try {
@@ -859,26 +879,6 @@ export function AuthProvider({ children }) {
       throw error
     }
   }
-
-  useEffect(() => {
-    const storedWarning = localStorage.getItem('deviceWarning')
-    if (storedWarning) {
-      try {
-        const parsed = JSON.parse(storedWarning)
-        const expiresAt = new Date(parsed.expiresAt)
-        const now = new Date()
-        
-        if (expiresAt <= now) {
-          localStorage.removeItem('deviceWarning')
-        } else {
-          setDeviceWarning(parsed)
-        }
-      } catch (e) {
-        console.error('Error parsing device warning:', e)
-        localStorage.removeItem('deviceWarning')
-      }
-    }
-  }, [])
 
   return (
     <AuthContext.Provider value={value}>
