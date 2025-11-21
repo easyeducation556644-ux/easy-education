@@ -155,6 +155,9 @@ export default function BanManagement() {
             banExpiresAt: null,
             permanentBan: false,
             banCount: 0,
+            banHistory: [],
+            devices: [],
+            kickedDevices: [],
             forceLogoutAt: serverTimestamp(),
             forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
             forcedBy: userProfile?.id || 'unknown',
@@ -253,11 +256,13 @@ export default function BanManagement() {
               try {
                 await updateDoc(doc(db, "users", user.id), {
                   devices: [],
+                  kickedDevices: [],
                   online: false,
                   lastActive: serverTimestamp(),
                   forceLogoutAt: serverTimestamp(),
                   forceLogoutReason: `Mass logout by ${userProfile?.name || 'Admin'}`,
-                  forcedBy: userProfile?.id || 'unknown'
+                  forcedBy: userProfile?.id || 'unknown',
+                  clearBanCacheAt: serverTimestamp()
                 })
                 successCount++
               } catch (error) {

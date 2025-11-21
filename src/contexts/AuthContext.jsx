@@ -788,27 +788,39 @@ export function AuthProvider({ children }) {
   }, [])
 
   useEffect(() => {
-    const storedBanInfo = localStorage.getItem('banInfo')
-    if (storedBanInfo) {
-      try {
-        const parsed = JSON.parse(storedBanInfo)
-        if (parsed.bannedUntil) {
-          const bannedUntilDate = new Date(parsed.bannedUntil)
-          const now = new Date()
-          if (bannedUntilDate <= now) {
+    if (currentUser && userProfile) {
+      const storedBanInfo = localStorage.getItem('banInfo')
+      if (storedBanInfo) {
+        try {
+          const parsed = JSON.parse(storedBanInfo)
+          
+          if (!userProfile.banned && !userProfile.permanentBan) {
+            console.log('✅ User is not banned but has cached ban info - clearing it')
             localStorage.removeItem('banInfo')
+            setBanInfo(null)
+          } else if (parsed.bannedUntil) {
+            const bannedUntilDate = new Date(parsed.bannedUntil)
+            const now = new Date()
+            if (bannedUntilDate <= now) {
+              console.log('✅ Cached ban has expired - clearing it')
+              localStorage.removeItem('banInfo')
+              setBanInfo(null)
+            } else {
+              setBanInfo(parsed)
+            }
           } else {
             setBanInfo(parsed)
           }
-        } else {
-          setBanInfo(parsed)
+        } catch (e) {
+          console.error('Error parsing ban info:', e)
+          localStorage.removeItem('banInfo')
+          setBanInfo(null)
         }
-      } catch (e) {
-        console.error('Error parsing ban info:', e)
-        localStorage.removeItem('banInfo')
       }
     }
+  }, [currentUser, userProfile])
 
+  useEffect(() => {
     const loadingTimeout = setTimeout(() => {
       if (loading) {
         console.error("Auth loading timeout - forcing completion")

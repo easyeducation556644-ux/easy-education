@@ -150,20 +150,67 @@ export default function ManageUsers() {
   }
 
   const handleBanUser = async (userId, currentBanStatus) => {
-    try {
-      console.log(" Toggling ban status for user:", userId, "Current status:", currentBanStatus)
-      await updateDoc(doc(db, "users", userId), { banned: !currentBanStatus })
-      setUsers(users.map((u) => (u.id === userId ? { ...u, banned: !currentBanStatus } : u)))
-      showSuccess(!currentBanStatus ? "User banned successfully!" : "User unbanned successfully!")
-      console.log(" Ban status updated successfully")
-    } catch (error) {
-      console.error(" Error banning user:", error)
-      toast({
-        variant: "error",
-        title: "Ban Status Update Failed",
-        description: error.message || "Failed to update ban status",
-      })
-    }
+    setConfirmDialog({
+      isOpen: true,
+      title: currentBanStatus ? "Unban User" : "Ban User",
+      message: currentBanStatus 
+        ? "Are you sure you want to unban this user? This will clear all ban records and log them out to refresh their session."
+        : "Are you sure you want to ban this user? They will be unable to access the platform.",
+      variant: currentBanStatus ? "default" : "destructive",
+      onConfirm: async () => {
+        try {
+          console.log(" Toggling ban status for user:", userId, "Current status:", currentBanStatus)
+          
+          if (currentBanStatus) {
+            await updateDoc(doc(db, "users", userId), {
+              banned: false,
+              banExpiresAt: null,
+              permanentBan: false,
+              banCount: 0,
+              banHistory: [],
+              devices: [],
+              kickedDevices: [],
+              forceLogoutAt: serverTimestamp(),
+              forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
+              forcedBy: userProfile?.id || 'unknown',
+              clearBanCacheAt: serverTimestamp()
+            })
+            setUsers(users.map((u) => (u.id === userId ? { ...u, banned: false, permanentBan: false, banCount: 0 } : u)))
+          } else {
+            const banExpires = new Date(Date.now() + 30 * 60 * 1000)
+            await updateDoc(doc(db, "users", userId), {
+              banned: true,
+              banExpiresAt: banExpires,
+              banCount: (users.find(u => u.id === userId)?.banCount || 0) + 1,
+              banHistory: [
+                ...(users.find(u => u.id === userId)?.banHistory || []),
+                {
+                  timestamp: new Date().toISOString(),
+                  reason: `Manually banned by ${userProfile?.name || 'Admin'}`,
+                  bannedBy: userProfile?.name || 'Admin',
+                  bannedById: userProfile?.id || 'unknown'
+                }
+              ],
+              devices: [],
+              forceLogoutAt: serverTimestamp(),
+              forceLogoutReason: `Banned by ${userProfile?.name || 'Admin'}`,
+              forcedBy: userProfile?.id || 'unknown'
+            })
+            setUsers(users.map((u) => (u.id === userId ? { ...u, banned: true } : u)))
+          }
+          
+          showSuccess(!currentBanStatus ? "User banned successfully!" : "User unbanned successfully!")
+          console.log(" Ban status updated successfully")
+        } catch (error) {
+          console.error(" Error banning user:", error)
+          toast({
+            variant: "error",
+            title: "Ban Status Update Failed",
+            description: error.message || "Failed to update ban status",
+          })
+        }
+      }
+    })
   }
 
   const handleUnbanUser = async (userId) => {
@@ -173,7 +220,13 @@ export default function ManageUsers() {
         banExpiresAt: null,
         permanentBan: false,
         banCount: 0,
-        banHistory: []
+        banHistory: [],
+        devices: [],
+        kickedDevices: [],
+        forceLogoutAt: serverTimestamp(),
+        forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
+        forcedBy: userProfile?.id || 'unknown',
+        clearBanCacheAt: serverTimestamp()
       })
       
       await fetchUsers()
@@ -183,7 +236,7 @@ export default function ManageUsers() {
       toast({
         variant: "success",
         title: "Success",
-        description: "User has been completely unbanned with a clean slate",
+        description: "User has been completely unbanned and logged out. They can now log in again.",
       })
     } catch (error) {
       console.error("Error unbanning user:", error)
