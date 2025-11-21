@@ -33,6 +33,7 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState(null)
   const [banInfo, setBanInfo] = useState(null)
   const [deviceWarning, setDeviceWarning] = useState(null)
+  const [lastLoginTimestamp, setLastLoginTimestamp] = useState(null)
 
   usePresence(currentUser)
 
@@ -122,6 +123,7 @@ export function AuthProvider({ children }) {
             banExpiresAt: null
           })
           localStorage.removeItem('banInfo')
+          setBanInfo(null)
         } else {
           const banData = {
             isBanned: true,
@@ -135,6 +137,9 @@ export function AuthProvider({ children }) {
           return deviceInfo
         }
       }
+      
+      localStorage.removeItem('banInfo')
+      setBanInfo(null)
 
       const now = new Date()
       const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
@@ -392,6 +397,8 @@ export function AuthProvider({ children }) {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
       const deviceInfo = await getDeviceInfo()
+      const loginTimestamp = Date.now()
+      setLastLoginTimestamp(loginTimestamp)
 
       try {
         const userDoc = await getDoc(userRef)
@@ -459,6 +466,8 @@ export function AuthProvider({ children }) {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const deviceInfo = await getDeviceInfo()
+      const loginTimestamp = Date.now()
+      setLastLoginTimestamp(loginTimestamp)
 
       try {
         const userRef = doc(db, "users", user.uid)
@@ -615,14 +624,52 @@ export function AuthProvider({ children }) {
             return
           }
 
+          const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
+          const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : null
+          
+          if (updatedProfile.forceLogoutAt) {
+            const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ? 
+              updatedProfile.forceLogoutAt.toMillis() : 
+              new Date(updatedProfile.forceLogoutAt).getTime()
+            
+            if (lastAckedTimestamp === null) {
+              localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+            } else if (forceLogoutTimestamp > lastAckedTimestamp) {
+              const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
+              console.log(`✅ Force logout triggered: ${reason}`)
+              localStorage.removeItem('deviceWarning')
+              localStorage.removeItem('banInfo')
+              localStorage.removeItem('lastAckedLogoutAt')
+              await firebaseSignOut(auth)
+              window.location.reload()
+              return
+            }
+          } else if (lastAckedTimestamp === null) {
+            localStorage.setItem('lastAckedLogoutAt', Date.now().toString())
+          }
+          
           const currentDeviceInfo = await getDeviceInfo()
           const devices = updatedProfile.devices || []
           const deviceExists = devices.some(d => d.fingerprint === currentDeviceInfo.fingerprint)
           
-          if (devices.length === 0 || !deviceExists) {
-            console.log('✅ Device has been removed or kicked - Auto logout triggered')
+          const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
+          const isRecentLogin = timeSinceLogin < 10000
+          
+          if (devices.length === 0 && !isRecentLogin) {
+            console.log('✅ Devices cleared - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
+            localStorage.removeItem('lastAckedLogoutAt')
+            await firebaseSignOut(auth)
+            window.location.reload()
+            return
+          }
+          
+          if (!deviceExists && devices.length > 0 && !isRecentLogin) {
+            console.log('✅ Device has been removed - Auto logout triggered')
+            localStorage.removeItem('deviceWarning')
+            localStorage.removeItem('banInfo')
+            localStorage.removeItem('lastAckedLogoutAt')
             await firebaseSignOut(auth)
             window.location.reload()
             return

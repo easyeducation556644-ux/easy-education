@@ -36,32 +36,48 @@ export async function getUserIP() {
 }
 
 export function getDeviceName() {
-  const ua = navigator.userAgent.toLowerCase()
+  const ua = navigator.userAgent
   const platform = navigator.platform
   
-  if (ua.includes('android')) {
+  if (/Android|Adr|Silk|Kindle|KF[A-Z]+/i.test(ua)) {
     return 'Android'
   }
-  if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream) {
+  if (/iPad|iPhone|iPod/i.test(ua) && !window.MSStream) {
     return 'iOS'
   }
-  if (ua.includes('windows phone') || ua.includes('wpdesktop')) {
+  if (/windows phone|wpdesktop/i.test(ua)) {
     return 'Windows Phone'
   }
-  if (ua.includes('cros')) {
+  if (/cros/i.test(ua)) {
     return 'Chrome OS'
   }
-  if (/Win/.test(platform)) {
+  if (/Win/i.test(platform)) {
     return 'Windows'
   }
-  if (/Mac/.test(platform) && !ua.includes('iphone') && !ua.includes('ipad')) {
+  if (/Mac/i.test(platform) && !/iphone|ipad/i.test(ua)) {
     return 'MacOS'
   }
-  if (/Linux/.test(platform)) {
-    return 'Linux Desktop'
+  if (/Linux/i.test(platform)) {
+    const hasArmSignature = /arm64|aarch64|armv8l|armv7l|arm/i.test(ua + platform)
+    const hasMobileSignature = /mobile|tablet/i.test(ua)
+    const hasDesktopSignature = /X11|Ubuntu|Fedora|Debian|GNOME|KDE|Chrome\/.*Linux x86/i.test(ua)
+    
+    if (hasArmSignature || hasMobileSignature) {
+      return 'Android'
+    }
+    if (hasDesktopSignature && !hasArmSignature) {
+      return 'Linux Desktop'
+    }
+    if (hasArmSignature) {
+      return 'Android'
+    }
+    if (/x86_64|i686/i.test(platform)) {
+      return 'Linux Desktop'
+    }
+    return 'Android'
   }
   
-  return platform || 'Unknown'
+  return 'Unknown'
 }
 
 async function tryFreeIPAPI(ipAddress) {

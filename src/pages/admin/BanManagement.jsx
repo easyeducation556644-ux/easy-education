@@ -176,7 +176,7 @@ export default function BanManagement() {
     setConfirmDialog({
       isOpen: true,
       title: "Kick Device",
-      message: "This will remove the device from the user's account. The user will need to log in again from that device.",
+      message: "This will remove the device from the user's account and force logout. The user will need to log in again from that device.",
       variant: "destructive",
       onConfirm: async () => {
         try {
@@ -184,12 +184,15 @@ export default function BanManagement() {
           const updatedDevices = (user.devices || []).filter(d => d.fingerprint !== deviceFingerprint)
 
           await updateDoc(doc(db, "users", userId), {
-            devices: updatedDevices
+            devices: updatedDevices,
+            forceLogoutAt: serverTimestamp(),
+            forceLogoutReason: `Device kicked by ${userProfile?.name || 'Admin'}`,
+            forcedBy: userProfile?.id || 'unknown'
           })
 
           toast({
             title: "Success",
-            description: "Device kicked successfully",
+            description: "Device kicked successfully. User will be logged out immediately.",
           })
           
           if (selectedUser?.id === userId) {
@@ -201,6 +204,75 @@ export default function BanManagement() {
             variant: "error",
             title: "Error",
             description: "Failed to kick device",
+          })
+        }
+      }
+    })
+  }
+
+  const handleLogoutAllUsers = async () => {
+    const nonAdminUsers = users.filter(u => u.role !== "admin")
+    const onlineCount = nonAdminUsers.filter(u => u.online).length
+    
+    setConfirmDialog({
+      isOpen: true,
+      title: "Log Out All Users",
+      message: `This will forcefully log out ${nonAdminUsers.length} non-admin users (${onlineCount} currently online) from ALL devices. This action will be logged. Are you absolutely sure?`,
+      variant: "destructive",
+      onConfirm: async () => {
+        try {
+          let successCount = 0
+          let failCount = 0
+          const failedUsers = []
+          const BATCH_SIZE = 10
+          
+          const logoutTimestamp = new Date().toISOString()
+          
+          for (let i = 0; i < nonAdminUsers.length; i += BATCH_SIZE) {
+            const batch = nonAdminUsers.slice(i, i + BATCH_SIZE)
+            const promises = batch.map(async (user) => {
+              try {
+                await updateDoc(doc(db, "users", user.id), {
+                  devices: [],
+                  online: false,
+                  lastActive: serverTimestamp(),
+                  forceLogoutAt: serverTimestamp(),
+                  forceLogoutReason: `Mass logout by ${userProfile?.name || 'Admin'}`,
+                  forcedBy: userProfile?.id || 'unknown'
+                })
+                successCount++
+              } catch (error) {
+                console.error(`Error logging out user ${user.name}:`, error)
+                failCount++
+                failedUsers.push(user.name)
+              }
+            })
+            
+            await Promise.allSettled(promises)
+          }
+          
+          await addDoc(collection(db, "adminActions"), {
+            action: "mass_logout",
+            adminId: userProfile?.id || 'unknown',
+            adminName: userProfile?.name || 'Admin',
+            timestamp: logoutTimestamp,
+            affectedUsers: nonAdminUsers.length,
+            successCount,
+            failCount,
+            failedUsers,
+            createdAt: serverTimestamp()
+          })
+          
+          toast({
+            title: "Completed",
+            description: `Successfully logged out ${successCount} users${failCount > 0 ? `. ${failCount} failed: ${failedUsers.join(', ')}` : ''}`,
+          })
+        } catch (error) {
+          console.error("Error logging out all users:", error)
+          toast({
+            variant: "error",
+            title: "Error",
+            description: "Failed to log out all users",
           })
         }
       }
@@ -237,10 +309,21 @@ export default function BanManagement() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2">Ban Management & Device Control</h1>
-        <p className="text-muted-foreground">
-          Manage user bans, monitor devices, and control access
-        </p>
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Ban Management & Device Control</h1>
+            <p className="text-muted-foreground">
+              Manage user bans, monitor devices, and control access
+            </p>
+          </div>
+          <button
+            onClick={handleLogoutAllUsers}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+          >
+            <Ban className="w-4 h-4" />
+            Log Out All Users
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 space-y-4">
