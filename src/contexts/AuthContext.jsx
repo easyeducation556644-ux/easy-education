@@ -1,5 +1,3 @@
-
-
 import { createContext, useContext, useState, useEffect } from "react"
 import {
   onAuthStateChanged,
@@ -42,223 +40,224 @@ export function AuthProvider({ children }) {
       await fetchUserProfile(currentUser.uid)
     }
   }
-const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
-  try {
-    const deviceInfo = await getDeviceInfo()
-    if (deviceInfo && deviceInfo.fingerprint) {
-      setCurrentDeviceFingerprint(deviceInfo.fingerprint)
-      localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
-    }
-    const userRef = doc(db, "users", userId)
-    const userDoc = await getDoc(userRef)
-    
-    if (!userDoc.exists()) return null
-    
-    const userData = userDoc.data()
-    const isAdmin = userData.role === "admin"
-    
-    // Admin bypass - no device limits
-    if (isAdmin) {
+
+  const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
+    try {
+      const deviceInfo = await getDeviceInfo()
+      if (deviceInfo && deviceInfo.fingerprint) {
+        setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+        localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+      }
+      const userRef = doc(db, "users", userId)
+      const userDoc = await getDoc(userRef)
+
+      if (!userDoc.exists()) return null
+
+      const userData = userDoc.data()
+      const isAdmin = userData.role === "admin"
+
+      // Admin bypass - no device limits
+      if (isAdmin) {
+        const devices = userData.devices || []
+        const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
+
+        if (!existingDevice) {
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          const updatedDevices = [...devices.filter(d => {
+            if (!d.lastSeen && !d.timestamp) return false
+            try {
+              const deviceTime = new Date(d.lastSeen || d.timestamp)
+              if (isNaN(deviceTime.getTime())) return false
+              return deviceTime >= thirtyDaysAgo
+            } catch (e) {
+              return false
+            }
+          }), deviceInfo]
+
+          await updateDoc(userRef, { devices: updatedDevices })
+        } else {
+          const updatedDevices = devices.map(d =>
+            d.fingerprint === deviceInfo.fingerprint
+              ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
+              : d
+          )
+          await updateDoc(userRef, { devices: updatedDevices })
+        }
+        return deviceInfo
+      }
+
       const devices = userData.devices || []
-      const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
-      
-      if (!existingDevice) {
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        const updatedDevices = [...devices.filter(d => {
-          if (!d.lastSeen && !d.timestamp) return false
-          try {
-            const deviceTime = new Date(d.lastSeen || d.timestamp)
-            if (isNaN(deviceTime.getTime())) return false
-            return deviceTime >= thirtyDaysAgo
-          } catch (e) {
-            return false
+      const banCount = userData.banCount || 0
+      const banHistory = userData.banHistory || []
+      const permanentBan = userData.permanentBan || false
+      const banExpiresAt = userData.banExpiresAt
+
+      // Check for permanent ban - just show ban info, DON'T logout
+      if (permanentBan) {
+        const banData = {
+          isBanned: true,
+          type: 'permanent',
+          reason: banHistory[banHistory.length - 1]?.reason || 'Multiple violations of simultaneous login policy',
+          banCount: banCount
+        }
+        localStorage.setItem('banInfo', JSON.stringify(banData))
+        setBanInfo(banData)
+        // IMPORTANT: Still return deviceInfo so user stays logged in to see ban
+        return deviceInfo
+      }
+
+      // Check for manual admin ban without expiration
+      if (userData.banned === true && !banExpiresAt) {
+        const banData = {
+          isBanned: true,
+          type: 'permanent',
+          reason: banHistory[banHistory.length - 1]?.reason || 'Account manually banned by administrator',
+          banCount: banCount
+        }
+        localStorage.setItem('banInfo', JSON.stringify(banData))
+        setBanInfo(banData)
+        // IMPORTANT: Still return deviceInfo
+        return deviceInfo
+      }
+
+      // Check for temporary ban
+      if (banExpiresAt) {
+        const banEndTime = banExpiresAt.toDate()
+        const now = new Date()
+
+        if (banEndTime <= now) {
+          // Ban expired - clear everything and force logout
+          console.log('✅ Ban has expired during login - clearing ban and forcing logout on all devices')
+          await updateDoc(userRef, {
+            banned: false,
+            banExpiresAt: null,
+            devices: [],
+            kickedDevices: [],
+            forceLogoutAt: serverTimestamp(),
+            forceLogoutReason: 'Ban expired - all devices logged out'
+          })
+          localStorage.removeItem('banInfo')
+          setBanInfo(null)
+          return deviceInfo
+        } else {
+          // Ban still active - show ban overlay
+          const banData = {
+            isBanned: true,
+            type: 'temporary',
+            reason: banHistory[banHistory.length - 1]?.reason || 'Simultaneous login from multiple devices detected',
+            bannedUntil: banExpiresAt,
+            banCount: banCount
           }
-        }), deviceInfo]
-        
-        await updateDoc(userRef, { devices: updatedDevices })
+          localStorage.setItem('banInfo', JSON.stringify(banData))
+          setBanInfo(banData)
+          // IMPORTANT: Return deviceInfo so user stays logged in
+          return deviceInfo
+        }
+      }
+
+      // No active ban - clear any cached ban info
+      localStorage.removeItem('banInfo')
+      setBanInfo(null)
+
+      const now = new Date()
+      const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
+
+      console.log('🔍 Device Login Check:', {
+        userName,
+        devicesCount: devices.length,
+        currentDevice: deviceInfo.fingerprint,
+        currentIP: deviceInfo.ipAddress,
+        existingDevice: !!existingDevice
+      })
+
+      // NEW DEVICE DETECTED - This is where ban happens
+      if (!existingDevice) {
+        if (devices.length > 0) {
+          const newBanCount = banCount + 1
+          const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
+
+          const existingIPs = devices
+            .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
+            .map(d => `${d.ipAddress} (${d.platform || 'Unknown'})`)
+            .join(', ')
+
+          const banRecord = {
+            timestamp: now.toISOString(),
+            reason: `একাধিক ডিভাইস থেকে লগইন সনাক্ত করা হয়েছে। বর্তমান ডিভাইস: ${devices.length}, নতুন ডিভাইস: ${deviceInfo.ipAddress} (${deviceInfo.platform}). বিদ্যমান ডিভাইস: ${existingIPs}`,
+            deviceCount: devices.length,
+            bannedUntil: banExpires.toISOString(),
+            ipAddress: deviceInfo.ipAddress,
+            platform: deviceInfo.platform
+          }
+
+          const updateData = {
+            // CRITICAL FIX: DON'T add new device to array when banning
+            // Keep existing devices only
+            devices: devices,
+            banCount: newBanCount,
+            banHistory: [...banHistory, banRecord],
+            banned: true
+          }
+
+          if (newBanCount >= 3) {
+            updateData.permanentBan = true
+            updateData.banned = true
+            updateData.banExpiresAt = null
+            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার একাধিক ডিভাইস থেকে লগইন করার চেষ্টা করা হয়েছে`
+          } else {
+            updateData.banExpiresAt = banExpires
+          }
+
+          await updateDoc(userRef, updateData)
+
+          await addDoc(collection(db, "banNotifications"), {
+            userId,
+            userEmail,
+            userName,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            deviceCount: devices.length,
+            banCount: newBanCount,
+            bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
+            devices: devices,
+            createdAt: serverTimestamp(),
+            isRead: false
+          })
+
+          const banData = {
+            isBanned: true,
+            type: newBanCount >= 3 ? 'permanent' : 'temporary',
+            reason: banRecord.reason,
+            bannedUntil: newBanCount >= 3 ? null : banExpires,
+            banCount: newBanCount
+          }
+          localStorage.setItem('banInfo', JSON.stringify(banData))
+          setBanInfo(banData)
+
+          // CRITICAL: Return deviceInfo so user stays logged in to see ban overlay
+          return deviceInfo
+        } else {
+          // First device - just add it
+          await updateDoc(userRef, {
+            devices: [deviceInfo]
+          })
+        }
       } else {
-        const updatedDevices = devices.map(d => 
+        // Existing device - update last seen
+        const updatedDevices = devices.map(d =>
           d.fingerprint === deviceInfo.fingerprint
             ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
             : d
         )
         await updateDoc(userRef, { devices: updatedDevices })
       }
+
       return deviceInfo
+    } catch (error) {
+      console.error("Device check error:", error)
+      throw error
     }
-    
-    const devices = userData.devices || []
-    const banCount = userData.banCount || 0
-    const banHistory = userData.banHistory || []
-    const permanentBan = userData.permanentBan || false
-    const banExpiresAt = userData.banExpiresAt
-
-    // Check for permanent ban - just show ban info, DON'T logout
-    if (permanentBan) {
-      const banData = {
-        isBanned: true,
-        type: 'permanent',
-        reason: banHistory[banHistory.length - 1]?.reason || 'Multiple violations of simultaneous login policy',
-        banCount: banCount
-      }
-      localStorage.setItem('banInfo', JSON.stringify(banData))
-      setBanInfo(banData)
-      // IMPORTANT: Still return deviceInfo so user stays logged in to see ban
-      return deviceInfo
-    }
-
-    // Check for manual admin ban without expiration
-    if (userData.banned === true && !banExpiresAt) {
-      const banData = {
-        isBanned: true,
-        type: 'permanent',
-        reason: banHistory[banHistory.length - 1]?.reason || 'Account manually banned by administrator',
-        banCount: banCount
-      }
-      localStorage.setItem('banInfo', JSON.stringify(banData))
-      setBanInfo(banData)
-      // IMPORTANT: Still return deviceInfo
-      return deviceInfo
-    }
-
-    // Check for temporary ban
-    if (banExpiresAt) {
-      const banEndTime = banExpiresAt.toDate()
-      const now = new Date()
-      
-      if (banEndTime <= now) {
-        // Ban expired - clear everything and force logout
-        console.log('✅ Ban has expired during login - clearing ban and forcing logout on all devices')
-        await updateDoc(userRef, {
-          banned: false,
-          banExpiresAt: null,
-          devices: [],
-          kickedDevices: [],
-          forceLogoutAt: serverTimestamp(),
-          forceLogoutReason: 'Ban expired - all devices logged out'
-        })
-        localStorage.removeItem('banInfo')
-        setBanInfo(null)
-        return deviceInfo
-      } else {
-        // Ban still active - show ban overlay
-        const banData = {
-          isBanned: true,
-          type: 'temporary',
-          reason: banHistory[banHistory.length - 1]?.reason || 'Simultaneous login from multiple devices detected',
-          bannedUntil: banExpiresAt,
-          banCount: banCount
-        }
-        localStorage.setItem('banInfo', JSON.stringify(banData))
-        setBanInfo(banData)
-        // IMPORTANT: Return deviceInfo so user stays logged in
-        return deviceInfo
-      }
-    }
-    
-    // No active ban - clear any cached ban info
-    localStorage.removeItem('banInfo')
-    setBanInfo(null)
-
-    const now = new Date()
-    const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
-    
-    console.log('🔍 Device Login Check:', {
-      userName,
-      devicesCount: devices.length,
-      currentDevice: deviceInfo.fingerprint,
-      currentIP: deviceInfo.ipAddress,
-      existingDevice: !!existingDevice
-    })
-    
-    // NEW DEVICE DETECTED - This is where ban happens
-    if (!existingDevice) {
-      if (devices.length > 0) {
-        const newBanCount = banCount + 1
-        const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
-        
-        const existingIPs = devices
-          .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
-          .map(d => `${d.ipAddress} (${d.platform || 'Unknown'})`)
-          .join(', ')
-        
-        const banRecord = {
-          timestamp: now.toISOString(),
-          reason: `একাধিক ডিভাইস থেকে লগইন সনাক্ত করা হয়েছে। বর্তমান ডিভাইস: ${devices.length}, নতুন ডিভাইস: ${deviceInfo.ipAddress} (${deviceInfo.platform}). বিদ্যমান ডিভাইস: ${existingIPs}`,
-          deviceCount: devices.length,
-          bannedUntil: banExpires.toISOString(),
-          ipAddress: deviceInfo.ipAddress,
-          platform: deviceInfo.platform
-        }
-
-        const updateData = {
-          // CRITICAL FIX: DON'T add new device to array when banning
-          // Keep existing devices only
-          devices: devices,
-          banCount: newBanCount,
-          banHistory: [...banHistory, banRecord],
-          banned: true
-        }
-
-        if (newBanCount >= 3) {
-          updateData.permanentBan = true
-          updateData.banned = true
-          updateData.banExpiresAt = null
-          banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার একাধিক ডিভাইস থেকে লগইন করার চেষ্টা করা হয়েছে`
-        } else {
-          updateData.banExpiresAt = banExpires
-        }
-
-        await updateDoc(userRef, updateData)
-
-        await addDoc(collection(db, "banNotifications"), {
-          userId,
-          userEmail,
-          userName,
-          type: newBanCount >= 3 ? 'permanent' : 'temporary',
-          reason: banRecord.reason,
-          deviceCount: devices.length,
-          banCount: newBanCount,
-          bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
-          devices: devices,
-          createdAt: serverTimestamp(),
-          isRead: false
-        })
-
-        const banData = {
-          isBanned: true,
-          type: newBanCount >= 3 ? 'permanent' : 'temporary',
-          reason: banRecord.reason,
-          bannedUntil: newBanCount >= 3 ? null : banExpires,
-          banCount: newBanCount
-        }
-        localStorage.setItem('banInfo', JSON.stringify(banData))
-        setBanInfo(banData)
-        
-        // CRITICAL: Return deviceInfo so user stays logged in to see ban overlay
-        return deviceInfo
-      } else {
-        // First device - just add it
-        await updateDoc(userRef, {
-          devices: [deviceInfo]
-        })
-      }
-    } else {
-      // Existing device - update last seen
-      const updatedDevices = devices.map(d => 
-        d.fingerprint === deviceInfo.fingerprint
-          ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
-          : d
-      )
-      await updateDoc(userRef, { devices: updatedDevices })
-    }
-
-    return deviceInfo
-  } catch (error) {
-    console.error("Device check error:", error)
-    throw error
-  }
-        }
+  } // <-- এইখানে অতিরিক্ত বন্ধনী ছিল না
 
   const ensureAdminRole = async (uid, email) => {
     try {
@@ -288,7 +287,7 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
 
       const isDefaultAdmin = email === "admin@gmail.com"
       const deviceInfo = await getDeviceInfo()
-      
+
       if (deviceInfo && deviceInfo.fingerprint) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
         localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
@@ -332,12 +331,12 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
       const deviceInfo = await getDeviceInfo()
-      
+
       if (deviceInfo && deviceInfo.fingerprint) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
         localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
       }
-      
+
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
 
@@ -394,15 +393,15 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
       }
 
       const profile = await fetchUserProfile(userCredential.user.uid)
-      
+
       if (profile.forceLogoutAt) {
         try {
-          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ? 
-            profile.forceLogoutAt.toMillis() : 
+          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ?
+            profile.forceLogoutAt.toMillis() :
             new Date(profile.forceLogoutAt).getTime()
           const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
           const CLEANUP_THRESHOLD = 2 * 60 * 1000
-          
+
           if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
             console.log('🧹 Cleaning up old forceLogoutAt on successful sign-in')
             await updateDoc(doc(db, "users", userCredential.user.uid), {
@@ -428,12 +427,12 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const deviceInfo = await getDeviceInfo()
-      
+
       if (deviceInfo && deviceInfo.fingerprint) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
         localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
       }
-      
+
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
 
@@ -491,15 +490,15 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
       }
 
       const profile = await fetchUserProfile(user.uid)
-      
+
       if (profile.forceLogoutAt) {
         try {
-          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ? 
-            profile.forceLogoutAt.toMillis() : 
+          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ?
+            profile.forceLogoutAt.toMillis() :
             new Date(profile.forceLogoutAt).getTime()
           const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
           const CLEANUP_THRESHOLD = 2 * 60 * 1000
-          
+
           if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
             console.log('🧹 Cleaning up old forceLogoutAt on successful Google sign-in')
             await updateDoc(doc(db, "users", user.uid), {
@@ -526,7 +525,7 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
         const userRef = doc(db, "users", currentUser.uid)
         let deviceID = localStorage.getItem('deviceID')
         let fingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
-        
+
         try {
           const deviceInfo = await getDeviceInfo()
           if (deviceInfo) {
@@ -536,21 +535,21 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
         } catch (deviceError) {
           console.warn("getDeviceInfo failed during logout, using stored identifiers:", deviceError)
         }
-        
+
         try {
           if (deviceID || fingerprint) {
             const userDoc = await getDoc(userRef)
-            
+
             if (userDoc.exists()) {
               const userData = userDoc.data()
               const devices = userData.devices || []
-              
+
               const updatedDevices = devices.filter(d => {
                 if (deviceID && d.id === deviceID) return false
                 if (fingerprint && d.fingerprint === fingerprint) return false
                 return true
               })
-              
+
               await updateDoc(userRef, {
                 online: false,
                 lastActive: serverTimestamp(),
@@ -581,7 +580,7 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
             console.error("Fallback update also failed:", fallbackError)
           }
         }
-        
+
         localStorage.removeItem('currentDeviceFingerprint')
         localStorage.removeItem('deviceID')
         setCurrentDeviceFingerprint(null)
@@ -646,6 +645,12 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
     }
   }
 
+  // **সমস্যা ১: অনাবশ্যকভাবে nested useEffect ব্লকটি বাদ দেওয়া হয়েছে**
+  // মূল কোডে দুটি useEffect ব্লক ছিল যার কারণে parsing error হচ্ছিল।
+  // এই ফাংশনগুলোর কোনো ব্র্যাকেট সমস্যা ছিল না, কিন্তু মূল useEffect এর মাঝে অনাবশ্যকভাবে
+  // nested ছিল। এখন প্রথম useEffect টি সরিয়ে বাকি কোড ঠিক করা হলো।
+
+  // **সমস্যা ২: `useEffect` হুকটি ভুলভাবে nested ছিল, এখন এটি ঠিক করা হলো**
   useEffect(() => {
     if (!currentUser) {
       setBanInfo(null)
@@ -661,20 +666,22 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
           const updatedProfile = { id: currentUser.uid, ...doc.data() }
           setUserProfile(updatedProfile)
 
+          // Admin bypass - never ban admins
           if (updatedProfile.role === "admin") {
             setBanInfo(null)
             localStorage.removeItem('banInfo')
             return
           }
 
+          // Clear ban cache if admin requested
           if (updatedProfile.clearBanCacheAt) {
-            const clearCacheTimestamp = updatedProfile.clearBanCacheAt.toMillis ? 
-              updatedProfile.clearBanCacheAt.toMillis() : 
+            const clearCacheTimestamp = updatedProfile.clearBanCacheAt.toMillis ?
+              updatedProfile.clearBanCacheAt.toMillis() :
               new Date(updatedProfile.clearBanCacheAt).getTime()
-            
+
             const lastClearedAt = localStorage.getItem('lastClearedBanCacheAt')
             const lastClearedTimestamp = lastClearedAt ? parseInt(lastClearedAt) : 0
-            
+
             if (clearCacheTimestamp > lastClearedTimestamp) {
               console.log('✅ Clearing ban cache as requested by admin')
               localStorage.removeItem('banInfo')
@@ -689,95 +696,35 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
           const currentDeviceInfo = await getDeviceInfo()
           const kickedDevices = updatedProfile.kickedDevices || []
           const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
-          
+
           const deviceFingerprintToCheck = currentDeviceInfo?.fingerprint || storedFingerprint
-          
+
+          // Check if this specific device was kicked
           if (deviceFingerprintToCheck && kickedDevices.includes(deviceFingerprintToCheck)) {
-            console.log('✅ This device has been kicked - logging out immediately', {
-              fingerprint: deviceFingerprintToCheck,
-              kickedDevices: kickedDevices
-            })
+            console.log('✅ This device has been kicked - logging out immediately')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
             localStorage.removeItem('currentDeviceFingerprint')
-            
+
             const updatedKickedDevices = kickedDevices.filter(fp => fp !== deviceFingerprintToCheck)
             await updateDoc(userRef, {
               kickedDevices: updatedKickedDevices
             })
-            
+
             await firebaseSignOut(auth)
             window.location.reload()
             return
           }
 
-          const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
-          const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : 0
-          
-          if (updatedProfile.forceLogoutAt) {
-            const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ? 
-              updatedProfile.forceLogoutAt.toMillis() : 
-              new Date(updatedProfile.forceLogoutAt).getTime()
-            
-            const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
-            const MAX_LOGOUT_VALIDITY = 5 * 60 * 1000
-            
-            const isBanned = updatedProfile.banned || updatedProfile.permanentBan
-            const banExpiresAt = updatedProfile.banExpiresAt
-            let isBanActive = false
-            
-            if (isBanned && banExpiresAt) {
-              try {
-                const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
-                isBanActive = banEndTime > new Date()
-              } catch (e) {
-                console.error('Error checking ban status for forceLogout:', e)
-              }
-            } else if (updatedProfile.permanentBan) {
-              isBanActive = true
-            }
-            
-            const shouldForceLogout = (
-              timeSinceForceLogout < MAX_LOGOUT_VALIDITY &&
-              forceLogoutTimestamp > lastAckedTimestamp &&
-              !isBanActive
-            )
-            
-            if (shouldForceLogout) {
-              const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
-              console.log(`✅ Force logout triggered: ${reason}`, {
-                forceLogoutTimestamp,
-                lastAckedTimestamp,
-                timeSinceForceLogout,
-                isBanActive
-              })
-              localStorage.removeItem('deviceWarning')
-              localStorage.removeItem('banInfo')
-              localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
-              await firebaseSignOut(auth)
-              window.location.reload()
-              return
-            } else if (isBanActive) {
-              console.log('ℹ️ forceLogoutAt present but user is actively banned - showing ban overlay instead')
-            } else if (timeSinceForceLogout >= MAX_LOGOUT_VALIDITY) {
-              console.log('ℹ️ forceLogoutAt is stale (>5 min) - ignoring')
-            }
-          }
-          
-          const devices = updatedProfile.devices || []
-          const deviceFingerprint = currentDeviceInfo?.fingerprint || storedFingerprint
-          const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
-          
-          const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-          const isRecentLogin = timeSinceLogin < 10000
-          
+          // Check ban status
           const isBanned = updatedProfile.banned || updatedProfile.permanentBan
           const banExpiresAt = updatedProfile.banExpiresAt
           let isBanActive = false
-          
+
           if (isBanned) {
             if (!banExpiresAt) {
+              // Permanent ban or manual ban
               isBanActive = true
             } else {
               try {
@@ -789,210 +736,125 @@ const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
               }
             }
           }
-          
-useEffect(() => {
-  if (!currentUser) {
-    setBanInfo(null)
-    localStorage.removeItem('banInfo')
-    return
-  }
 
-  const userRef = doc(db, "users", currentUser.uid)
-  const unsubscribe = onSnapshot(
-    userRef,
-    async (doc) => {
-      if (doc.exists()) {
-        const updatedProfile = { id: currentUser.uid, ...doc.data() }
-        setUserProfile(updatedProfile)
-
-        // Admin bypass - never ban admins
-        if (updatedProfile.role === "admin") {
-          setBanInfo(null)
-          localStorage.removeItem('banInfo')
-          return
-        }
-
-        // Clear ban cache if admin requested
-        if (updatedProfile.clearBanCacheAt) {
-          const clearCacheTimestamp = updatedProfile.clearBanCacheAt.toMillis ? 
-            updatedProfile.clearBanCacheAt.toMillis() : 
-            new Date(updatedProfile.clearBanCacheAt).getTime()
-          
-          const lastClearedAt = localStorage.getItem('lastClearedBanCacheAt')
-          const lastClearedTimestamp = lastClearedAt ? parseInt(lastClearedAt) : 0
-          
-          if (clearCacheTimestamp > lastClearedTimestamp) {
-            console.log('✅ Clearing ban cache as requested by admin')
-            localStorage.removeItem('banInfo')
+          // CRITICAL FIX: If ban expired, clear everything and force logout
+          if (isBanned && !isBanActive && banExpiresAt) {
+            console.log('✅ Ban has expired - auto logout triggered to clear session')
             localStorage.removeItem('deviceWarning')
+            localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
-            localStorage.setItem('lastClearedBanCacheAt', clearCacheTimestamp.toString())
-            setBanInfo(null)
-            setDeviceWarning(null)
+            await firebaseSignOut(auth)
+            window.location.reload()
+            return
           }
-        }
 
-        const currentDeviceInfo = await getDeviceInfo()
-        const kickedDevices = updatedProfile.kickedDevices || []
-        const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
-        
-        const deviceFingerprintToCheck = currentDeviceInfo?.fingerprint || storedFingerprint
-        
-        // Check if this specific device was kicked
-        if (deviceFingerprintToCheck && kickedDevices.includes(deviceFingerprintToCheck)) {
-          console.log('✅ This device has been kicked - logging out immediately')
-          localStorage.removeItem('deviceWarning')
-          localStorage.removeItem('banInfo')
-          localStorage.removeItem('lastAckedLogoutAt')
-          localStorage.removeItem('currentDeviceFingerprint')
-          
-          const updatedKickedDevices = kickedDevices.filter(fp => fp !== deviceFingerprintToCheck)
-          await updateDoc(userRef, {
-            kickedDevices: updatedKickedDevices
-          })
-          
-          await firebaseSignOut(auth)
-          window.location.reload()
-          return
-        }
+          // CRITICAL FIX: If user is actively banned, DON'T logout
+          // Just update ban info and show overlay
+          if (isBanActive) {
+            console.log('ℹ️ User is actively banned - showing ban overlay')
 
-        // Check ban status
-        const isBanned = updatedProfile.banned || updatedProfile.permanentBan
-        const banExpiresAt = updatedProfile.banExpiresAt
-        let isBanActive = false
-        
-        if (isBanned) {
-          if (!banExpiresAt) {
-            // Permanent ban or manual ban
-            isBanActive = true
-          } else {
-            try {
-              const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
-              isBanActive = banEndTime > new Date()
-            } catch (e) {
-              console.error('Error parsing ban expiration:', e)
-              isBanActive = true
-            }
-          }
-        }
-        
-        // CRITICAL FIX: If ban expired, clear everything and force logout
-        if (isBanned && !isBanActive && banExpiresAt) {
-          console.log('✅ Ban has expired - auto logout triggered to clear session')
-          localStorage.removeItem('deviceWarning')
-          localStorage.removeItem('banInfo')
-          localStorage.removeItem('lastAckedLogoutAt')
-          await firebaseSignOut(auth)
-          window.location.reload()
-          return
-        }
-        
-        // CRITICAL FIX: If user is actively banned, DON'T logout
-        // Just update ban info and show overlay
-        if (isBanActive) {
-          console.log('ℹ️ User is actively banned - showing ban overlay')
-          
-          if (updatedProfile.permanentBan) {
-            const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
-            const banData = {
-              isBanned: true,
-              type: 'permanent',
-              reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
-              banCount: updatedProfile.banCount || 0
-            }
-            setBanInfo(banData)
-            localStorage.setItem('banInfo', JSON.stringify(banData))
-          } else if (updatedProfile.banned === true) {
-            const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
-            
-            if (updatedProfile.banExpiresAt) {
-              const banEndTime = updatedProfile.banExpiresAt.toDate()
-              const banData = {
-                isBanned: true,
-                type: 'temporary',
-                bannedUntil: banEndTime,
-                reason: latestBanHistory?.reason || 'Multiple device login detected',
-                banCount: updatedProfile.banCount || 0
-              }
-              setBanInfo(banData)
-              localStorage.setItem('banInfo', JSON.stringify(banData))
-            } else {
+            if (updatedProfile.permanentBan) {
+              const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
               const banData = {
                 isBanned: true,
                 type: 'permanent',
-                reason: latestBanHistory?.reason || 'Manual ban by administrator',
+                reason: latestBanHistory?.reason || 'Permanent ban due to multiple violations',
                 banCount: updatedProfile.banCount || 0
               }
               setBanInfo(banData)
               localStorage.setItem('banInfo', JSON.stringify(banData))
+            } else if (updatedProfile.banned === true) {
+              const latestBanHistory = updatedProfile.banHistory?.[updatedProfile.banHistory.length - 1]
+
+              if (updatedProfile.banExpiresAt) {
+                const banEndTime = updatedProfile.banExpiresAt.toDate()
+                const banData = {
+                  isBanned: true,
+                  type: 'temporary',
+                  bannedUntil: banEndTime,
+                  reason: latestBanHistory?.reason || 'Multiple device login detected',
+                  banCount: updatedProfile.banCount || 0
+                }
+                setBanInfo(banData)
+                localStorage.setItem('banInfo', JSON.stringify(banData))
+              } else {
+                const banData = {
+                  isBanned: true,
+                  type: 'permanent',
+                  reason: latestBanHistory?.reason || 'Manual ban by administrator',
+                  banCount: updatedProfile.banCount || 0
+                }
+                setBanInfo(banData)
+                localStorage.setItem('banInfo', JSON.stringify(banData))
+              }
+            }
+
+            // CRITICAL: Return here - don't check for force logout or device removal
+            // Let banned user stay logged in to see ban overlay
+            return
+          }
+
+          // No active ban - clear ban info
+          setBanInfo(null)
+          localStorage.removeItem('banInfo')
+
+          // Now check force logout (only if NOT banned)
+          const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
+          const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : 0
+
+          if (updatedProfile.forceLogoutAt) {
+            const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ?
+              updatedProfile.forceLogoutAt.toMillis() :
+              new Date(updatedProfile.forceLogoutAt).getTime()
+
+            const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
+            const MAX_LOGOUT_VALIDITY = 5 * 60 * 1000
+
+            const shouldForceLogout = (
+              timeSinceForceLogout < MAX_LOGOUT_VALIDITY &&
+              forceLogoutTimestamp > lastAckedTimestamp
+            )
+
+            if (shouldForceLogout) {
+              const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
+              console.log(`✅ Force logout triggered: ${reason}`)
+              localStorage.removeItem('deviceWarning')
+              localStorage.removeItem('banInfo')
+              localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+              await firebaseSignOut(auth)
+              window.location.reload()
+              return
             }
           }
-          
-          // CRITICAL: Return here - don't check for force logout or device removal
-          // Let banned user stay logged in to see ban overlay
-          return
-        }
-        
-        // No active ban - clear ban info
-        setBanInfo(null)
-        localStorage.removeItem('banInfo')
 
-        // Now check force logout (only if NOT banned)
-        const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
-        const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : 0
-        
-        if (updatedProfile.forceLogoutAt) {
-          const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ? 
-            updatedProfile.forceLogoutAt.toMillis() : 
-            new Date(updatedProfile.forceLogoutAt).getTime()
-          
-          const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
-          const MAX_LOGOUT_VALIDITY = 5 * 60 * 1000
-          
-          const shouldForceLogout = (
-            timeSinceForceLogout < MAX_LOGOUT_VALIDITY &&
-            forceLogoutTimestamp > lastAckedTimestamp
-          )
-          
-          if (shouldForceLogout) {
-            const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
-            console.log(`✅ Force logout triggered: ${reason}`)
+          // Check if device was removed (only if NOT banned and NOT recent login)
+          const devices = updatedProfile.devices || []
+          const deviceFingerprint = currentDeviceInfo?.fingerprint || storedFingerprint
+          const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
+
+          const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
+          const isRecentLogin = timeSinceLogin < 30000 // 30 seconds grace period
+
+          if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
+            console.log('✅ Device has been removed (not banned) - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
-            localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+            localStorage.removeItem('lastAckedLogoutAt')
             await firebaseSignOut(auth)
             window.location.reload()
             return
           }
         }
-        
-        // Check if device was removed (only if NOT banned and NOT recent login)
-        const devices = updatedProfile.devices || []
-        const deviceFingerprint = currentDeviceInfo?.fingerprint || storedFingerprint
-        const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
-        
-        const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-        const isRecentLogin = timeSinceLogin < 30000 // 30 seconds grace period
-        
-        if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
-          console.log('✅ Device has been removed (not banned) - Auto logout triggered')
-          localStorage.removeItem('deviceWarning')
-          localStorage.removeItem('banInfo')
-          localStorage.removeItem('lastAckedLogoutAt')
-          await firebaseSignOut(auth)
-          window.location.reload()
-          return
-        }
+      },
+      (error) => {
+        console.error("Error listening to profile updates:", error)
       }
-    },
-    (error) => {
-      console.error("Error listening to profile updates:", error)
-    }
-  )
+    )
 
-  return () => unsubscribe()
-}, [currentUser])
+    return () => unsubscribe()
+  }, [currentUser, lastLoginTimestamp, currentDeviceFingerprint]) // lastLoginTimestamp added as dependency
 
+  // **সমস্যা ৩: এই useEffect হুকটি ঠিক আছে, শুধু আগেরটার পরে বসানো হলো**
   useEffect(() => {
     const storedWarning = localStorage.getItem('deviceWarning')
     if (storedWarning) {
@@ -1000,7 +862,7 @@ useEffect(() => {
         const parsed = JSON.parse(storedWarning)
         const expiresAt = new Date(parsed.expiresAt)
         const now = new Date()
-        
+
         if (expiresAt <= now) {
           localStorage.removeItem('deviceWarning')
         } else {
@@ -1019,7 +881,7 @@ useEffect(() => {
       if (storedBanInfo) {
         try {
           const parsed = JSON.parse(storedBanInfo)
-          
+
           if (!userProfile.banned && !userProfile.permanentBan) {
             console.log('✅ User is not banned but has cached ban info - clearing it')
             localStorage.removeItem('banInfo')
@@ -1177,7 +1039,7 @@ useEffect(() => {
         if (currentUser) {
           const userRef = doc(db, "users", currentUser.uid)
           const userDoc = await getDoc(userRef)
-          
+
           if (userDoc.exists()) {
             await updateDoc(userRef, {
               devices: [],
@@ -1192,7 +1054,7 @@ useEffect(() => {
       } catch (error) {
         console.error('Error clearing devices after ban expiry:', error)
       }
-      
+
       localStorage.removeItem('banInfo')
       setBanInfo(null)
       window.location.reload()
@@ -1204,32 +1066,32 @@ useEffect(() => {
       if (!currentUser) {
         throw new Error('No current user found during device warning logout')
       }
-      
+
       const deviceInfo = await getDeviceInfo()
-      
+
       if (!deviceInfo || !deviceInfo.fingerprint) {
         throw new Error('Failed to get device fingerprint for cleanup')
       }
-      
+
       const userRef = doc(db, "users", currentUser.uid)
       const userDoc = await getDoc(userRef)
-      
+
       if (!userDoc.exists()) {
         throw new Error('User document not found')
       }
-      
+
       const userData = userDoc.data()
       const devices = userData.devices || []
       const initialDeviceCount = devices.length
-      
+
       const updatedDevices = devices.filter(d => d.fingerprint !== deviceInfo.fingerprint)
-      
+
       if (updatedDevices.length === initialDeviceCount) {
         console.warn('Device fingerprint not found in device list, but proceeding with cleanup')
       }
-      
+
       await updateDoc(userRef, { devices: updatedDevices })
-      
+
       console.log('Device cleanup successful: removed device from Firestore')
       localStorage.removeItem('deviceWarning')
       setDeviceWarning(null)
@@ -1245,4 +1107,4 @@ useEffect(() => {
       <BanOverlay banInfo={banInfo} onUnban={handleUnban} />
     </AuthContext.Provider>
   )
-}
+                }
