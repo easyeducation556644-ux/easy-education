@@ -710,8 +710,8 @@ export function AuthProvider({ children }) {
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
           const isRecentLogin = timeSinceLogin < 10000
           
-          if (devices.length === 0 && !isRecentLogin) {
-            console.log('✅ Devices cleared - Auto logout triggered')
+          if (devices.length === 0 && !isRecentLogin && updatedProfile.banned) {
+            console.log('✅ Devices cleared for banned user - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')

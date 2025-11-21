@@ -307,11 +307,11 @@ export default function BanManagement() {
     setConfirmDialog({
       isOpen: true,
       title: "Clear Force Logout Flags",
-      message: "This will clear all force logout flags from all users, allowing them to log in again. This is useful if users are stuck in a logout loop. Continue?",
+      message: "This will clear all force logout flags from ALL users (including admins), allowing them to log in again. This is useful if users are stuck in a logout loop. Continue?",
       variant: "default",
       onConfirm: async () => {
         try {
-          const allUsers = users.filter(u => u.role !== "admin")
+          const allUsers = users
           let clearCount = 0
           let failCount = 0
           const BATCH_SIZE = 10
@@ -347,7 +347,7 @@ export default function BanManagement() {
           
           toast({
             title: "Success",
-            description: `Cleared logout flags for ${clearCount} users${failCount > 0 ? `. ${failCount} failed` : ''}. Users can now log in normally.`,
+            description: `Cleared logout flags for ${clearCount} users (including admins)${failCount > 0 ? `. ${failCount} failed` : ''}. All users can now log in normally.`,
           })
         } catch (error) {
           console.error("Error clearing logout flags:", error)
