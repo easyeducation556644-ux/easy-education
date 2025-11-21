@@ -624,6 +624,25 @@ export function AuthProvider({ children }) {
             return
           }
 
+          if (updatedProfile.clearBanCacheAt) {
+            const clearCacheTimestamp = updatedProfile.clearBanCacheAt.toMillis ? 
+              updatedProfile.clearBanCacheAt.toMillis() : 
+              new Date(updatedProfile.clearBanCacheAt).getTime()
+            
+            const lastClearedAt = localStorage.getItem('lastClearedBanCacheAt')
+            const lastClearedTimestamp = lastClearedAt ? parseInt(lastClearedAt) : 0
+            
+            if (clearCacheTimestamp > lastClearedTimestamp) {
+              console.log('✅ Clearing ban cache as requested by admin')
+              localStorage.removeItem('banInfo')
+              localStorage.removeItem('deviceWarning')
+              localStorage.removeItem('lastAckedLogoutAt')
+              localStorage.setItem('lastClearedBanCacheAt', clearCacheTimestamp.toString())
+              setBanInfo(null)
+              setDeviceWarning(null)
+            }
+          }
+
           const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
           const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : null
           

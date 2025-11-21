@@ -146,7 +146,7 @@ export default function BanManagement() {
     setConfirmDialog({
       isOpen: true,
       title: "Unban User",
-      message: `Are you sure you want to unban ${user.name}? This will clear all ban records.`,
+      message: `Are you sure you want to unban ${user.name}? This will clear all ban records and log them out to refresh their session.`,
       variant: "default",
       onConfirm: async () => {
         try {
@@ -154,11 +154,16 @@ export default function BanManagement() {
             banned: false,
             banExpiresAt: null,
             permanentBan: false,
+            banCount: 0,
+            forceLogoutAt: serverTimestamp(),
+            forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
+            forcedBy: userProfile?.id || 'unknown',
+            clearBanCacheAt: serverTimestamp()
           })
 
           toast({
             title: "Success",
-            description: "User unbanned successfully",
+            description: "User unbanned successfully. They will be logged out and can log in again.",
           })
         } catch (error) {
           console.error("Error unbanning user:", error)
@@ -183,12 +188,19 @@ export default function BanManagement() {
           const user = users.find(u => u.id === userId)
           const updatedDevices = (user.devices || []).filter(d => d.fingerprint !== deviceFingerprint)
 
-          await updateDoc(doc(db, "users", userId), {
+          const updateData = {
             devices: updatedDevices,
             forceLogoutAt: serverTimestamp(),
             forceLogoutReason: `Device kicked by ${userProfile?.name || 'Admin'}`,
-            forcedBy: userProfile?.id || 'unknown'
-          })
+            forcedBy: userProfile?.id || 'unknown',
+            lastActive: serverTimestamp()
+          }
+
+          if (updatedDevices.length === 0) {
+            updateData.online = false
+          }
+
+          await updateDoc(doc(db, "users", userId), updateData)
 
           toast({
             title: "Success",
