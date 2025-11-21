@@ -146,7 +146,7 @@ export default function BanManagement() {
     setConfirmDialog({
       isOpen: true,
       title: "Unban User",
-      message: `Are you sure you want to unban ${user.name}? This will clear all ban records and log them out to refresh their session.`,
+      message: `Are you sure you want to unban ${user.name}? This will clear all ban records and log them out from all devices. They can log in again immediately.`,
       variant: "default",
       onConfirm: async () => {
         try {
@@ -159,14 +159,14 @@ export default function BanManagement() {
             devices: [],
             kickedDevices: [],
             forceLogoutAt: serverTimestamp(),
-            forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
+            forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - You can log in again`,
             forcedBy: userProfile?.id || 'unknown',
             clearBanCacheAt: serverTimestamp()
           })
 
           toast({
             title: "Success",
-            description: "User unbanned successfully. They will be logged out and can log in again.",
+            description: "User unbanned successfully. They will be logged out and can log in again immediately.",
           })
         } catch (error) {
           console.error("Error unbanning user:", error)

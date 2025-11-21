@@ -122,14 +122,18 @@ export function AuthProvider({ children }) {
         const now = new Date()
         
         if (banEndTime <= now) {
+          console.log('✅ Ban has expired during login - clearing ban and forcing logout on all devices')
           await updateDoc(userRef, {
             banned: false,
             banExpiresAt: null,
             devices: [],
-            kickedDevices: []
+            kickedDevices: [],
+            forceLogoutAt: serverTimestamp(),
+            forceLogoutReason: 'Ban expired - all devices logged out'
           })
           localStorage.removeItem('banInfo')
           setBanInfo(null)
+          return deviceInfo
         } else {
           const banData = {
             isBanned: true,
@@ -374,6 +378,27 @@ export function AuthProvider({ children }) {
       }
 
       const profile = await fetchUserProfile(userCredential.user.uid)
+      
+      if (profile.forceLogoutAt) {
+        try {
+          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ? 
+            profile.forceLogoutAt.toMillis() : 
+            new Date(profile.forceLogoutAt).getTime()
+          const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
+          const CLEANUP_THRESHOLD = 2 * 60 * 1000
+          
+          if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
+            console.log('🧹 Cleaning up old forceLogoutAt on successful sign-in')
+            await updateDoc(doc(db, "users", userCredential.user.uid), {
+              forceLogoutAt: deleteField(),
+              forceLogoutReason: deleteField(),
+              forcedBy: deleteField()
+            })
+          }
+        } catch (err) {
+          console.warn('Failed to cleanup old forceLogoutAt:', err)
+        }
+      }
 
       return { userCredential, profile }
     } catch (error) {
@@ -450,6 +475,27 @@ export function AuthProvider({ children }) {
       }
 
       const profile = await fetchUserProfile(user.uid)
+      
+      if (profile.forceLogoutAt) {
+        try {
+          const forceLogoutTimestamp = profile.forceLogoutAt.toMillis ? 
+            profile.forceLogoutAt.toMillis() : 
+            new Date(profile.forceLogoutAt).getTime()
+          const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
+          const CLEANUP_THRESHOLD = 2 * 60 * 1000
+          
+          if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
+            console.log('🧹 Cleaning up old forceLogoutAt on successful Google sign-in')
+            await updateDoc(doc(db, "users", user.uid), {
+              forceLogoutAt: deleteField(),
+              forceLogoutReason: deleteField(),
+              forcedBy: deleteField()
+            })
+          }
+        } catch (err) {
+          console.warn('Failed to cleanup old forceLogoutAt:', err)
+        }
+      }
 
       return { userCredential, profile }
     } catch (error) {
@@ -624,33 +670,23 @@ export function AuthProvider({ children }) {
             }
           }
 
+          const currentDeviceInfo = await getDeviceInfo()
           const kickedDevices = updatedProfile.kickedDevices || []
           const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
           
-          if (storedFingerprint && kickedDevices.includes(storedFingerprint)) {
-            console.log('✅ This device has been kicked - logging out immediately')
-            localStorage.removeItem('deviceWarning')
-            localStorage.removeItem('banInfo')
-            localStorage.removeItem('lastAckedLogoutAt')
-            
-            const updatedKickedDevices = kickedDevices.filter(fp => fp !== storedFingerprint)
-            await updateDoc(userRef, {
-              kickedDevices: updatedKickedDevices
-            })
-            
-            await firebaseSignOut(auth)
-            window.location.reload()
-            return
-          }
+          const deviceFingerprintToCheck = currentDeviceInfo?.fingerprint || storedFingerprint
           
-          const currentDeviceInfo = await getDeviceInfo()
-          if (currentDeviceInfo && kickedDevices.includes(currentDeviceInfo.fingerprint)) {
-            console.log('✅ This device has been kicked (via getDeviceInfo) - logging out immediately')
+          if (deviceFingerprintToCheck && kickedDevices.includes(deviceFingerprintToCheck)) {
+            console.log('✅ This device has been kicked - logging out immediately', {
+              fingerprint: deviceFingerprintToCheck,
+              kickedDevices: kickedDevices
+            })
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
+            localStorage.removeItem('currentDeviceFingerprint')
             
-            const updatedKickedDevices = kickedDevices.filter(fp => fp !== currentDeviceInfo.fingerprint)
+            const updatedKickedDevices = kickedDevices.filter(fp => fp !== deviceFingerprintToCheck)
             await updateDoc(userRef, {
               kickedDevices: updatedKickedDevices
             })
@@ -661,7 +697,7 @@ export function AuthProvider({ children }) {
           }
 
           const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
-          const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : null
+          const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : 0
           
           if (updatedProfile.forceLogoutAt) {
             const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ? 
@@ -669,41 +705,53 @@ export function AuthProvider({ children }) {
               new Date(updatedProfile.forceLogoutAt).getTime()
             
             const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
-            const AUTO_CLEAR_THRESHOLD = 60000
+            const MAX_LOGOUT_VALIDITY = 5 * 60 * 1000
             
-            if (timeSinceForceLogout > AUTO_CLEAR_THRESHOLD) {
-              console.log('🔄 Auto-clearing expired forceLogoutAt flag (older than 1 minute)')
+            const isBanned = updatedProfile.banned || updatedProfile.permanentBan
+            const banExpiresAt = updatedProfile.banExpiresAt
+            let isBanActive = false
+            
+            if (isBanned && banExpiresAt) {
               try {
-                await updateDoc(userRef, {
-                  forceLogoutAt: deleteField(),
-                  forceLogoutReason: deleteField(),
-                  forcedBy: deleteField()
-                })
-                localStorage.removeItem('lastAckedLogoutAt')
-                console.log('✅ Successfully cleared expired logout flags - user can continue')
-              } catch (error) {
-                console.error('Error auto-clearing forceLogoutAt:', error)
+                const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
+                isBanActive = banEndTime > new Date()
+              } catch (e) {
+                console.error('Error checking ban status for forceLogout:', e)
               }
-            } else {
-              if (lastAckedTimestamp === null) {
-                localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
-              } else if (forceLogoutTimestamp > lastAckedTimestamp) {
-                const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
-                console.log(`✅ Force logout triggered: ${reason}`)
-                localStorage.removeItem('deviceWarning')
-                localStorage.removeItem('banInfo')
-                localStorage.removeItem('lastAckedLogoutAt')
-                await firebaseSignOut(auth)
-                window.location.reload()
-                return
-              }
+            } else if (updatedProfile.permanentBan) {
+              isBanActive = true
             }
-          } else if (lastAckedTimestamp === null) {
-            localStorage.setItem('lastAckedLogoutAt', Date.now().toString())
+            
+            const shouldForceLogout = (
+              timeSinceForceLogout < MAX_LOGOUT_VALIDITY &&
+              forceLogoutTimestamp > lastAckedTimestamp &&
+              !isBanActive
+            )
+            
+            if (shouldForceLogout) {
+              const reason = updatedProfile.forceLogoutReason || 'Device removed by administrator'
+              console.log(`✅ Force logout triggered: ${reason}`, {
+                forceLogoutTimestamp,
+                lastAckedTimestamp,
+                timeSinceForceLogout,
+                isBanActive
+              })
+              localStorage.removeItem('deviceWarning')
+              localStorage.removeItem('banInfo')
+              localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+              await firebaseSignOut(auth)
+              window.location.reload()
+              return
+            } else if (isBanActive) {
+              console.log('ℹ️ forceLogoutAt present but user is actively banned - showing ban overlay instead')
+            } else if (timeSinceForceLogout >= MAX_LOGOUT_VALIDITY) {
+              console.log('ℹ️ forceLogoutAt is stale (>5 min) - ignoring')
+            }
           }
           
           const devices = updatedProfile.devices || []
-          const deviceExists = devices.some(d => d.fingerprint === currentDeviceInfo.fingerprint)
+          const deviceFingerprint = currentDeviceInfo?.fingerprint || storedFingerprint
+          const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
           
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
           const isRecentLogin = timeSinceLogin < 10000
@@ -726,8 +774,8 @@ export function AuthProvider({ children }) {
             }
           }
           
-          if (devices.length === 0 && !isRecentLogin && updatedProfile.banned && !isBanActive) {
-            console.log('✅ Devices cleared for banned user (ban expired) - Auto logout triggered')
+          if (isBanned && !isBanActive && banExpiresAt) {
+            console.log('✅ Ban has expired - auto logout triggered to clear session')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
@@ -736,8 +784,11 @@ export function AuthProvider({ children }) {
             return
           }
           
-          if (!deviceExists && devices.length > 0 && !isRecentLogin && !isBanActive && !isBanned) {
-            console.log('✅ Device has been removed - Auto logout triggered')
+          if (!deviceExists && devices.length > 0 && !isRecentLogin && !isBanActive && !isBanned && deviceFingerprint) {
+            console.log('✅ Device has been removed (not banned) - Auto logout triggered', {
+              deviceFingerprint,
+              devicesInList: devices.map(d => d.fingerprint)
+            })
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
