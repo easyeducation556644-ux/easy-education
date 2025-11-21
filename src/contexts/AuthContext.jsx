@@ -643,6 +643,25 @@ export function AuthProvider({ children }) {
             }
           }
 
+          const currentDeviceInfo = await getDeviceInfo()
+          const kickedDevices = updatedProfile.kickedDevices || []
+          
+          if (kickedDevices.includes(currentDeviceInfo.fingerprint)) {
+            console.log('✅ This device has been kicked - logging out immediately')
+            localStorage.removeItem('deviceWarning')
+            localStorage.removeItem('banInfo')
+            localStorage.removeItem('lastAckedLogoutAt')
+            
+            const updatedKickedDevices = kickedDevices.filter(fp => fp !== currentDeviceInfo.fingerprint)
+            await updateDoc(userRef, {
+              kickedDevices: updatedKickedDevices
+            })
+            
+            await firebaseSignOut(auth)
+            window.location.reload()
+            return
+          }
+
           const lastAckedLogoutAt = localStorage.getItem('lastAckedLogoutAt')
           const lastAckedTimestamp = lastAckedLogoutAt ? parseInt(lastAckedLogoutAt) : null
           
@@ -667,7 +686,6 @@ export function AuthProvider({ children }) {
             localStorage.setItem('lastAckedLogoutAt', Date.now().toString())
           }
           
-          const currentDeviceInfo = await getDeviceInfo()
           const devices = updatedProfile.devices || []
           const deviceExists = devices.some(d => d.fingerprint === currentDeviceInfo.fingerprint)
           

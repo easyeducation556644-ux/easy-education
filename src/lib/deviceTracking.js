@@ -36,13 +36,25 @@ export async function getUserIP() {
 }
 
 export function getDeviceName() {
-  const ua = navigator.userAgent.toLowerCase()
+  const ua = navigator.userAgent
   const platform = navigator.platform
   
-  if (/android|adr|silk|kindle|kf[a-z]+/i.test(ua)) {
+  if (navigator.userAgentData && navigator.userAgentData.platform) {
+    const uaPlatform = navigator.userAgentData.platform.toLowerCase()
+    if (uaPlatform === 'android') return 'Android'
+    if (uaPlatform === 'ios') return 'iOS'
+    if (uaPlatform.includes('win')) return 'Windows'
+    if (uaPlatform.includes('mac')) return 'MacOS'
+    if (uaPlatform.includes('linux')) {
+      if (navigator.userAgentData.mobile) return 'Android'
+      return 'Linux Desktop'
+    }
+  }
+  
+  if (/Android|Adr|Silk|Kindle|KF[A-Z]+/i.test(ua)) {
     return 'Android'
   }
-  if (/ipad|iphone|ipod/i.test(ua) && !window.MSStream) {
+  if (/iPad|iPhone|iPod/i.test(ua) && !window.MSStream) {
     return 'iOS'
   }
   if (/windows phone|wpdesktop/i.test(ua)) {
@@ -66,7 +78,15 @@ export function getDeviceName() {
       return 'Android'
     }
     
-    return 'Linux Desktop'
+    if (/(wv|\.0\.0\.0)/.test(ua)) {
+      return 'Android'
+    }
+    
+    if (/X11|Ubuntu|Fedora|Debian|GNOME|KDE|x86_64|i686/i.test(ua + platform)) {
+      return 'Linux Desktop'
+    }
+    
+    return 'Android'
   }
   
   return 'Unknown'

@@ -4,7 +4,37 @@ Easy Education is a Progressive Web Application (PWA) designed to deliver free o
 
 # Recent Changes
 
-**November 21, 2025:** Fixed critical React Hooks ordering error causing blank screen
+**November 21, 2025 (Session 2):** Enhanced device detection and ban management system
+- **Issue 1:** Android devices showing as "Linux Desktop" in admin panel, especially Android browsers in desktop mode
+- **Root Cause:** Device detection logic relied only on user agent strings without checking modern browser APIs
+- **Fix:** 
+  - Added support for `navigator.userAgentData.platform` API for accurate platform detection
+  - Improved fallback logic to better distinguish Android from Linux Desktop
+  - Android now properly detected even in desktop mode browsers
+- **Location:** `src/lib/deviceTracking.js` in the `getDeviceName` function
+
+- **Issue 2:** Users unable to login after admin unbans them, ban overlay persisting in browser
+- **Root Cause:** Ban information cached in localStorage wasn't being cleared when admin unbanned users
+- **Fix:**
+  - Implemented `clearBanCacheAt` timestamp mechanism in Firestore
+  - Each device independently checks and clears localStorage ban info when admin unbans
+  - Clears all ban-related data: `banInfo`, `deviceWarning`, `lastAckedLogoutAt`
+  - Works across all devices and fresh browser installations
+- **Location:** `src/pages/admin/BanManagement.jsx` (handleUnbanUser) and `src/contexts/AuthContext.jsx` (clearBanCache check)
+
+- **Issue 3:** Device kick not properly logging out users, database showing 0 devices but user remained logged in
+- **Root Cause:** Kicked devices were removed from database but client wasn't notified to logout
+- **Fix:**
+  - Added `kickedDevices` array to track kicked device fingerprints
+  - Client immediately detects when its fingerprint is in kickedDevices array
+  - Device removes itself from kickedDevices array before logout, allowing re-login later
+  - Sets user `online: false` only when no devices remain
+  - Preserves accurate presence tracking for multi-device users
+- **Location:** `src/pages/admin/BanManagement.jsx` (handleKickDevice) and `src/contexts/AuthContext.jsx` (kickedDevices check)
+
+- **Note:** The "Log Out All Users from All Devices" button already exists in the Ban Management page (`/admin/ban-management`), allowing admins to force logout all non-admin users at once.
+
+**November 21, 2025 (Session 1):** Fixed critical React Hooks ordering error causing blank screen
 - **Issue:** Website showing blank screen with React error #310 after Firebase quota was exceeded and refreshed. The minified error indicated "rendered more hooks than during the previous render."
 - **Root Cause:** The device warning `useEffect` hook was placed after the loading/error early return statements in AuthContext. During initial render when `loading=true`, the component returned early and the device warning hook never executed. After auth state changed and `loading=false`, the component no longer returned early, and the device warning hook executed for the first time, creating inconsistent hook ordering.
 - **Fix:** 

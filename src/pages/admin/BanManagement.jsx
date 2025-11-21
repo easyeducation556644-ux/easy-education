@@ -186,10 +186,17 @@ export default function BanManagement() {
       onConfirm: async () => {
         try {
           const user = users.find(u => u.id === userId)
+          const kickedDevices = (user.kickedDevices || [])
+          
+          if (!kickedDevices.includes(deviceFingerprint)) {
+            kickedDevices.push(deviceFingerprint)
+          }
+          
           const updatedDevices = (user.devices || []).filter(d => d.fingerprint !== deviceFingerprint)
 
           const updateData = {
             devices: updatedDevices,
+            kickedDevices: kickedDevices,
             forceLogoutAt: serverTimestamp(),
             forceLogoutReason: `Device kicked by ${userProfile?.name || 'Admin'}`,
             forcedBy: userProfile?.id || 'unknown',
