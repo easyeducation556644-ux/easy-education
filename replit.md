@@ -41,8 +41,10 @@ The application utilizes a custom design system inspired by Vercel's minimalist 
 ## Technical Implementations
 
 - **Real-Time Presence Detection:** Tracks user online/offline status, tab visibility, and window focus, synchronizing with Firestore.
-- **Enhanced Ban Management:** Dedicated admin page for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Admins are immune to auto-ban. Includes a self-healing system for `forceLogoutAt` flags and a "Clear Logout Flags" emergency button.
-- **Device Detection:** Advanced device fingerprinting combined with IP address tracking for multi-device login detection and ban enforcement. Enforces a strict 2-device limit with ban escalation. Includes robust `clearBanCacheAt` mechanism for clearing stale ban info on clients.
+- **Simplified Device-Based Ban System:** Automatically bans users for 30 minutes when they attempt login from a new device (if existing devices are detected). Third violation results in permanent ban. Full-screen ban overlay with countdown timer. Auto-logout and device cleanup when temporary ban expires. Admin users are immune to auto-ban.
+- **Enhanced Ban Management:** Dedicated admin page for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Manual unban clears all ban history and device records. Includes a self-healing system for `forceLogoutAt` flags and a "Clear Logout Flags" emergency button.
+- **Device Detection:** Advanced device fingerprinting combined with IP address tracking for multi-device login detection and ban enforcement. Devices are tracked and stored in Firestore. Includes robust `clearBanCacheAt` mechanism for clearing stale ban info on clients.
+- **Bundle Courses:** Admins can create course bundles (packages) that automatically enroll users in multiple courses upon purchase. Course creation form includes "Single" vs "Bundle" format option with multi-select for bundled courses. Payment processing auto-enrolls users in all bundled courses.
 - **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy` for admin accountability.
 - **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
 - **IP Geolocation:** Robust multi-API fallback system (ipwho.is, freeipapi.com, ipapi.co) with error handling, timeout, and Google Maps integration for device location tracking, supporting `navigator.userAgentData.platform` for improved accuracy.
