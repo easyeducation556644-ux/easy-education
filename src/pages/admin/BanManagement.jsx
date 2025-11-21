@@ -389,49 +389,51 @@ export default function BanManagement() {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto">
       <div className="mb-6">
-        <div className="flex items-start justify-between mb-2">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-2">
           <div>
-            <h1 className="text-3xl font-bold mb-2">Ban Management & Device Control</h1>
-            <p className="text-muted-foreground">
+            <h1 className="text-2xl md:text-3xl font-bold mb-2">Ban Management & Device Control</h1>
+            <p className="text-sm md:text-base text-muted-foreground">
               Manage user bans, monitor devices, and control access
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-col sm:flex-row gap-2">
             <button
               onClick={handleClearLogoutFlags}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+              className="px-3 md:px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-xs md:text-sm font-medium flex items-center justify-center gap-2 whitespace-nowrap"
             >
               <CheckCircle className="w-4 h-4" />
-              Clear Logout Flags
+              <span className="hidden sm:inline">Clear Logout Flags</span>
+              <span className="sm:hidden">Clear Flags</span>
             </button>
             <button
               onClick={handleLogoutAllUsers}
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+              className="px-3 md:px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-xs md:text-sm font-medium flex items-center justify-center gap-2 whitespace-nowrap"
             >
               <Ban className="w-4 h-4" />
-              Log Out All Users
+              <span className="hidden sm:inline">Log Out All Users</span>
+              <span className="sm:hidden">Logout All</span>
             </button>
           </div>
         </div>
       </div>
 
       <div className="mb-6 space-y-4">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setFilter("all")}
-            className={`px-4 py-2 rounded-lg transition-colors ${
+            className={`px-3 md:px-4 py-2 rounded-lg transition-colors text-xs md:text-sm ${
               filter === "all"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card border border-border hover:bg-muted"
             }`}
           >
-            All Users ({users.length})
+            All ({users.length})
           </button>
           <button
             onClick={() => setFilter("banned")}
-            className={`px-4 py-2 rounded-lg transition-colors ${
+            className={`px-3 md:px-4 py-2 rounded-lg transition-colors text-xs md:text-sm ${
               filter === "banned"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card border border-border hover:bg-muted"
@@ -441,7 +443,7 @@ export default function BanManagement() {
           </button>
           <button
             onClick={() => setFilter("online")}
-            className={`px-4 py-2 rounded-lg transition-colors ${
+            className={`px-3 md:px-4 py-2 rounded-lg transition-colors text-xs md:text-sm ${
               filter === "online"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card border border-border hover:bg-muted"
@@ -451,7 +453,7 @@ export default function BanManagement() {
           </button>
           <button
             onClick={() => setFilter("offline")}
-            className={`px-4 py-2 rounded-lg transition-colors ${
+            className={`px-3 md:px-4 py-2 rounded-lg transition-colors text-xs md:text-sm ${
               filter === "offline"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card border border-border hover:bg-muted"
@@ -483,23 +485,23 @@ export default function BanManagement() {
               key={user.id}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className={`bg-card border rounded-xl p-6 ${
+              className={`bg-card border rounded-xl p-4 md:p-6 ${
                 isBanned ? "border-red-500/50 bg-red-500/5" : "border-border"
               }`}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-4 flex-1">
-                  <div className={`p-3 rounded-full ${user.role === "admin" ? "bg-purple-500/10" : "bg-primary/10"}`}>
+              <div className="flex flex-col md:flex-row items-start gap-4">
+                <div className="flex items-start gap-3 md:gap-4 flex-1 w-full">
+                  <div className={`p-2 md:p-3 rounded-full flex-shrink-0 ${user.role === "admin" ? "bg-purple-500/10" : "bg-primary/10"}`}>
                     {user.role === "admin" ? (
-                      <Shield className="w-6 h-6 text-purple-500" />
+                      <Shield className="w-5 h-5 md:w-6 md:h-6 text-purple-500" />
                     ) : (
-                      <User className="w-6 h-6 text-primary" />
+                      <User className="w-5 h-5 md:w-6 md:h-6 text-primary" />
                     )}
                   </div>
 
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <h3 className="font-semibold text-lg">{user.name}</h3>
+                      <h3 className="font-semibold text-base md:text-lg break-all">{user.name}</h3>
                       {user.role === "admin" && (
                         <span className="px-2.5 py-0.5 bg-purple-500 text-white text-xs font-medium rounded-full">
                           Admin
@@ -535,22 +537,22 @@ export default function BanManagement() {
                       )}
                     </div>
 
-                    <p className="text-sm text-muted-foreground mb-2">{user.email}</p>
+                    <p className="text-xs md:text-sm text-muted-foreground mb-2 break-all">{user.email}</p>
 
-                    <div className="flex items-center gap-4 text-sm">
-                      <div className="flex items-center gap-2">
-                        <Smartphone className="w-4 h-4 text-muted-foreground" />
+                    <div className="flex flex-wrap items-center gap-2 md:gap-4 text-xs md:text-sm">
+                      <div className="flex items-center gap-1.5">
+                        <Smartphone className="w-3.5 h-3.5 md:w-4 md:h-4 text-muted-foreground" />
                         <span>{user.devices?.length || 0} devices</span>
                       </div>
                       {user.banCount > 0 && (
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-yellow-500" />
-                          <span className="text-yellow-600">Ban count: {user.banCount}</span>
+                        <div className="flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 md:w-4 md:h-4 text-yellow-500" />
+                          <span className="text-yellow-600">Ban: {user.banCount}</span>
                         </div>
                       )}
                       {timeRemaining && (
-                        <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-red-500" />
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 md:w-4 md:h-4 text-red-500" />
                           <span className="text-red-600 font-medium">{timeRemaining}</span>
                         </div>
                       )}
@@ -558,22 +560,22 @@ export default function BanManagement() {
                   </div>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
                   <button
                     onClick={() => {
                       setSelectedUser(user)
                       setShowDevicesModal(true)
                     }}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm"
+                    className="px-3 md:px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs md:text-sm"
                   >
                     View Devices
                   </button>
                   {isBanned ? (
                     <button
                       onClick={() => handleUnbanUser(user)}
-                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm flex items-center gap-2"
+                      className="px-3 md:px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-xs md:text-sm flex items-center justify-center gap-2"
                     >
-                      <CheckCircle className="w-4 h-4" />
+                      <CheckCircle className="w-3.5 h-3.5 md:w-4 md:h-4" />
                       Unban
                     </button>
                   ) : user.role !== "admin" && (
@@ -582,9 +584,9 @@ export default function BanManagement() {
                         setSelectedUser(user)
                         setShowBanModal(true)
                       }}
-                      className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-sm flex items-center gap-2"
+                      className="px-3 md:px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-xs md:text-sm flex items-center justify-center gap-2"
                     >
-                      <Ban className="w-4 h-4" />
+                      <Ban className="w-3.5 h-3.5 md:w-4 md:h-4" />
                       Ban
                     </button>
                   )}
@@ -602,30 +604,30 @@ export default function BanManagement() {
             animate={{ opacity: 1, scale: 1 }}
             className="bg-card border border-border rounded-xl max-w-3xl w-full max-h-[80vh] overflow-y-auto"
           >
-            <div className="p-6 border-b border-border flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-bold">{selectedUser.name}'s Devices</h2>
-                <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+            <div className="p-4 md:p-6 border-b border-border flex items-center justify-between">
+              <div className="flex-1 min-w-0 mr-2">
+                <h2 className="text-lg md:text-2xl font-bold truncate">{selectedUser.name}'s Devices</h2>
+                <p className="text-xs md:text-sm text-muted-foreground truncate">{selectedUser.email}</p>
               </div>
               <button
                 onClick={() => setShowDevicesModal(false)}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
+                className="p-2 hover:bg-muted rounded-lg transition-colors flex-shrink-0"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4 md:w-5 md:h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
+            <div className="p-4 md:p-6 space-y-4">
               {selectedUser.devices && selectedUser.devices.length > 0 ? (
                 selectedUser.devices.map((device, idx) => (
-                  <div key={idx} className="bg-muted p-4 rounded-lg">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
+                  <div key={idx} className="bg-muted p-3 md:p-4 rounded-lg">
+                    <div className="flex flex-col sm:flex-row items-start gap-3 sm:justify-between">
+                      <div className="flex-1 w-full">
                         <div className="flex items-center gap-2 mb-2">
-                          <Smartphone className="w-5 h-5 text-primary" />
-                          <h3 className="font-semibold">Device {idx + 1}</h3>
+                          <Smartphone className="w-4 h-4 md:w-5 md:h-5 text-primary" />
+                          <h3 className="font-semibold text-sm md:text-base">Device {idx + 1}</h3>
                         </div>
-                        <div className="space-y-1 text-sm">
+                        <div className="space-y-1 text-xs md:text-sm">
                           <p><span className="font-medium">Platform:</span> {device.platform}</p>
                           <p><span className="font-medium">Resolution:</span> {device.screenResolution}</p>
                           <p><span className="font-medium">Language:</span> {device.language}</p>
@@ -659,9 +661,9 @@ export default function BanManagement() {
                       </div>
                       <button
                         onClick={() => handleKickDevice(selectedUser.id, device.fingerprint)}
-                        className="px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-sm flex items-center gap-2"
+                        className="px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors text-xs md:text-sm flex items-center justify-center gap-2 w-full sm:w-auto"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
                         Kick
                       </button>
                     </div>
@@ -675,15 +677,15 @@ export default function BanManagement() {
               )}
 
               {selectedUser.banHistory && selectedUser.banHistory.length > 0 && (
-                <div className="mt-6 pt-6 border-t border-border">
-                  <h3 className="font-semibold mb-4 flex items-center gap-2">
-                    <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                <div className="mt-4 md:mt-6 pt-4 md:pt-6 border-t border-border">
+                  <h3 className="font-semibold text-sm md:text-base mb-3 md:mb-4 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 md:w-5 md:h-5 text-yellow-500" />
                     Ban History
                   </h3>
                   <div className="space-y-2">
                     {selectedUser.banHistory.slice().reverse().map((ban, idx) => (
-                      <div key={idx} className="bg-red-950/30 border border-red-500/30 p-3 rounded-lg text-sm">
-                        <p className="font-medium text-red-400">{ban.reason}</p>
+                      <div key={idx} className="bg-red-950/30 border border-red-500/30 p-2.5 md:p-3 rounded-lg text-xs md:text-sm">
+                        <p className="font-medium text-red-400 break-words">{ban.reason}</p>
                         <p className="text-xs text-muted-foreground mt-1">
                           {new Date(ban.timestamp).toLocaleString()}
                         </p>
@@ -704,58 +706,59 @@ export default function BanManagement() {
             animate={{ opacity: 1, scale: 1 }}
             className="bg-card border border-border rounded-xl max-w-md w-full"
           >
-            <div className="p-6 border-b border-border flex items-center justify-between">
-              <h2 className="text-2xl font-bold">Ban User</h2>
+            <div className="p-4 md:p-6 border-b border-border flex items-center justify-between">
+              <h2 className="text-lg md:text-2xl font-bold">Ban User</h2>
               <button
                 onClick={() => {
                   setShowBanModal(false)
                   setBanReason("")
                 }}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
+                className="p-2 hover:bg-muted rounded-lg transition-colors flex-shrink-0"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4 md:w-5 md:h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
+            <div className="p-4 md:p-6 space-y-4">
               <div>
-                <p className="text-sm mb-2"><span className="font-medium">User:</span> {selectedUser.name}</p>
-                <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+                <p className="text-xs md:text-sm mb-2"><span className="font-medium">User:</span> {selectedUser.name}</p>
+                <p className="text-xs md:text-sm text-muted-foreground break-all">{selectedUser.email}</p>
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Ban Reason</label>
+                <label className="block text-xs md:text-sm font-medium mb-2">Ban Reason</label>
                 <textarea
                   value={banReason}
                   onChange={(e) => setBanReason(e.target.value)}
                   placeholder="Enter the reason for banning this user..."
-                  className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary min-h-[100px]"
+                  className="w-full px-3 md:px-4 py-2 text-xs md:text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary min-h-[80px] md:min-h-[100px]"
                 />
               </div>
 
-              <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-lg">
-                <p className="text-sm text-yellow-600">
+              <div className="bg-yellow-500/10 border border-yellow-500/30 p-3 md:p-4 rounded-lg">
+                <p className="text-xs md:text-sm text-yellow-600">
                   This user will be banned for 30 minutes and will see a ban message on all devices.
                 </p>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-2 md:gap-3">
                 <button
                   onClick={() => {
                     setShowBanModal(false)
                     setBanReason("")
                   }}
-                  className="flex-1 px-4 py-2 bg-muted rounded-lg hover:bg-muted/80 transition-colors"
+                  className="flex-1 px-3 md:px-4 py-2 text-xs md:text-sm bg-muted rounded-lg hover:bg-muted/80 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleBanUser}
                   disabled={!banReason.trim()}
-                  className="flex-1 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="flex-1 px-3 md:px-4 py-2 text-xs md:text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  <Ban className="w-4 h-4" />
-                  Ban User
+                  <Ban className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                  <span className="hidden sm:inline">Ban User</span>
+                  <span className="sm:hidden">Ban</span>
                 </button>
               </div>
             </div>

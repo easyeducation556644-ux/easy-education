@@ -8,6 +8,30 @@ Preferred communication style: Simple, everyday language.
 
 # Recent Changes
 
+## November 21, 2025 - Security Fixes & Mobile Responsive Ban UI
+
+**Security & Privacy Enhancements:**
+- Removed all sensitive data from client-side logs and ban messages (IP addresses, device fingerprints, platform details)
+- Sanitized ban reasons to only show generic messages: "একাধিক ডিভাইস থেকে একই সময়ে লগইন সনাক্ত করা হয়েছে"
+- Fixed ban notifications to exclude full devices array and sensitive metadata
+- Eliminated console logging of user tracking data for privacy compliance
+
+**Mobile Responsive UI:**
+- Made BanOverlay component fully responsive with proper text scaling (text-xs/sm/md breakpoints)
+- Updated Ban Management admin page with mobile-first design:
+  - Responsive padding: p-4 md:p-6
+  - Flexible header layout with stacked buttons on mobile
+  - Wrapped filter buttons and search bar
+  - Responsive user cards with stacked layouts on mobile
+  - Mobile-optimized modals for device viewing and ban actions
+  - Shortened button text on small screens ("Clear Flags" vs "Clear Logout Flags")
+  - Responsive icon sizes (w-3.5 md:w-4) and font sizes (text-xs md:text-sm)
+- BannedNotifications page already had responsive classes
+
+**Bug Fixes:**
+- Fixed toDate() crash with fallback: `banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)`
+- Improved error handling for ban expiry timestamp parsing
+
 ## November 21, 2025 - Authentication & Ban Management Fixes
 
 Fixed three critical bugs in multi-device authentication and ban system:
