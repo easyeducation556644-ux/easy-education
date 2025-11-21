@@ -6,6 +6,27 @@ Easy Education is a Progressive Web Application (PWA) designed to deliver free o
 
 Preferred communication style: Simple, everyday language.
 
+# Recent Changes
+
+## November 21, 2025 - Authentication & Ban Management Fixes
+
+Fixed three critical bugs in multi-device authentication and ban system:
+
+1. **Unban Logout Issue**: Fixed issue where users remained logged in with empty device list after admin unban. Now properly logs out all devices using `forceLogoutAt` mechanism.
+
+2. **Multi-Device Ban Display**: Fixed critical bug where multiple logged-in devices were redirected to login during ban instead of showing ban overlay. Implemented ban-aware authentication flow that checks `isBanActive` status before processing `forceLogoutAt`, ensuring devices stay logged in and display BanOverlay during active bans.
+
+3. **Device Kick Enforcement**: Improved kicked device logout through enhanced fingerprint detection and `forceLogoutAt` synchronization. Kicked devices now properly log out immediately.
+
+**Technical Implementation**:
+- Added `lastAckedLogoutAt` localStorage tracking (initialized to 0 instead of null) to ensure first logout events always trigger
+- Implemented device fingerprint fallback using stored fingerprint when `getDeviceInfo()` fails
+- Added early return in ban expiry logic to prevent re-banning with stale device data
+- Implemented 5-minute validity window for `forceLogoutAt` to ignore stale timestamps
+- Added ban-active gating that prioritizes BanOverlay display over forced logout during active bans
+- Added auto-cleanup of old `forceLogoutAt` flags (>2 minutes) on successful login to prevent spurious logouts
+- Enhanced expired ban detection in auth listener for offline scenarios
+
 # System Architecture
 
 ## Frontend Architecture
