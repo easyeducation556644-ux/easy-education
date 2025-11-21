@@ -75,17 +75,6 @@ export default function Login() {
             <p className="text-muted-foreground">Sign in to continue learning</p>
           </div>
 
-          <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-            <h3 className="font-semibold text-yellow-700 dark:text-yellow-400 mb-2 flex items-center gap-2">
-              ⚠️ গুরুত্বপূর্ণ সতর্কবার্তা
-            </h3>
-            <div className="text-sm text-yellow-600 dark:text-yellow-300 space-y-1">
-              <p>• সর্বোচ্চ <strong>১টি ডিভাইস</strong> থেকে একসাথে লগইন করতে পারবেন</p>
-              <p>• ২য় ডিভাইসে লগইন করলে আপনার অ্যাকাউন্ট <strong>৩০ মিনিটের জন্য ব্যান</strong> হবে</p>
-              <p>• ৩ বার নিয়ম ভঙ্গ করলে <strong>স্থায়ী ব্যান</strong> হবে</p>
-            </div>
-          </div>
-
           {error && (
             <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-500 text-sm">
               {error}
