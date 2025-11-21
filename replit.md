@@ -1,100 +1,6 @@
 # Overview
 
-Easy Education is a Progressive Web Application (PWA) designed to deliver free online courses. It features a React-based frontend using Vite, an Express.js backend for API services, and Firebase for authentication, database management, and push notifications. The platform integrates with RupantorPay for payment processing, ImgBB for image uploads, and includes a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities.
-
-# Recent Changes
-
-**November 21, 2025 (Session 3):** Fixed critical ban management bugs preventing login after unban/logout
-- **Issue 1:** Users unable to login after being unbanned by admin
-- **Root Cause:** The `handleBanUser` toggle function in ManageUsers.jsx only changed the `banned` field but didn't clear other ban-related fields (`banExpiresAt`, `permanentBan`, `banCount`, `banHistory`, `devices`), leaving stale ban data that blocked re-login
-- **Fix:**
-  - Completely rewrote `handleBanUser` in ManageUsers.jsx to properly clear ALL ban-related fields when unbanning
-  - Added `clearBanCacheAt` and `forceLogoutAt` fields to force clients to clear cached ban info and logout
-  - Added confirmation dialogs for ban/unban operations
-- **Location:** `src/pages/admin/ManageUsers.jsx` (handleBanUser function)
-
-- **Issue 2:** "All device log out" button preventing users from logging back in
-- **Root Cause:** The mass logout function cleared devices and forced logout but didn't set `clearBanCacheAt`, leaving stale ban info in browser localStorage
-- **Fix:**
-  - Added `clearBanCacheAt` field to mass logout function
-  - Also clears `kickedDevices` array to prevent re-login issues
-- **Location:** `src/pages/admin/BanManagement.jsx` (handleLogoutAllUsers function)
-
-- **Issue 3:** Cached ban info persisting in browser after unban
-- **Root Cause:** The ban cache checking logic ran only once on page load, before the user profile was fetched. When unbanned users refreshed their browser, stale ban info from localStorage was loaded and never cleared
-- **Fix:**
-  - Split the AuthContext useEffect into two separate effects
-  - Created a dedicated effect that checks cached ban info whenever `currentUser` or `userProfile` updates
-  - This effect now automatically clears stale ban cache if the user is not banned or the ban has expired
-  - Ensures real-time cache invalidation when admin unbans users
-- **Location:** `src/contexts/AuthContext.jsx` (new useEffect at lines 793-824)
-
-- **Impact:** All ban management functions now work correctly. Users can successfully log in after being unbanned or logged out by admin. The system properly clears all ban-related data from both Firebase and browser cache.
-
-**November 21, 2025 (Session 2):** Enhanced device detection and ban management system
-- **Issue 1:** Android devices showing as "Linux Desktop" in admin panel, especially Android browsers in desktop mode
-- **Root Cause:** Device detection logic relied only on user agent strings without checking modern browser APIs
-- **Fix:** 
-  - Added support for `navigator.userAgentData.platform` API for accurate platform detection
-  - Improved fallback logic to better distinguish Android from Linux Desktop
-  - Android now properly detected even in desktop mode browsers
-- **Location:** `src/lib/deviceTracking.js` in the `getDeviceName` function
-
-- **Issue 2:** Users unable to login after admin unbans them, ban overlay persisting in browser
-- **Root Cause:** Ban information cached in localStorage wasn't being cleared when admin unbanned users
-- **Fix:**
-  - Implemented `clearBanCacheAt` timestamp mechanism in Firestore
-  - Each device independently checks and clears localStorage ban info when admin unbans
-  - Clears all ban-related data: `banInfo`, `deviceWarning`, `lastAckedLogoutAt`
-  - Works across all devices and fresh browser installations
-- **Location:** `src/pages/admin/BanManagement.jsx` (handleUnbanUser) and `src/contexts/AuthContext.jsx` (clearBanCache check)
-
-- **Issue 3:** Device kick not properly logging out users, database showing 0 devices but user remained logged in
-- **Root Cause:** Kicked devices were removed from database but client wasn't notified to logout
-- **Fix:**
-  - Added `kickedDevices` array to track kicked device fingerprints
-  - Client immediately detects when its fingerprint is in kickedDevices array
-  - Device removes itself from kickedDevices array before logout, allowing re-login later
-  - Sets user `online: false` only when no devices remain
-  - Preserves accurate presence tracking for multi-device users
-- **Location:** `src/pages/admin/BanManagement.jsx` (handleKickDevice) and `src/contexts/AuthContext.jsx` (kickedDevices check)
-
-- **Note:** The "Log Out All Users from All Devices" button already exists in the Ban Management page (`/admin/ban-management`), allowing admins to force logout all non-admin users at once.
-
-**November 21, 2025 (Session 1):** Fixed critical React Hooks ordering error causing blank screen
-- **Issue:** Website showing blank screen with React error #310 after Firebase quota was exceeded and refreshed. The minified error indicated "rendered more hooks than during the previous render."
-- **Root Cause:** The device warning `useEffect` hook was placed after the loading/error early return statements in AuthContext. During initial render when `loading=true`, the component returned early and the device warning hook never executed. After auth state changed and `loading=false`, the component no longer returned early, and the device warning hook executed for the first time, creating inconsistent hook ordering.
-- **Fix:** 
-  - Moved the device warning `useEffect` hook to execute before the early return statements
-  - Ensured all hooks (6 useState, 1 usePresence, 3 useEffect) always execute in the same order on every render
-  - Removed duplicate device warning `useEffect` that was causing the ordering violation
-- **Location:** `src/contexts/AuthContext.jsx` - repositioned device warning useEffect from line 863 to line 689
-- **Impact:** Website now loads properly without React Hooks errors. This also resolved the Firebase quota issue since the hooks error was likely causing infinite re-renders that consumed quota.
-
-**November 20, 2025 (Session 2):** Improved IP geolocation accuracy and reliability
-- **Issue:** IP geolocation was using only ipapi.co which had rate limits (1000/day) and provided inaccurate location data, especially for Bangladesh users. No fallback mechanism existed.
-- **Root Cause:** Single API dependency with HTTP/HTTPS mixed-content issues and poor regional coverage.
-- **Fix:**
-  - Implemented multi-API fallback system with 3 HTTPS geolocation APIs:
-    - ipwho.is (primary) - Free, unlimited, accurate for Bangladesh
-    - freeipapi.com (secondary) - Free, unlimited, HTTPS
-    - ipapi.co (tertiary) - Original API as fallback
-  - All APIs use HTTPS to prevent mixed-content browser blocking
-  - Sequential fallback ensures location data is always available
-  - Added 'source' field to track which API provided the data
-  - 8-second timeout per API with proper error handling
-- **Location:** `src/lib/deviceTracking.js` in the `getIPGeolocation` function
-
-**November 20, 2025 (Session 1):** Fixed critical device limit enforcement bug
-- **Issue:** Device tracking was not properly counting unique devices. Users could login from 3+ devices without triggering the 2-device limit ban.
-- **Root Cause:** The system was checking for new IPs while online but not actually counting total unique devices. Additionally, banned devices were being persisted in the database, allowing them to bypass restrictions after ban expiry.
-- **Fix:** 
-  - Implemented proper unique device counting using fingerprint and IP combinations
-  - Enforced strict 2-device limit - attempting to login from a 3rd device now triggers a 30-minute ban
-  - Banned devices are no longer saved to the database, preventing post-ban bypass
-  - Added defensive check for existing devices to ensure total device count never exceeds the limit
-  - Ban escalation: 3 violations result in permanent account ban
-- **Location:** `src/contexts/AuthContext.jsx` in the `checkAndHandleDeviceLogin` function
+Easy Education is a Progressive Web Application (PWA) designed to deliver free online courses. It features a React-based frontend, an Express.js backend for API services, and Firebase for authentication, database management, and push notifications. The platform integrates with RupantorPay for payment processing, ImgBB for image uploads, and includes a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities, targeting market potential in online education.
 
 # User Preferences
 
@@ -114,7 +20,7 @@ Preferred communication style: Simple, everyday language.
 
 **Server Framework:** Express.js on Node.js.
 **Deployment Model:** Hybrid approach utilizing an Express server for development and Vercel serverless functions (located in `/api`) for production, offering scalability.
-**API Structure:** Endpoints for payment processing (`create-payment`, `verify-payment`, `payment-webhook`), enrollment (`process-enrollment`), image uploads (`upload-image`), and dynamic PWA manifest generation (`manifest.json`).
+**API Structure:** Endpoints for payment processing, enrollment, image uploads, and dynamic PWA manifest generation.
 
 ## Data Storage
 
@@ -130,26 +36,24 @@ Preferred communication style: Simple, everyday language.
 
 ## UI/UX Decisions
 
-The application utilizes a custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode for user preference. Radix UI primitives ensure accessibility, while Tailwind CSS provides flexible styling.
+The application utilizes a custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode. Radix UI primitives ensure accessibility, while Tailwind CSS provides flexible styling.
 
 ## Technical Implementations
 
-- **Real-Time Presence Detection:** `usePresence` hook tracks user online/offline status, tab visibility, and window focus, synchronizing with Firestore.
-- **Enhanced Ban Management:** Dedicated admin page `/admin/ban-management` for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Admins are immune to auto-ban.
-- **Device Detection:** Advanced device fingerprinting combined with IP address tracking (via ipify API) for multi-device login detection and ban enforcement. Full-screen ban overlay with countdown for temporary bans.
-- **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy` information for admin accountability, displayed in the dashboard and notifications.
+- **Real-Time Presence Detection:** Tracks user online/offline status, tab visibility, and window focus, synchronizing with Firestore.
+- **Enhanced Ban Management:** Dedicated admin page for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Admins are immune to auto-ban. Includes a self-healing system for `forceLogoutAt` flags and a "Clear Logout Flags" emergency button.
+- **Device Detection:** Advanced device fingerprinting combined with IP address tracking for multi-device login detection and ban enforcement. Enforces a strict 2-device limit with ban escalation. Includes robust `clearBanCacheAt` mechanism for clearing stale ban info on clients.
+- **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy` for admin accountability.
 - **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
-- **IP Geolocation:** Robust IP geolocation with error handling, timeout, and Google Maps integration for device location tracking.
+- **IP Geolocation:** Robust multi-API fallback system (ipwho.is, freeipapi.com, ipapi.co) with error handling, timeout, and Google Maps integration for device location tracking, supporting `navigator.userAgentData.platform` for improved accuracy.
 
 # External Dependencies
 
 **Payment Gateway:** RupantorPay (Bangladesh payment processor)
 - **Integration:** RESTful API for checkout and verification, webhook support.
-- **Authentication:** API key via `X-API-KEY` header.
 
 **Image Hosting:** ImgBB API
 - **Integration:** RESTful API for Base64 image uploads.
-- **Authentication:** API key as query parameter.
 
 **IP Address Tracking:** ipify.org (free public API).
 
@@ -160,12 +64,4 @@ The application utilizes a custom design system inspired by Vercel's minimalist 
 
 **Analytics:** Vercel Analytics (`@vercel/analytics`).
 
-**Build & Development Tools:**
-- **Vite:** Frontend build tool.
-- **Tailwind CSS:** Utility-first CSS framework.
-- **Sharp:** Server-side image processing for PWA icons.
-- **Class Variance Authority (CVA):** Type-safe component variants.
-
 **Deployment Platform:** Vercel (uses `vercel.json` for configuration).
-
-**Email Service:** SendGrid (configured but not actively used).
