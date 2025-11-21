@@ -13,7 +13,6 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, collection
 import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
-import { DeviceLimitWarning } from "../components/DeviceLimitWarning"
 import { usePresence } from "../hooks/usePresence"
 
 const AuthContext = createContext({})
@@ -125,7 +124,9 @@ export function AuthProvider({ children }) {
         if (banEndTime <= now) {
           await updateDoc(userRef, {
             banned: false,
-            banExpiresAt: null
+            banExpiresAt: null,
+            devices: [],
+            kickedDevices: []
           })
           localStorage.removeItem('banInfo')
           setBanInfo(null)
@@ -147,83 +148,50 @@ export function AuthProvider({ children }) {
       setBanInfo(null)
 
       const now = new Date()
-      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
       
-      const activeDevices = devices.filter(d => {
-        if (!d.lastSeen && !d.timestamp) return false
-        try {
-          const deviceTime = new Date(d.lastSeen || d.timestamp)
-          if (isNaN(deviceTime.getTime())) return false
-          return deviceTime >= thirtyDaysAgo
-        } catch (e) {
-          return false
-        }
-      })
-      
-      const existingDevice = activeDevices.find(d => {
-        if (d.fingerprint === deviceInfo.fingerprint) {
-          if (!d.ipAddress || !deviceInfo.ipAddress || d.ipAddress === 'unknown' || deviceInfo.ipAddress === 'unknown') {
-            return true
-          }
-          return d.ipAddress === deviceInfo.ipAddress
-        }
-        return false
-      })
-      
-      const uniqueDevices = new Map()
-      
-      activeDevices.forEach(d => {
-        const key = d.fingerprint + (d.ipAddress && d.ipAddress !== 'unknown' ? `_${d.ipAddress}` : '')
-        uniqueDevices.set(key, d)
-      })
-      
-      const currentDeviceCount = uniqueDevices.size
-      const MAX_ALLOWED_DEVICES = 1
+      const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
       
       console.log('🔍 Device Login Check:', {
         userName,
-        activeDevicesCount: activeDevices.length,
-        uniqueDevicesCount: currentDeviceCount,
-        maxAllowed: MAX_ALLOWED_DEVICES,
+        devicesCount: devices.length,
         currentDevice: deviceInfo.fingerprint,
         currentIP: deviceInfo.ipAddress,
         existingDevice: !!existingDevice
       })
       
       if (!existingDevice) {
-        const shouldBan = currentDeviceCount >= MAX_ALLOWED_DEVICES && !isAdmin
-        
-        if (shouldBan) {
+        if (devices.length > 0) {
           const newBanCount = banCount + 1
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
           
-          const existingIPs = activeDevices
+          const existingIPs = devices
             .filter(d => d.ipAddress && d.ipAddress !== 'unknown')
             .map(d => `${d.ipAddress} (${d.platform || 'Unknown'})`)
             .join(', ')
           
           const banRecord = {
             timestamp: now.toISOString(),
-            reason: `Device limit exceeded - Maximum ${MAX_ALLOWED_DEVICES} devices allowed. Current devices: ${currentDeviceCount}, Attempting to add: ${deviceInfo.ipAddress} (${deviceInfo.platform}). Existing devices: ${existingIPs}`,
-            deviceCount: currentDeviceCount,
+            reason: `একাধিক ডিভাইস থেকে লগইন সনাক্ত করা হয়েছে। বর্তমান ডিভাইস: ${devices.length}, নতুন ডিভাইস: ${deviceInfo.ipAddress} (${deviceInfo.platform}). বিদ্যমান ডিভাইস: ${existingIPs}`,
+            deviceCount: devices.length,
             bannedUntil: banExpires.toISOString(),
             ipAddress: deviceInfo.ipAddress,
             platform: deviceInfo.platform
           }
 
           const updateData = {
-            devices: [...activeDevices, deviceInfo],
+            devices: [...devices, deviceInfo],
             banCount: newBanCount,
             banHistory: [...banHistory, banRecord],
-            banned: true,
-            banExpiresAt: banExpires
+            banned: true
           }
 
           if (newBanCount >= 3) {
             updateData.permanentBan = true
             updateData.banned = true
             updateData.banExpiresAt = null
-            banRecord.reason = `Permanent ban - ${newBanCount} violations of ${MAX_ALLOWED_DEVICES}-device limit policy`
+            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার একাধিক ডিভাইস থেকে লগইন করার চেষ্টা করা হয়েছে`
+          } else {
+            updateData.banExpiresAt = banExpires
           }
 
           await updateDoc(userRef, updateData)
@@ -234,10 +202,10 @@ export function AuthProvider({ children }) {
             userName,
             type: newBanCount >= 3 ? 'permanent' : 'temporary',
             reason: banRecord.reason,
-            deviceCount: currentDeviceCount,
+            deviceCount: devices.length,
             banCount: newBanCount,
             bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
-            devices: activeDevices,
+            devices: devices,
             createdAt: serverTimestamp(),
             isRead: false
           })
@@ -252,90 +220,17 @@ export function AuthProvider({ children }) {
           localStorage.setItem('banInfo', JSON.stringify(banData))
           setBanInfo(banData)
         } else {
-          const updatedDevices = [...activeDevices, deviceInfo]
           await updateDoc(userRef, {
-            devices: updatedDevices
+            devices: [deviceInfo]
           })
-          
-          if (currentDeviceCount === 1) {
-            const warningExpiresAt = new Date(now.getTime() + 30 * 60 * 1000)
-            const warningData = {
-              showWarning: true,
-              deviceCount: 2,
-              expiresAt: warningExpiresAt.toISOString(),
-              message: 'আপনি ২য় ডিভাইস থেকে লগইন করেছেন'
-            }
-            localStorage.setItem('deviceWarning', JSON.stringify(warningData))
-            setDeviceWarning(warningData)
-          }
         }
       } else {
-        if (currentDeviceCount > MAX_ALLOWED_DEVICES && !isAdmin) {
-          const newBanCount = banCount + 1
-          const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
-          
-          const banRecord = {
-            timestamp: now.toISOString(),
-            reason: `Device limit exceeded - More than ${MAX_ALLOWED_DEVICES} devices detected. Current devices: ${currentDeviceCount}`,
-            deviceCount: currentDeviceCount,
-            bannedUntil: banExpires.toISOString(),
-            ipAddress: deviceInfo.ipAddress,
-            platform: deviceInfo.platform
-          }
-
-          const updateData = {
-            devices: activeDevices,
-            banCount: newBanCount,
-            banHistory: [...banHistory, banRecord],
-            banned: true,
-            banExpiresAt: banExpires
-          }
-
-          if (newBanCount >= 3) {
-            updateData.permanentBan = true
-            updateData.banned = true
-            updateData.banExpiresAt = null
-            banRecord.reason = `Permanent ban - ${newBanCount} violations of ${MAX_ALLOWED_DEVICES}-device limit policy`
-          }
-
-          await updateDoc(userRef, updateData)
-
-          await addDoc(collection(db, "banNotifications"), {
-            userId,
-            userEmail,
-            userName,
-            type: newBanCount >= 3 ? 'permanent' : 'temporary',
-            reason: banRecord.reason,
-            deviceCount: currentDeviceCount,
-            banCount: newBanCount,
-            bannedUntil: newBanCount >= 3 ? null : banExpires.toISOString(),
-            devices: activeDevices,
-            createdAt: serverTimestamp(),
-            isRead: false
-          })
-
-          const banData = {
-            isBanned: true,
-            type: newBanCount >= 3 ? 'permanent' : 'temporary',
-            reason: banRecord.reason,
-            bannedUntil: newBanCount >= 3 ? null : banExpires,
-            banCount: newBanCount
-          }
-          localStorage.setItem('banInfo', JSON.stringify(banData))
-          setBanInfo(banData)
-        } else {
-          const updatedDevices = activeDevices.map(d => {
-            const isMatch = d.fingerprint === deviceInfo.fingerprint && 
-              (!d.ipAddress || !deviceInfo.ipAddress || d.ipAddress === 'unknown' || deviceInfo.ipAddress === 'unknown' || d.ipAddress === deviceInfo.ipAddress)
-            
-            return isMatch
-              ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
-              : d
-          })
-          await updateDoc(userRef, {
-            devices: updatedDevices
-          })
-        }
+        const updatedDevices = devices.map(d => 
+          d.fingerprint === deviceInfo.fingerprint
+            ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
+            : d
+        )
+        await updateDoc(userRef, { devices: updatedDevices })
       }
 
       return deviceInfo
@@ -1139,7 +1034,6 @@ export function AuthProvider({ children }) {
     <AuthContext.Provider value={value}>
       {children}
       <BanOverlay banInfo={banInfo} onUnban={handleUnban} />
-      <DeviceLimitWarning warningInfo={deviceWarning} onAutoLogout={handleDeviceWarningLogout} />
     </AuthContext.Provider>
   )
 }

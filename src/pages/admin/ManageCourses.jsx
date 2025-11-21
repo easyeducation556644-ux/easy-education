@@ -25,6 +25,8 @@ export default function ManageCourses() {
     instructors: [],
     category: "",
     type: "subject",
+    courseFormat: "single",
+    bundledCourses: [],
     price: "",
     status: "running",
     publishStatus: "published",
@@ -71,6 +73,8 @@ export default function ManageCourses() {
         instructors: course.instructors || (course.instructorName ? [course.instructorName] : []),
         category: course.category || "",
         type: course.type || "subject",
+        courseFormat: course.courseFormat || "single",
+        bundledCourses: course.bundledCourses || [],
         price: course.price || "",
         status: course.status || "running",
         publishStatus: course.publishStatus || "published",
@@ -87,6 +91,8 @@ export default function ManageCourses() {
         instructors: [],
         category: "",
         type: "subject",
+        courseFormat: "single",
+        bundledCourses: [],
         price: "",
         status: "running",
         publishStatus: "published",
@@ -133,6 +139,8 @@ export default function ManageCourses() {
         instructorName: formData.instructors.join(", "),
         category: formData.category,
         type: formData.type,
+        courseFormat: formData.courseFormat || "single",
+        bundledCourses: formData.courseFormat === "bundle" ? formData.bundledCourses : [],
         price: Number(formData.price) || 0,
         status: formData.status,
         publishStatus: formData.publishStatus,
@@ -482,6 +490,67 @@ export default function ManageCourses() {
                     <option value="batch">Batch</option>
                   </select>
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">Course Format</label>
+                  <select
+                    value={formData.courseFormat}
+                    onChange={(e) => setFormData({ ...formData, courseFormat: e.target.value, bundledCourses: e.target.value === 'single' ? [] : formData.bundledCourses })}
+                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                  >
+                    <option value="single">Single</option>
+                    <option value="bundle">Bundle</option>
+                  </select>
+                </div>
+
+                {formData.courseFormat === 'bundle' && (
+                  <div className="col-span-full">
+                    <label className="block text-sm font-medium mb-1.5">Bundled Courses</label>
+                    <div className="border border-border rounded-lg p-3 max-h-40 overflow-y-auto">
+                      {courses.filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle').length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {courses
+                            .filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle')
+                            .map((course) => (
+                              <label
+                                key={course.id}
+                                className="flex items-center gap-2 p-2 hover:bg-muted rounded cursor-pointer text-sm"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={formData.bundledCourses.includes(course.id)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setFormData({
+                                        ...formData,
+                                        bundledCourses: [...formData.bundledCourses, course.id]
+                                      })
+                                    } else {
+                                      setFormData({
+                                        ...formData,
+                                        bundledCourses: formData.bundledCourses.filter(id => id !== course.id)
+                                      })
+                                    }
+                                  }}
+                                  className="rounded border-border"
+                                />
+                                <span className="flex-1">{course.title}</span>
+                              </label>
+                            ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground text-center py-2">
+                          No single courses available to bundle
+                        </p>
+                      )}
+                    </div>
+                    {formData.bundledCourses.length > 0 && (
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        Selected: {formData.bundledCourses.length} course{formData.bundledCourses.length > 1 ? 's' : ''}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium mb-1.5">Price (৳)</label>
