@@ -1,0 +1,53 @@
+আপনার সমস্যাটি হচ্ছে "Log out all device" বাটন ব্যবহার করার পর forceLogoutAt টাইমস্ট্যাম্প সেট হয়ে যাচ্ছে, এবং এটা পরবর্তী সব লগিন attempt-কে block করে দিচ্ছে।
+সমস্যাটি AuthContext.jsx-এর এই অংশে:
+javascriptif (updatedProfile.forceLogoutAt) {
+  const forceLogoutTimestamp = updatedProfile.forceLogoutAt.toMillis ? 
+    updatedProfile.forceLogoutAt.toMillis() : 
+    new Date(updatedProfile.forceLogoutAt).getTime()
+  
+  if (lastAckedTimestamp === null) {
+    localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
+  } else if (forceLogoutTimestamp > lastAckedTimestamp) {
+    // এখানেই লগআউট হচ্ছে বারবার
+    await firebaseSignOut(auth)
+    window.location.reload()
+    return
+  }
+}
+সমাধান:
+BanManagement.jsx ফাইলের handleLogoutAllUsers function-টি আপডেট করুন। forceLogoutAt একবার ব্যবহার করার পর সেটা remove করে দিতে হবে:UntitledText   const handleLogoutAllUsers = async () => {
+    const nonAdminUsers = users.filter(u => u.role !== "admin")
+    const onlineCount = nonAdminUsers.filter(u => u.online).length
+    
+    setConfirmDialog({
+      isOpen: true,
+      title: "Log Out All এখন যেসব ইউজার ইতিমধ্যে affected হয়ে গেছে, তাদের জন্য একটি emergency fix:
+Firebase Console থেকে Firestore Database-এ গিয়ে এই query রান করুন:
+
+Firestore Console → users collection → Filter where forceLogoutAt != null
+সব document select করুন
+Batch update করে এই fields গুলো delete করুন:
+
+forceLogoutAt
+forceLogoutReason
+forcedBy
+
+
+
+অথবা আরো সহজ উপায়: আপনার Admin Panel-এ একটি emergency button বানান:UntitledText ∙ Version 2           <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                setConfirmDialog({
+                  isOpen: true,
+                  title: "Clear Force Logout Flags",
+                  message: "This wএখন করণীয়:
+
+✅ Immediate Fix: নতুন "Clear Logout Flags" বাটনে ক্লিক করুন - এটা সব ইউজারের forceLogoutAt flag clear করে দেবে
+✅ Future Protection: এখন থেকে "Log Out All Users" বাটন ব্যবহার করলে 5 সেকেন্ড পরে automatically logout flags clear হয়ে যাবে
+✅ Test: একটি test user দিয়ে লগিন করে দেখুন - এখন ঠিকমতো লগিন হবে
+
+এই fix গুলো দিয়ে:
+
+✅ বর্তমান সমস্যা solve হবে (Clear Logout Flags button)
+✅ ভবিষ্যতে এই সমস্যা আর হবে না (auto-clear mechanism)
+✅ Mass logout কাজ করবে কিন্তু পরে login block করবে না

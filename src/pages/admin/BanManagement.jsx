@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { Search, Ban, Clock, Smartphone, Trash2, Shield, AlertTriangle, CheckCircle, User, X, MapPin } from "lucide-react"
-import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc, onSnapshot } from "firebase/firestore"
+import { collection, getDocs, doc, updateDoc, query, orderBy, serverTimestamp, addDoc, onSnapshot, deleteField } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
@@ -289,14 +289,97 @@ export default function BanManagement() {
           
           toast({
             title: "Completed",
-            description: `Successfully logged out ${successCount} users${failCount > 0 ? `. ${failCount} failed: ${failedUsers.join(', ')}` : ''}`,
+            description: `Successfully logged out ${successCount} users${failCount > 0 ? `. ${failCount} failed: ${failedUsers.join(', ')}` : ''}. Flags will auto-clear in 5 seconds.`,
           })
+
+          setTimeout(async () => {
+            try {
+              let clearCount = 0
+              for (let i = 0; i < nonAdminUsers.length; i += BATCH_SIZE) {
+                const batch = nonAdminUsers.slice(i, i + BATCH_SIZE)
+                const promises = batch.map(async (user) => {
+                  try {
+                    await updateDoc(doc(db, "users", user.id), {
+                      forceLogoutAt: deleteField(),
+                      forceLogoutReason: deleteField(),
+                      forcedBy: deleteField()
+                    })
+                    clearCount++
+                  } catch (error) {
+                    console.error(`Error clearing flags for user ${user.name}:`, error)
+                  }
+                })
+                await Promise.allSettled(promises)
+              }
+              console.log(`✅ Auto-cleared logout flags for ${clearCount} users`)
+            } catch (error) {
+              console.error("Error auto-clearing logout flags:", error)
+            }
+          }, 5000)
         } catch (error) {
           console.error("Error logging out all users:", error)
           toast({
             variant: "error",
             title: "Error",
             description: "Failed to log out all users",
+          })
+        }
+      }
+    })
+  }
+
+  const handleClearLogoutFlags = async () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Clear Force Logout Flags",
+      message: "This will clear all force logout flags from all users, allowing them to log in again. This is useful if users are stuck in a logout loop. Continue?",
+      variant: "default",
+      onConfirm: async () => {
+        try {
+          const allUsers = users.filter(u => u.role !== "admin")
+          let clearCount = 0
+          let failCount = 0
+          const BATCH_SIZE = 10
+          
+          for (let i = 0; i < allUsers.length; i += BATCH_SIZE) {
+            const batch = allUsers.slice(i, i + BATCH_SIZE)
+            const promises = batch.map(async (user) => {
+              try {
+                await updateDoc(doc(db, "users", user.id), {
+                  forceLogoutAt: deleteField(),
+                  forceLogoutReason: deleteField(),
+                  forcedBy: deleteField()
+                })
+                clearCount++
+              } catch (error) {
+                console.error(`Error clearing flags for user ${user.name}:`, error)
+                failCount++
+              }
+            })
+            await Promise.allSettled(promises)
+          }
+          
+          await addDoc(collection(db, "adminActions"), {
+            action: "clear_logout_flags",
+            adminId: userProfile?.id || 'unknown',
+            adminName: userProfile?.name || 'Admin',
+            timestamp: new Date().toISOString(),
+            affectedUsers: allUsers.length,
+            successCount: clearCount,
+            failCount,
+            createdAt: serverTimestamp()
+          })
+          
+          toast({
+            title: "Success",
+            description: `Cleared logout flags for ${clearCount} users${failCount > 0 ? `. ${failCount} failed` : ''}. Users can now log in normally.`,
+          })
+        } catch (error) {
+          console.error("Error clearing logout flags:", error)
+          toast({
+            variant: "error",
+            title: "Error",
+            description: "Failed to clear logout flags",
           })
         }
       }
@@ -340,13 +423,22 @@ export default function BanManagement() {
               Manage user bans, monitor devices, and control access
             </p>
           </div>
-          <button
-            onClick={handleLogoutAllUsers}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
-          >
-            <Ban className="w-4 h-4" />
-            Log Out All Users
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleClearLogoutFlags}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+            >
+              <CheckCircle className="w-4 h-4" />
+              Clear Logout Flags
+            </button>
+            <button
+              onClick={handleLogoutAllUsers}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+            >
+              <Ban className="w-4 h-4" />
+              Log Out All Users
+            </button>
+          </div>
         </div>
       </div>
 
