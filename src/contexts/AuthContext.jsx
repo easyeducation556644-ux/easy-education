@@ -168,7 +168,7 @@ export function AuthProvider({ children }) {
       })
       
       const currentDeviceCount = uniqueDevices.size
-      const MAX_ALLOWED_DEVICES = 2
+      const MAX_ALLOWED_DEVICES = 1
       
       if (!existingDevice) {
         const shouldBan = currentDeviceCount >= MAX_ALLOWED_DEVICES && !isAdmin
