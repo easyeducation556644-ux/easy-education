@@ -34,6 +34,7 @@ export function AuthProvider({ children }) {
   const [banInfo, setBanInfo] = useState(null)
   const [deviceWarning, setDeviceWarning] = useState(null)
   const [lastLoginTimestamp, setLastLoginTimestamp] = useState(null)
+  const [currentDeviceFingerprint, setCurrentDeviceFingerprint] = useState(null)
 
   usePresence(currentUser)
 
@@ -46,6 +47,10 @@ export function AuthProvider({ children }) {
   const checkAndHandleDeviceLogin = async (userId, userEmail, userName) => {
     try {
       const deviceInfo = await getDeviceInfo()
+      if (deviceInfo && deviceInfo.fingerprint) {
+        setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+        localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+      }
       const userRef = doc(db, "users", userId)
       const userDoc = await getDoc(userRef)
       
@@ -207,7 +212,7 @@ export function AuthProvider({ children }) {
           }
 
           const updateData = {
-            devices: activeDevices,
+            devices: [...activeDevices, deviceInfo],
             banCount: newBanCount,
             banHistory: [...banHistory, banRecord],
             banned: true,
@@ -368,6 +373,11 @@ export function AuthProvider({ children }) {
 
       const isDefaultAdmin = email === "admin@gmail.com"
       const deviceInfo = await getDeviceInfo()
+      
+      if (deviceInfo && deviceInfo.fingerprint) {
+        setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+        localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+      }
 
       const newUserData = {
         name: userData.name || "",
@@ -407,6 +417,12 @@ export function AuthProvider({ children }) {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
       const deviceInfo = await getDeviceInfo()
+      
+      if (deviceInfo && deviceInfo.fingerprint) {
+        setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+        localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+      }
+      
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
 
@@ -476,6 +492,12 @@ export function AuthProvider({ children }) {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const deviceInfo = await getDeviceInfo()
+      
+      if (deviceInfo && deviceInfo.fingerprint) {
+        setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+        localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+      }
+      
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
 
@@ -544,14 +566,60 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     try {
       if (currentUser) {
+        const userRef = doc(db, "users", currentUser.uid)
+        let fingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
+        
         try {
-          await updateDoc(doc(db, "users", currentUser.uid), {
-            online: false,
-            lastActive: serverTimestamp(),
-          })
+          const deviceInfo = await getDeviceInfo()
+          if (deviceInfo && deviceInfo.fingerprint) {
+            fingerprint = deviceInfo.fingerprint
+          }
+        } catch (deviceError) {
+          console.warn("getDeviceInfo failed during logout, using stored fingerprint:", deviceError)
+        }
+        
+        try {
+          if (fingerprint) {
+            const userDoc = await getDoc(userRef)
+            
+            if (userDoc.exists()) {
+              const userData = userDoc.data()
+              const devices = userData.devices || []
+              const updatedDevices = devices.filter(d => d.fingerprint !== fingerprint)
+              
+              await updateDoc(userRef, {
+                online: false,
+                lastActive: serverTimestamp(),
+                devices: updatedDevices
+              })
+              console.log('✅ Device removed from database during logout')
+            } else {
+              await updateDoc(userRef, {
+                online: false,
+                lastActive: serverTimestamp(),
+              })
+            }
+          } else {
+            await updateDoc(userRef, {
+              online: false,
+              lastActive: serverTimestamp(),
+            })
+            console.warn("No device fingerprint available, could not remove device from database")
+          }
         } catch (firestoreError) {
           console.error("Firestore error during sign out:", firestoreError)
+          try {
+            await updateDoc(userRef, {
+              online: false,
+              lastActive: serverTimestamp(),
+            })
+          } catch (fallbackError) {
+            console.error("Fallback update also failed:", fallbackError)
+          }
         }
+        
+        localStorage.removeItem('currentDeviceFingerprint')
+        setCurrentDeviceFingerprint(null)
       }
       await firebaseSignOut(auth)
       setCurrentUser(null)
@@ -720,8 +788,26 @@ export function AuthProvider({ children }) {
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
           const isRecentLogin = timeSinceLogin < 10000
           
-          if (devices.length === 0 && !isRecentLogin && updatedProfile.banned) {
-            console.log('✅ Devices cleared for banned user - Auto logout triggered')
+          const isBanned = updatedProfile.banned || updatedProfile.permanentBan
+          const banExpiresAt = updatedProfile.banExpiresAt
+          let isBanActive = false
+          
+          if (isBanned) {
+            if (!banExpiresAt) {
+              isBanActive = true
+            } else {
+              try {
+                const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
+                isBanActive = banEndTime > new Date()
+              } catch (e) {
+                console.error('Error parsing ban expiration:', e)
+                isBanActive = true
+              }
+            }
+          }
+          
+          if (devices.length === 0 && !isRecentLogin && updatedProfile.banned && !isBanActive) {
+            console.log('✅ Devices cleared for banned user (ban expired) - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
@@ -730,7 +816,7 @@ export function AuthProvider({ children }) {
             return
           }
           
-          if (!deviceExists && devices.length > 0 && !isRecentLogin) {
+          if (!deviceExists && devices.length > 0 && !isRecentLogin && !isBanActive) {
             console.log('✅ Device has been removed - Auto logout triggered')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
@@ -864,10 +950,25 @@ export function AuthProvider({ children }) {
           clearTimeout(loadingTimeout)
           setCurrentUser(user)
           if (user) {
+            try {
+              const deviceInfo = await getDeviceInfo()
+              if (deviceInfo && deviceInfo.fingerprint) {
+                const storedFingerprint = localStorage.getItem('currentDeviceFingerprint')
+                if (storedFingerprint !== deviceInfo.fingerprint || !currentDeviceFingerprint) {
+                  setCurrentDeviceFingerprint(deviceInfo.fingerprint)
+                  localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
+                  console.log('✅ Device fingerprint captured/updated on auth state change')
+                }
+              }
+            } catch (e) {
+              console.warn('Could not capture device fingerprint on auth state change:', e)
+            }
             await ensureAdminRole(user.uid, user.email)
             await fetchUserProfile(user.uid)
           } else {
             setUserProfile(null)
+            localStorage.removeItem('currentDeviceFingerprint')
+            setCurrentDeviceFingerprint(null)
           }
           setLoading(false)
           setError(null)
@@ -907,9 +1008,12 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  const effectiveUser = banInfo?.isBanned ? null : currentUser
+  const effectiveProfile = banInfo?.isBanned ? null : userProfile
+  
   const value = {
-    currentUser,
-    userProfile,
+    currentUser: effectiveUser,
+    userProfile: effectiveProfile,
     signUp,
     signIn,
     signUpWithEmail,
@@ -918,7 +1022,7 @@ export function AuthProvider({ children }) {
     sendPasswordResetEmail,
     signOut,
     loading,
-    isAdmin: userProfile?.role === "admin",
+    isAdmin: userProfile?.role === "admin" && !banInfo?.isBanned,
     refreshUserProfile,
     error,
   }
@@ -967,9 +1071,11 @@ export function AuthProvider({ children }) {
             await updateDoc(userRef, {
               devices: [],
               banned: false,
-              banExpiresAt: null
+              banExpiresAt: null,
+              forceLogoutAt: serverTimestamp(),
+              forceLogoutReason: 'Ban expired - all devices logged out'
             })
-            console.log('✅ Ban expired: Cleared all devices from Firebase')
+            console.log('✅ Ban expired: Cleared all devices from Firebase and forced logout on all devices')
           }
         }
       } catch (error) {
