@@ -175,6 +175,16 @@ export function AuthProvider({ children }) {
       const currentDeviceCount = uniqueDevices.size
       const MAX_ALLOWED_DEVICES = 1
       
+      console.log('🔍 Device Login Check:', {
+        userName,
+        activeDevicesCount: activeDevices.length,
+        uniqueDevicesCount: currentDeviceCount,
+        maxAllowed: MAX_ALLOWED_DEVICES,
+        currentDevice: deviceInfo.fingerprint,
+        currentIP: deviceInfo.ipAddress,
+        existingDevice: !!existingDevice
+      })
+      
       if (!existingDevice) {
         const shouldBan = currentDeviceCount >= MAX_ALLOWED_DEVICES && !isAdmin
         
