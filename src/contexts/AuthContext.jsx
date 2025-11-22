@@ -189,11 +189,13 @@ export function AuthProvider({ children }) {
           }
 
           if (newBanCount >= 3) {
+            const currentPermanentBanCount = (userData.permanentBanCount || 0) + 1
             updateData.permanentBan = true
             updateData.autoPermanentBan = true
+            updateData.permanentBanCount = currentPermanentBanCount
             updateData.banned = true
             updateData.banExpiresAt = null
-            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার নীতি লঙ্ঘনের কারণে`
+            banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার নীতি লঙ্ঘনের কারণে (স্থায়ী ব্যান #${currentPermanentBanCount})`
           } else {
             // 🔥 FIX: Store as Firestore Timestamp instead of plain Date
             const banExpiresTimestamp = new Date(banExpires.getTime())

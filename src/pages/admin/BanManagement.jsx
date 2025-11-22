@@ -143,25 +143,34 @@ export default function BanManagement() {
   }
 
   const handleUnbanUser = async (user) => {
-    if (user.autoPermanentBan) {
-      toast({
-        variant: "error",
-        title: "Cannot Unban",
-        description: `${user.name} has been permanently banned due to 3+ temporary bans. This ban cannot be reversed.`,
-      })
-      return
-    }
+    const wasPermanentlyBanned = user.autoPermanentBan || user.permanentBan
+    const permanentBanCount = user.permanentBanCount || 0
     
     setConfirmDialog({
       isOpen: true,
       title: "Unban User",
-      message: `Are you sure you want to unban ${user.name}? This will clear all ban records and log them out from all devices. They can log in again immediately.`,
+      message: permanentBanCount > 0
+        ? `Are you sure you want to unban ${user.name}? This user has ${permanentBanCount} permanent ban(s) in their history. After unbanning, their current ban count will reset to 0, but permanent ban count (${permanentBanCount}) will remain as audit trail. They will be logged out and can log in again.`
+        : `Are you sure you want to unban ${user.name}? Their current ban count will reset to 0. They will be logged out and can log in again immediately.`,
       variant: "default",
       onConfirm: async () => {
         try {
+          const unbanRecord = {
+            timestamp: new Date().toISOString(),
+            reason: `Unbanned by ${userProfile?.name || 'Admin'}`,
+            adminId: userProfile?.id || 'unknown',
+            adminName: userProfile?.name || 'Admin',
+            wasPermanentBan: wasPermanentlyBanned,
+            previousBanCount: user.banCount || 0
+          }
+          
           const updateData = {
             banned: false,
+            permanentBan: false,
+            autoPermanentBan: false,
             banExpiresAt: null,
+            banCount: 0,
+            banHistory: [...(user.banHistory || []), unbanRecord],
             devices: [],
             kickedDevices: [],
             forceLogoutAt: serverTimestamp(),
@@ -169,18 +178,14 @@ export default function BanManagement() {
             forcedBy: userProfile?.id || 'unknown',
             clearBanCacheAt: serverTimestamp()
           }
-          
-          if (!user.autoPermanentBan) {
-            updateData.permanentBan = false
-            updateData.banCount = 0
-            updateData.banHistory = []
-          }
 
           await updateDoc(doc(db, "users", user.id), updateData)
 
           toast({
             title: "Success",
-            description: "User unbanned successfully. They will be logged out and can log in again immediately.",
+            description: permanentBanCount > 0
+              ? `User unbanned successfully. Ban count reset to 0, permanent ban count (${permanentBanCount}) preserved in audit trail.`
+              : "User unbanned successfully. They will be logged out and can log in again immediately.",
           })
         } catch (error) {
           console.error("Error unbanning user:", error)
@@ -544,6 +549,12 @@ export default function BanManagement() {
                           {user.banCount}
                         </span>
                       )}
+                      {(user.permanentBanCount || 0) > 0 && (
+                        <span className="px-2.5 py-0.5 bg-orange-500/10 text-orange-600 dark:text-orange-400 text-xs font-medium rounded-full border border-orange-500/30 flex items-center gap-1">
+                          <Shield className="w-3 h-3" />
+                          P-Ban: {user.permanentBanCount}
+                        </span>
+                      )}
                       {isBanned && (
                         <span className="px-2.5 py-0.5 bg-red-500 text-white text-xs font-medium rounded-full animate-pulse">
                           {user.permanentBan ? "⛔ Permanent Ban" : "🚫 Banned"}
@@ -562,6 +573,12 @@ export default function BanManagement() {
                         <div className="flex items-center gap-1.5">
                           <AlertTriangle className="w-3.5 h-3.5 md:w-4 md:h-4 text-yellow-500" />
                           <span className="text-yellow-600">Ban: {user.banCount}</span>
+                        </div>
+                      )}
+                      {(user.permanentBanCount || 0) > 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <Shield className="w-3.5 h-3.5 md:w-4 md:h-4 text-orange-500" />
+                          <span className="text-orange-600">P-Ban: {user.permanentBanCount}</span>
                         </div>
                       )}
                       {timeRemaining && (
