@@ -5,18 +5,28 @@ export default function UpdateNotification() {
   const [showUpdate, setShowUpdate] = useState(false);
   const [registration, setRegistration] = useState(null);
   const [isVersionMismatch, setIsVersionMismatch] = useState(false);
+  const [dismissedVersion, setDismissedVersion] = useState(null);
 
   useEffect(() => {
     const checkVersion = async () => {
       try {
-        const response = await fetch('/api/version');
+        const response = await fetch('/api/version?t=' + Date.now());
         const data = await response.json();
         const localVersion = localStorage.getItem('appVersion');
+        const dismissed = localStorage.getItem('dismissedUpdateVersion');
         
         if (localVersion && localVersion !== data.version) {
-          console.log('Version mismatch detected:', localVersion, '!==', data.version);
-          setIsVersionMismatch(true);
-          setShowUpdate(true);
+          if (dismissed !== data.version) {
+            console.log('Version mismatch detected:', localVersion, '!==', data.version);
+            setIsVersionMismatch(true);
+            setShowUpdate(true);
+            setDismissedVersion(null);
+          }
+        } else {
+          setIsVersionMismatch(false);
+          if (showUpdate && !registration) {
+            setShowUpdate(false);
+          }
         }
         
         localStorage.setItem('appVersion', data.version);
@@ -26,7 +36,7 @@ export default function UpdateNotification() {
     };
 
     checkVersion();
-    const versionCheckInterval = setInterval(checkVersion, 60000);
+    const versionCheckInterval = setInterval(checkVersion, 120000);
 
     const handleUpdateAvailable = (event) => {
       console.log('Update available event received');
@@ -64,49 +74,51 @@ export default function UpdateNotification() {
     };
   }, []);
 
-  const handleUpdate = () => {
-    if (!registration) {
-      console.warn('No registration available, triggering force update via active worker');
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({ type: 'FORCE_UPDATE' });
-        setTimeout(() => window.location.reload(), 1000);
-      } else {
-        window.location.reload();
-      }
-      setShowUpdate(false);
-      return;
-    }
-
-    if (registration.waiting) {
-      const waitingWorker = registration.waiting;
-      
-      waitingWorker.addEventListener('statechange', (e) => {
-        if (e.target.state === 'activated') {
-          window.location.reload();
-        }
-      });
-      
-      waitingWorker.postMessage({ type: 'SKIP_WAITING' });
-    } else if (registration.active) {
-      registration.active.postMessage({ type: 'FORCE_UPDATE' });
-      setTimeout(() => window.location.reload(), 1000);
-    } else {
-      console.warn('Update state unclear, triggering force update');
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({ type: 'FORCE_UPDATE' });
-        setTimeout(() => window.location.reload(), 1000);
-      } else {
-        window.location.reload();
-      }
-    }
-    
+  const handleUpdate = async () => {
+    console.log('🔄 Starting update process...');
     setShowUpdate(false);
+    
+    localStorage.removeItem('dismissedUpdateVersion');
+    
+    try {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const reg of registrations) {
+          await reg.unregister();
+        }
+        console.log('✅ Service workers unregistered');
+      }
+      
+      if ('caches' in window) {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(name => caches.delete(name)));
+        console.log('✅ All caches cleared');
+      }
+      
+      localStorage.removeItem('appVersion');
+      console.log('✅ Version cleared, reloading...');
+      
+      window.location.reload(true);
+    } catch (error) {
+      console.error('Error during update:', error);
+      window.location.reload(true);
+    }
   };
 
-  const handleDismiss = () => {
+  const handleDismiss = async () => {
     if (isVersionMismatch) {
       return;
     }
+    
+    try {
+      const response = await fetch('/api/version');
+      const data = await response.json();
+      localStorage.setItem('dismissedUpdateVersion', data.version);
+      setDismissedVersion(data.version);
+    } catch (error) {
+      console.error('Failed to save dismissed version:', error);
+    }
+    
     setShowUpdate(false);
   };
 

@@ -145,13 +145,16 @@ export default function BanManagement() {
   const handleUnbanUser = async (user) => {
     const wasPermanentlyBanned = user.autoPermanentBan || user.permanentBan
     const permanentBanCount = user.permanentBanCount || 0
+    const newPermanentBanCount = wasPermanentlyBanned ? (permanentBanCount + 1) : permanentBanCount
     
     setConfirmDialog({
       isOpen: true,
       title: "Unban User",
-      message: permanentBanCount > 0
-        ? `Are you sure you want to unban ${user.name}? This user has ${permanentBanCount} permanent ban(s) in their history. After unbanning, their current ban count will reset to 0, but permanent ban count (${permanentBanCount}) will remain as audit trail. They will be logged out and can log in again.`
-        : `Are you sure you want to unban ${user.name}? Their current ban count will reset to 0. They will be logged out and can log in again immediately.`,
+      message: wasPermanentlyBanned
+        ? `Are you sure you want to unban ${user.name}? This user was permanently banned. After unbanning, their temporary ban count will reset to 0 and permanent ban count will be ${newPermanentBanCount}. They will be logged out and can log in again.`
+        : permanentBanCount > 0
+        ? `Are you sure you want to unban ${user.name}? This user has ${permanentBanCount} permanent ban(s) in their history. After unbanning, their temporary ban count will reset to 0. They will be logged out and can log in again.`
+        : `Are you sure you want to unban ${user.name}? Their temporary ban count will reset to 0. They will be logged out and can log in again immediately.`,
       variant: "default",
       onConfirm: async () => {
         try {
@@ -161,7 +164,9 @@ export default function BanManagement() {
             adminId: userProfile?.id || 'unknown',
             adminName: userProfile?.name || 'Admin',
             wasPermanentBan: wasPermanentlyBanned,
-            previousBanCount: user.banCount || 0
+            previousBanCount: user.banCount || 0,
+            previousPermanentBanCount: permanentBanCount,
+            newPermanentBanCount: newPermanentBanCount
           }
           
           const updateData = {
@@ -170,6 +175,7 @@ export default function BanManagement() {
             autoPermanentBan: false,
             banExpiresAt: null,
             banCount: 0,
+            permanentBanCount: newPermanentBanCount,
             banHistory: [...(user.banHistory || []), unbanRecord],
             devices: [],
             kickedDevices: [],
@@ -183,8 +189,10 @@ export default function BanManagement() {
 
           toast({
             title: "Success",
-            description: permanentBanCount > 0
-              ? `User unbanned successfully. Ban count reset to 0, permanent ban count (${permanentBanCount}) preserved in audit trail.`
+            description: wasPermanentlyBanned
+              ? `User unbanned successfully. Temporary ban count reset to 0, permanent ban count now ${newPermanentBanCount}.`
+              : permanentBanCount > 0
+              ? `User unbanned successfully. Temporary ban count reset to 0, permanent ban count remains ${permanentBanCount}.`
               : "User unbanned successfully. They will be logged out and can log in again immediately.",
           })
         } catch (error) {
