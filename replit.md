@@ -8,6 +8,43 @@ Preferred communication style: Simple, everyday language.
 
 # Recent Changes
 
+## November 22, 2025 - Cache Management, Ban System Hardening & Bundle Course Visibility
+
+**Service Worker Cache Fix:**
+- Implemented `/api/version` endpoint that returns current server version with ETag caching
+- Service worker now uses network-first strategy for critical resources (HTML, API, JS, CSS) to prevent stale cache
+- Falls back to cache only when network is unavailable
+- Version checking compares server version against cached version on every load
+- UpdateNotification component provides user-friendly update prompts when version mismatch detected
+- Automatic reload when users accept update notification
+
+**Ban System Security Enhancements:**
+- Added pre-login ban checks in AuthContext to prevent login even when cache is cleared
+- Ban validation now happens BEFORE device fingerprinting to solve offline/cache-clear issues
+- Banned users see error message immediately without being able to access the app
+- Implements proper server-side ban verification that works regardless of client-side cache state
+
+**Auto-Permanent Ban System:**
+- Implemented `autoPermanentBan` flag that activates after 3 temporary bans
+- Auto-locked accounts cannot be unbanned by admins (irreversible security measure)
+- Ban Management page shows "Auto-Locked" badge for permanently banned users
+- Unban button disabled with explanatory tooltip for auto-locked accounts
+- Protects against repeated multi-device login violations
+
+**Bundle Course Visibility Fix:**
+- Fixed bundle courses appearing on Home and Courses pages after purchase
+- Now uses local `purchasedBundleSet` variable for immediate filtering (not stale state)
+- Purchased bundles are hidden from course listings while individual courses remain visible
+- Users only see the individual courses they have access to, not the bundle wrapper
+- Prevents confusion and duplicate course display
+
+**Technical Implementation:**
+- Version checking uses ETag headers for efficient caching
+- Service worker registration in App.jsx with version comparison logic
+- AuthContext performs Firebase query to check ban status before allowing login
+- Home.jsx and Courses.jsx build bundle set synchronously before filtering
+- All fixes tested and verified by architect agent
+
 ## November 21, 2025 - Service Worker Auto-Update, Advanced Coupons & Bundle Courses
 
 **Service Worker Auto-Update System:**
