@@ -1,189 +1,57 @@
 # Overview
 
-Easy Education is a Progressive Web Application (PWA) designed to deliver free online courses. It features a React-based frontend, an Express.js backend for API services, and Firebase for authentication, database management, and push notifications. The platform integrates with RupantorPay for payment processing, ImgBB for image uploads, and includes a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities, targeting market potential in online education.
+Easy Education is a Progressive Web Application (PWA) delivering free online courses. It features a React-based frontend, an Express.js backend, and Firebase for authentication, database, and notifications. The platform integrates with RupantorPay for payments and ImgBB for image uploads, alongside a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities, targeting the online education market.
 
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
-
-# Recent Changes
-
-## November 22, 2025 - Cache Management, Ban System Hardening & Bundle Course Visibility
-
-**Service Worker Cache Fix:**
-- Implemented `/api/version` endpoint that returns current server version with ETag caching
-- Service worker now uses network-first strategy for critical resources (HTML, API, JS, CSS) to prevent stale cache
-- Falls back to cache only when network is unavailable
-- Version checking compares server version against cached version on every load
-- UpdateNotification component provides user-friendly update prompts when version mismatch detected
-- Automatic reload when users accept update notification
-
-**Ban System Security Enhancements:**
-- Added pre-login ban checks in AuthContext to prevent login even when cache is cleared
-- Ban validation now happens BEFORE device fingerprinting to solve offline/cache-clear issues
-- Banned users see error message immediately without being able to access the app
-- Implements proper server-side ban verification that works regardless of client-side cache state
-
-**Auto-Permanent Ban System:**
-- Implemented `autoPermanentBan` flag that activates after 3 temporary bans
-- Auto-locked accounts cannot be unbanned by admins (irreversible security measure)
-- Ban Management page shows "Auto-Locked" badge for permanently banned users
-- Unban button disabled with explanatory tooltip for auto-locked accounts
-- Protects against repeated multi-device login violations
-
-**Bundle Course Visibility Fix:**
-- Fixed bundle courses appearing on Home and Courses pages after purchase
-- Now uses local `purchasedBundleSet` variable for immediate filtering (not stale state)
-- Purchased bundles are hidden from course listings while individual courses remain visible
-- Users only see the individual courses they have access to, not the bundle wrapper
-- Prevents confusion and duplicate course display
-
-**Technical Implementation:**
-- Version checking uses ETag headers for efficient caching
-- Service worker registration in App.jsx with version comparison logic
-- AuthContext performs Firebase query to check ban status before allowing login
-- Home.jsx and Courses.jsx build bundle set synchronously before filtering
-- All fixes tested and verified by architect agent
-
-## November 21, 2025 - Service Worker Auto-Update, Advanced Coupons & Bundle Courses
-
-**Service Worker Auto-Update System:**
-- Implemented automatic cache refresh mechanism to ensure users always get the latest version without manual cache clearing
-- Service worker with version tracking sends FORCE_UPDATE/RELOAD_PAGE messages when new versions are detected
-- UpdateNotification component handles all edge cases (no registration, waiting worker, active worker)
-- PWA library checks for updates every 60 seconds and dispatches custom events
-- Multiple fallback paths ensure reliable page reload even when registration state is unclear
-- Listens for both RELOAD_PAGE and FORCE_UPDATE messages globally
-
-**Advanced Coupon System:**
-- Created comprehensive coupon management system with two types: Universal and Unique
-- Universal coupons: Reusable codes for any user (fixed amount or percentage discount)
-- Unique coupons: One-time use codes with advanced conditions:
-  - Specific users: Comma-separated list of user IDs who can use the coupon
-  - Required purchased courses: Users must own specific courses to use the coupon
-  - Minimum course purchase count: Users must have purchased N courses to qualify
-  - Minimum cart value: Cart must meet minimum amount for coupon to apply
-- ManageCoupons admin page with create/edit/delete functionality and filtering
-- Checkout validation with proper loading guards (isCartLoaded, isCouponLoaded, isPurchasedLoaded)
-- Coupon validation includes bundled course ownership from userCourses collection
-
-**Bundle Course System Enhancements:**
-- MyCourses now fetches bundle provenance from payments collection
-- Attaches `fromBundle` and `bundleId` metadata to each course showing which bundle granted access
-- Uses Map-based deduplication by courseId to prevent duplicate display
-- Hides bundle wrapper courses from user view while maintaining bundle awareness
-- Payment processor automatically enrolls users in all bundled courses on purchase
-
-**Technical Implementation:**
-- Service worker registered in App.jsx with version comparison logic
-- UpdateNotification component integrated into App.jsx layout
-- Checkout uses three loading flags to prevent race conditions in coupon validation
-- MyCourses uses async for loops (not forEach) for proper bundle metadata fetching
-- All features tested and working with development server
-
-## November 21, 2025 - Security Fixes & Mobile Responsive Ban UI
-
-**Security & Privacy Enhancements:**
-- Removed all sensitive data from client-side logs and ban messages (IP addresses, device fingerprints, platform details)
-- Sanitized ban reasons to only show generic messages: "একাধিক ডিভাইস থেকে একই সময়ে লগইন সনাক্ত করা হয়েছে"
-- Fixed ban notifications to exclude full devices array and sensitive metadata
-- Eliminated console logging of user tracking data for privacy compliance
-
-**Mobile Responsive UI:**
-- Made BanOverlay component fully responsive with proper text scaling (text-xs/sm/md breakpoints)
-- Updated Ban Management admin page with mobile-first design:
-  - Responsive padding: p-4 md:p-6
-  - Flexible header layout with stacked buttons on mobile
-  - Wrapped filter buttons and search bar
-  - Responsive user cards with stacked layouts on mobile
-  - Mobile-optimized modals for device viewing and ban actions
-  - Shortened button text on small screens ("Clear Flags" vs "Clear Logout Flags")
-  - Responsive icon sizes (w-3.5 md:w-4) and font sizes (text-xs md:text-sm)
-- BannedNotifications page already had responsive classes
-
-**Bug Fixes:**
-- Fixed toDate() crash with fallback: `banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)`
-- Improved error handling for ban expiry timestamp parsing
-
-## November 21, 2025 - Authentication & Ban Management Fixes
-
-Fixed three critical bugs in multi-device authentication and ban system:
-
-1. **Unban Logout Issue**: Fixed issue where users remained logged in with empty device list after admin unban. Now properly logs out all devices using `forceLogoutAt` mechanism.
-
-2. **Multi-Device Ban Display**: Fixed critical bug where multiple logged-in devices were redirected to login during ban instead of showing ban overlay. Implemented ban-aware authentication flow that checks `isBanActive` status before processing `forceLogoutAt`, ensuring devices stay logged in and display BanOverlay during active bans.
-
-3. **Device Kick Enforcement**: Improved kicked device logout through enhanced fingerprint detection and `forceLogoutAt` synchronization. Kicked devices now properly log out immediately.
-
-**Technical Implementation**:
-- Added `lastAckedLogoutAt` localStorage tracking (initialized to 0 instead of null) to ensure first logout events always trigger
-- Implemented device fingerprint fallback using stored fingerprint when `getDeviceInfo()` fails
-- Added early return in ban expiry logic to prevent re-banning with stale device data
-- Implemented 5-minute validity window for `forceLogoutAt` to ignore stale timestamps
-- Added ban-active gating that prioritizes BanOverlay display over forced logout during active bans
-- Added auto-cleanup of old `forceLogoutAt` flags (>2 minutes) on successful login to prevent spurious logouts
-- Enhanced expired ban detection in auth listener for offline scenarios
 
 # System Architecture
 
 ## Frontend Architecture
 
 **Technology Stack:** React 18 with Vite.
-**UI Framework:** Radix UI primitives with Tailwind CSS, following a minimalist Vercel-inspired design system with dark mode support.
-**State Management:** React hooks and Context API for local state, Firebase Firestore for persistent data.
+**UI Framework:** Radix UI primitives with Tailwind CSS, minimalist Vercel-inspired design, dark mode support.
+**State Management:** React hooks and Context API, Firebase Firestore for persistent data.
 **Internationalization:** Google Fonts (Hind Siliguri) for Bangla language support.
-**Progressive Web App:** Service workers for offline functionality and web manifest for installability.
+**Progressive Web App:** Service workers for offline functionality, web manifest for installability, and an auto-update system for cache refresh and version tracking.
 
 ## Backend Architecture
 
 **Server Framework:** Express.js on Node.js.
-**Deployment Model:** Hybrid approach utilizing an Express server for development and Vercel serverless functions (located in `/api`) for production, offering scalability.
+**Deployment Model:** Hybrid approach using an Express server for development and Vercel serverless functions (`/api`) for production.
 **API Structure:** Endpoints for payment processing, enrollment, image uploads, and dynamic PWA manifest generation.
 
 ## Data Storage
 
-**Primary Database:** Firebase Firestore (NoSQL).
-**Collections:** `users`, `courses`, `payments`, `settings`, `adminTokens`.
-**Image Storage:** ImgBB API for hosting uploaded images.
+**Primary Database:** Firebase Firestore (NoSQL) with collections for `users`, `courses`, `payments`, `settings`, and `adminTokens`.
+**Image Storage:** ImgBB API.
 
 ## Authentication & Authorization
 
 **Authentication Provider:** Firebase Authentication with Google OAuth.
-**Authorization Model:** Role-based access control (RBAC) using `isAdmin` and `role` fields in user documents.
-**Security:** Firebase Security Rules enforce server-side authorization.
+**Authorization Model:** Role-based access control (RBAC) using `isAdmin` and `role` fields.
+**Security:** Firebase Security Rules for server-side authorization.
+**Ban System:** Simplified device-based ban system with automatic 30-minute bans for new device logins (if existing devices are detected), escalating to permanent bans after three violations. Includes full-screen ban overlay, auto-logout, and device cleanup. Admins are immune. Enhanced Ban Management via admin panel for real-time monitoring, manual ban/unban, device kicking, and ban countdowns, with full audit trails. Advanced device fingerprinting and IP address tracking for multi-device login detection. Pre-login ban checks prevent banned users from accessing the app even with cleared caches. Auto-permanent ban flag (after 3 temporary bans) makes accounts irreversibly locked, with UI indicators.
 
 ## UI/UX Decisions
 
-The application utilizes a custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode. Radix UI primitives ensure accessibility, while Tailwind CSS provides flexible styling.
+Custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode. Radix UI primitives for accessibility, Tailwind CSS for flexible styling. Mobile-responsive UI for BanOverlay and Admin Ban Management pages.
 
 ## Technical Implementations
 
-- **Real-Time Presence Detection:** Tracks user online/offline status, tab visibility, and window focus, synchronizing with Firestore.
-- **Simplified Device-Based Ban System:** Automatically bans users for 30 minutes when they attempt login from a new device (if existing devices are detected). Third violation results in permanent ban. Full-screen ban overlay with countdown timer. Auto-logout and device cleanup when temporary ban expires. Admin users are immune to auto-ban.
-- **Enhanced Ban Management:** Dedicated admin page for real-time user status monitoring, manual ban/unban, device kicking, and ban countdowns. Manual unban clears all ban history and device records. Includes a self-healing system for `forceLogoutAt` flags and a "Clear Logout Flags" emergency button.
-- **Device Detection:** Advanced device fingerprinting combined with IP address tracking for multi-device login detection and ban enforcement. Devices are tracked and stored in Firestore. Includes robust `clearBanCacheAt` mechanism for clearing stale ban info on clients.
-- **Service Worker Auto-Update:** Automatic cache refresh mechanism with version tracking. Service worker sends FORCE_UPDATE/RELOAD_PAGE messages when new versions are detected. UpdateNotification component provides user-friendly update prompts. PWA library checks for updates every 60 seconds.
-- **Advanced Coupon System:** Two coupon types (Universal and Unique) with conditional validation. Unique coupons support specific users, required purchased courses, minimum course purchase count, and minimum cart value conditions. Admin panel for creating, editing, and managing coupons with real-time filtering.
-- **Bundle Courses:** Admins can create course bundles (packages) that automatically enroll users in multiple courses upon purchase. Course creation form includes "Single" vs "Bundle" format option with multi-select for bundled courses. Payment processing auto-enrolls users in all bundled courses. MyCourses displays bundle provenance metadata (fromBundle, bundleId) while hiding bundle wrappers.
-- **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy` for admin accountability.
+- **Real-Time Presence Detection:** Tracks user online/offline status, tab visibility, and window focus.
+- **Advanced Coupon System:** Universal and Unique coupon types with conditional validation (specific users, required courses, minimum purchase count/value). Admin panel for management.
+- **Bundle Courses:** Admins can create course bundles that automatically enroll users in multiple courses upon purchase. MyCourses displays bundle provenance metadata while hiding bundle wrappers. Purchased bundles are hidden from course listings on Home and Courses pages.
+- **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy`.
 - **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
-- **IP Geolocation:** Robust multi-API fallback system (ipwho.is, freeipapi.com, ipapi.co) with error handling, timeout, and Google Maps integration for device location tracking, supporting `navigator.userAgentData.platform` for improved accuracy.
+- **IP Geolocation:** Robust multi-API fallback system with error handling and Google Maps integration for device location tracking.
 
 # External Dependencies
 
-**Payment Gateway:** RupantorPay (Bangladesh payment processor)
-- **Integration:** RESTful API for checkout and verification, webhook support.
-
-**Image Hosting:** ImgBB API
-- **Integration:** RESTful API for Base64 image uploads.
-
-**IP Address Tracking:** ipify.org (free public API).
-
-**Firebase Services:**
-- **Firebase Authentication:** Google OAuth.
-- **Firebase Firestore:** Primary NoSQL database.
-- **Firebase Cloud Messaging (FCM):** Push notifications for admin alerts, uses VAPID key and `/firebase-messaging-sw.js` service worker. Admin SDK for server-side operations.
-
+**Payment Gateway:** RupantorPay (RESTful API for checkout and verification, webhook support).
+**Image Hosting:** ImgBB API (RESTful API for Base64 image uploads).
+**IP Address Tracking:** ipify.org.
+**Firebase Services:** Firebase Authentication (Google OAuth), Firebase Firestore, Firebase Cloud Messaging (FCM) for push notifications (via VAPID key and `/firebase-messaging-sw.js`, Admin SDK).
 **Analytics:** Vercel Analytics (`@vercel/analytics`).
-
-**Deployment Platform:** Vercel (uses `vercel.json` for configuration).
+**Deployment Platform:** Vercel (`vercel.json` configuration).
