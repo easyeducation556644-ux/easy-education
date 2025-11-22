@@ -11,13 +11,14 @@ import { useAuth } from "../contexts/AuthContext"
 
 export default function Courses() {
   const location = useLocation()
-  const { isAdmin } = useAuth()
+  const { isAdmin, currentUser } = useAuth()
   const [courses, setCourses] = useState([])
   const [filteredCourses, setFilteredCourses] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [sortBy, setSortBy] = useState("newest")
   const [loading, setLoading] = useState(true)
+  const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(new Set())
 
   useEffect(() => {
     if (location.state?.searchQuery) {
@@ -30,7 +31,7 @@ export default function Courses() {
 
   useEffect(() => {
     fetchCourses()
-  }, [isAdmin])
+  }, [isAdmin, currentUser])
 
   useEffect(() => {
     filterAndSortCourses()
@@ -38,6 +39,21 @@ export default function Courses() {
 
   const fetchCourses = async () => {
     try {
+      let purchasedBundleSet = new Set()
+      
+      if (currentUser) {
+        const userCoursesQuery = query(collection(db, "userCourses"), where("userId", "==", currentUser.uid))
+        const userCoursesSnapshot = await getDocs(userCoursesQuery)
+        
+        for (const doc of userCoursesSnapshot.docs) {
+          const userCourse = doc.data()
+          if (userCourse.bundleId) {
+            purchasedBundleSet.add(userCourse.bundleId)
+          }
+        }
+        setPurchasedBundleCourses(purchasedBundleSet)
+      }
+      
       const coursesQuery = query(collection(db, "courses"), orderBy("createdAt", "desc"))
       const coursesSnapshot = await getDocs(coursesQuery)
       let coursesData = coursesSnapshot.docs.map((doc) => ({
@@ -45,9 +61,14 @@ export default function Courses() {
         ...doc.data(),
       }))
       
-      // Filter out draft courses for non-admin users
       if (!isAdmin) {
         coursesData = coursesData.filter(course => course.publishStatus !== "draft")
+      }
+      
+      if (currentUser && purchasedBundleSet.size > 0) {
+        coursesData = coursesData.filter(course => 
+          course.courseFormat !== 'bundle' || !purchasedBundleSet.has(course.id)
+        )
       }
       
       setCourses(coursesData)

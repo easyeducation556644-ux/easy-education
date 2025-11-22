@@ -190,6 +190,7 @@ export function AuthProvider({ children }) {
 
           if (newBanCount >= 3) {
             updateData.permanentBan = true
+            updateData.autoPermanentBan = true
             updateData.banned = true
             updateData.banExpiresAt = null
             banRecord.reason = `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার নীতি লঙ্ঘনের কারণে`
@@ -324,6 +325,30 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
+      
+      const userDoc = await getDoc(userRef)
+      if (userDoc.exists()) {
+        const userData = userDoc.data()
+        
+        if (userData.permanentBan) {
+          await firebaseSignOut(auth)
+          const banReason = userData.banHistory?.[userData.banHistory.length - 1]?.reason || 
+                          'Your account has been permanently banned due to multiple policy violations (3+ temporary bans).'
+          throw new Error(banReason)
+        }
+        
+        if (userData.banned && userData.banExpiresAt) {
+          const banEndTime = userData.banExpiresAt.toDate ? userData.banExpiresAt.toDate() : new Date(userData.banExpiresAt)
+          const now = new Date()
+          
+          if (banEndTime > now) {
+            await firebaseSignOut(auth)
+            const remainingTime = Math.ceil((banEndTime - now) / (1000 * 60))
+            throw new Error(`Your account is temporarily banned. Please try again in ${remainingTime} minutes.`)
+          }
+        }
+      }
+      
       const deviceInfo = await getDeviceInfo()
 
       if (deviceInfo && deviceInfo.fingerprint) {
@@ -420,6 +445,31 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
+      const userRef = doc(db, "users", user.uid)
+      
+      const userDocCheck = await getDoc(userRef)
+      if (userDocCheck.exists()) {
+        const userData = userDocCheck.data()
+        
+        if (userData.permanentBan) {
+          await firebaseSignOut(auth)
+          const banReason = userData.banHistory?.[userData.banHistory.length - 1]?.reason || 
+                          'Your account has been permanently banned due to multiple policy violations (3+ temporary bans).'
+          throw new Error(banReason)
+        }
+        
+        if (userData.banned && userData.banExpiresAt) {
+          const banEndTime = userData.banExpiresAt.toDate ? userData.banExpiresAt.toDate() : new Date(userData.banExpiresAt)
+          const now = new Date()
+          
+          if (banEndTime > now) {
+            await firebaseSignOut(auth)
+            const remainingTime = Math.ceil((banEndTime - now) / (1000 * 60))
+            throw new Error(`Your account is temporarily banned. Please try again in ${remainingTime} minutes.`)
+          }
+        }
+      }
+      
       const deviceInfo = await getDeviceInfo()
 
       if (deviceInfo && deviceInfo.fingerprint) {

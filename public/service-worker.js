@@ -1,12 +1,18 @@
-const CACHE_VERSION = 'v7';
+const CACHE_VERSION = 'v8';
+const APP_VERSION = 'v8.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
 const STATIC_CACHE = [
-  '/',
-  '/index.html',
   '/icon-192x192.png',
   '/icon-512x512.png',
   '/placeholder-logo.png',
   '/placeholder-logo.svg'
+];
+
+const NETWORK_FIRST_URLS = [
+  '/',
+  '/index.html',
+  '/api/version',
+  '/api/manifest'
 ];
 
 self.addEventListener('install', (event) => {
@@ -21,7 +27,10 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.url.includes('/api/manifest')) {
+  const url = new URL(event.request.url);
+  const shouldUseNetworkFirst = NETWORK_FIRST_URLS.some(pattern => url.pathname.includes(pattern));
+  
+  if (shouldUseNetworkFirst) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
@@ -38,38 +47,41 @@ self.addEventListener('fetch', (event) => {
             if (cachedResponse) {
               return cachedResponse;
             }
-            const defaultManifest = {
-              name: 'Easy Education - Free Online Courses',
-              short_name: 'Easy Education',
-              description: 'Learn from the best free online courses with expert teachers',
-              start_url: '/',
-              scope: '/',
-              display: 'standalone',
-              background_color: '#fcfcfd',
-              theme_color: '#3b82f6',
-              orientation: 'portrait-primary',
-              prefer_related_applications: false,
-              icons: [
-                {
-                  src: '/placeholder-logo.png',
-                  sizes: '192x192',
-                  type: 'image/png',
-                  purpose: 'any maskable'
-                },
-                {
-                  src: '/placeholder-logo.png',
-                  sizes: '512x512',
-                  type: 'image/png',
-                  purpose: 'any maskable'
+            if (event.request.url.includes('/api/manifest')) {
+              const defaultManifest = {
+                name: 'Easy Education - Free Online Courses',
+                short_name: 'Easy Education',
+                description: 'Learn from the best free online courses with expert teachers',
+                start_url: '/',
+                scope: '/',
+                display: 'standalone',
+                background_color: '#fcfcfd',
+                theme_color: '#3b82f6',
+                orientation: 'portrait-primary',
+                prefer_related_applications: false,
+                icons: [
+                  {
+                    src: '/placeholder-logo.png',
+                    sizes: '192x192',
+                    type: 'image/png',
+                    purpose: 'any maskable'
+                  },
+                  {
+                    src: '/placeholder-logo.png',
+                    sizes: '512x512',
+                    type: 'image/png',
+                    purpose: 'any maskable'
+                  }
+                ]
+              };
+              return new Response(JSON.stringify(defaultManifest), {
+                headers: { 
+                  'Content-Type': 'application/json',
+                  'Cache-Control': 'no-store'
                 }
-              ]
-            };
-            return new Response(JSON.stringify(defaultManifest), {
-              headers: { 
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-cache'
-              }
-            });
+              });
+            }
+            return new Response('Offline', { status: 503 });
           });
         })
     );
@@ -145,7 +157,25 @@ self.addEventListener('message', (event) => {
   }
 
   if (event.data && event.data.type === 'GET_VERSION') {
-    event.ports[0].postMessage({ version: CACHE_VERSION });
+    event.ports[0].postMessage({ version: CACHE_VERSION, appVersion: APP_VERSION });
+  }
+  
+  if (event.data && event.data.type === 'CHECK_UPDATE') {
+    fetch('/api/version')
+      .then(res => res.json())
+      .then(data => {
+        self.clients.matchAll().then((clients) => {
+          clients.forEach((client) => {
+            client.postMessage({
+              type: 'VERSION_CHECK_RESULT',
+              currentVersion: APP_VERSION,
+              serverVersion: data.version,
+              needsUpdate: data.version !== APP_VERSION
+            });
+          });
+        });
+      })
+      .catch(() => {});
   }
 
   if (event.data && event.data.type === 'FORCE_UPDATE') {

@@ -11,15 +11,16 @@ import { useAuth } from "../contexts/AuthContext"
 
 export default function Home() {
   const navigate = useNavigate()
-  const { isAdmin } = useAuth()
+  const { isAdmin, currentUser } = useAuth()
   const [searchQuery, setSearchQuery] = useState("")
   const [trendingCourses, setTrendingCourses] = useState([])
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)
+  const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(new Set())
 
   useEffect(() => {
     fetchData()
-  }, [isAdmin])
+  }, [isAdmin, currentUser])
 
   const fetchData = async () => {
     try {
@@ -29,6 +30,21 @@ export default function Home() {
         return
       }
 
+      let purchasedBundleSet = new Set()
+      
+      if (currentUser) {
+        const userCoursesQuery = query(collection(db, "userCourses"), where("userId", "==", currentUser.uid))
+        const userCoursesSnapshot = await getDocs(userCoursesQuery)
+        
+        for (const doc of userCoursesSnapshot.docs) {
+          const userCourse = doc.data()
+          if (userCourse.bundleId) {
+            purchasedBundleSet.add(userCourse.bundleId)
+          }
+        }
+        setPurchasedBundleCourses(purchasedBundleSet)
+      }
+
       const coursesQuery = query(collection(db, "courses"), orderBy("createdAt", "desc"), limit(20))
       const coursesSnapshot = await getDocs(coursesQuery)
       let coursesData = coursesSnapshot.docs.map((doc) => ({
@@ -36,9 +52,14 @@ export default function Home() {
         ...doc.data(),
       }))
       
-      // Filter out draft courses for non-admin users
       if (!isAdmin) {
         coursesData = coursesData.filter(course => course.publishStatus !== "draft")
+      }
+      
+      if (currentUser && purchasedBundleSet.size > 0) {
+        coursesData = coursesData.filter(course => 
+          course.courseFormat !== 'bundle' || !purchasedBundleSet.has(course.id)
+        )
       }
       
       setTrendingCourses(coursesData.slice(0, 6))

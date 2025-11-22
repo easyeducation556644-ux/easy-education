@@ -143,6 +143,15 @@ export default function BanManagement() {
   }
 
   const handleUnbanUser = async (user) => {
+    if (user.autoPermanentBan) {
+      toast({
+        variant: "error",
+        title: "Cannot Unban",
+        description: `${user.name} has been permanently banned due to 3+ temporary bans. This ban cannot be reversed.`,
+      })
+      return
+    }
+    
     setConfirmDialog({
       isOpen: true,
       title: "Unban User",
@@ -150,19 +159,24 @@ export default function BanManagement() {
       variant: "default",
       onConfirm: async () => {
         try {
-          await updateDoc(doc(db, "users", user.id), {
+          const updateData = {
             banned: false,
             banExpiresAt: null,
-            permanentBan: false,
-            banCount: 0,
-            banHistory: [],
             devices: [],
             kickedDevices: [],
             forceLogoutAt: serverTimestamp(),
             forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - You can log in again`,
             forcedBy: userProfile?.id || 'unknown',
             clearBanCacheAt: serverTimestamp()
-          })
+          }
+          
+          if (!user.autoPermanentBan) {
+            updateData.permanentBan = false
+            updateData.banCount = 0
+            updateData.banHistory = []
+          }
+
+          await updateDoc(doc(db, "users", user.id), updateData)
 
           toast({
             title: "Success",

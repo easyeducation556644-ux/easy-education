@@ -8,6 +8,7 @@ import paymentWebhookHandler from './api/payment-webhook.js';
 import uploadImageHandler from './api/upload-image.js';
 import processEnrollmentHandler from './api/process-enrollment.js';
 import dynamicManifestHandler from './api/dynamic-manifest.js';
+import versionHandler from './api/version.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,6 +30,10 @@ app.use((req, res, next) => {
 
 app.get('/api/manifest.json', (req, res) => {
   dynamicManifestHandler(req, res);
+});
+
+app.get('/api/version', (req, res) => {
+  versionHandler(req, res);
 });
 
 app.post('/api/create-payment', (req, res) => {
