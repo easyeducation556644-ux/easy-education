@@ -2,6 +2,16 @@
 
 Easy Education is a Progressive Web Application (PWA) delivering free online courses. It features a React-based frontend, an Express.js backend, and Firebase for authentication, database, and notifications. The platform integrates with RupantorPay for payments and ImgBB for image uploads, alongside a comprehensive admin panel for course and enrollment management. The project aims to provide an accessible and engaging learning experience with robust administrative capabilities, targeting the online education market.
 
+# Recent Changes
+
+**November 22, 2025** - Ban System & Service Worker Fixes:
+- Fixed service worker update notification loop - now properly handles cache updates and dismissal without persistent false notifications
+- Removed early ban check from signIn function to prevent login-logout loop - banned users can now login and see ban overlay
+- Enhanced ban expiry logic to properly kick all devices via kickedDevices array for reliable multi-device logout
+- Fixed admin unban to correctly increment permanentBanCount when unbanning permanent bans
+- Ban overlay now displays correctly on all devices when multi-device login is detected
+- ProtectedRoute component provides security guard to prevent banned users from accessing protected routes
+
 # User Preferences
 
 Preferred communication style: Simple, everyday language.
