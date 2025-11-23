@@ -126,7 +126,18 @@ export default function UpdateNotification() {
 
   return (
     <div className="fixed bottom-20 left-4 right-4 md:left-auto md:right-4 md:max-w-md z-50 animate-in slide-in-from-bottom-5">
-      <div className={`${isVersionMismatch ? 'bg-red-600' : 'bg-blue-600'} text-white rounded-lg shadow-2xl p-4 border ${isVersionMismatch ? 'border-red-500' : 'border-blue-500'}`}>
+      <div className={`relative ${isVersionMismatch ? 'bg-red-600' : 'bg-blue-600'} text-white rounded-lg shadow-2xl p-4 border ${isVersionMismatch ? 'border-red-500' : 'border-blue-500'}`}>
+        {!isVersionMismatch && (
+          <button
+            onClick={handleDismiss}
+            className="absolute top-2 right-2 text-white/70 hover:text-white transition-colors p-1 rounded-full hover:bg-white/10"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0">
             <svg 
@@ -143,7 +154,7 @@ export default function UpdateNotification() {
               />
             </svg>
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 pr-6">
             <h3 className="font-semibold text-sm mb-1">
               {isVersionMismatch ? 'গুরুত্বপূর্ণ আপডেট প্রয়োজন!' : 'নতুন আপডেট উপলব্ধ!'}
             </h3>

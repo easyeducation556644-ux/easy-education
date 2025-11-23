@@ -877,7 +877,7 @@ export function AuthProvider({ children }) {
           const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
 
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-          const isRecentLogin = timeSinceLogin < 120000 // 2 minutes grace period (extended from 30 seconds to prevent false positives during video seeking/interaction)
+          const isRecentLogin = timeSinceLogin < 300000 // 5 minutes grace period (extended to prevent false positives during video seeking/interaction)
 
           if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
             console.log('⚠️ Device removed from allowed devices - logging out')

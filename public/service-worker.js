@@ -1,7 +1,9 @@
-const CACHE_VERSION = 'v8';
-const APP_VERSION = 'v8.0';
+const CACHE_VERSION = 'v9';
+const APP_VERSION = 'v9.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
 const STATIC_CACHE = [
+  '/',
+  '/index.html',
   '/icon-192x192.png',
   '/icon-512x512.png',
   '/placeholder-logo.png',
@@ -14,6 +16,14 @@ const NETWORK_FIRST_URLS = [
   '/api/version',
   '/api/manifest'
 ];
+
+// Cache patterns for better offline support
+const CACHE_PATTERNS = {
+  images: /\.(png|jpg|jpeg|svg|gif|webp|ico)$/i,
+  fonts: /\.(woff|woff2|ttf|eot)$/i,
+  styles: /\.(css)$/i,
+  scripts: /\.(js|mjs)$/i
+};
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -29,6 +39,16 @@ self.addEventListener('install', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   const shouldUseNetworkFirst = NETWORK_FIRST_URLS.some(pattern => url.pathname.includes(pattern));
+  
+  // Skip caching for Firebase and external API calls
+  if (url.hostname.includes('firebase') || 
+      url.hostname.includes('googleapis') ||
+      url.hostname.includes('ipify') ||
+      url.hostname.includes('imgbb') ||
+      event.request.method !== 'GET') {
+    event.respondWith(fetch(event.request));
+    return;
+  }
   
   if (shouldUseNetworkFirst) {
     event.respondWith(
@@ -81,13 +101,18 @@ self.addEventListener('fetch', (event) => {
                 }
               });
             }
-            return new Response('Offline', { status: 503 });
+            // Return offline fallback page
+            return new Response('<!DOCTYPE html><html><head><title>Offline</title><style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#111;color:#fff;text-align:center;padding:20px}h1{font-size:2rem;margin-bottom:1rem}</style></head><body><div><h1>আপনি অফলাইন আছেন</h1><p>ইন্টারনেট সংযোগ চেক করুন এবং আবার চেষ্টা করুন।</p></div></body></html>', {
+              status: 503,
+              headers: { 'Content-Type': 'text/html' }
+            });
           });
         })
     );
     return;
   }
 
+  // Cache-first strategy for static assets
   event.respondWith(
     caches.match(event.request)
       .then((response) => {
@@ -98,12 +123,24 @@ self.addEventListener('fetch', (event) => {
           if (!response || response.status !== 200 || response.type !== 'basic') {
             return response;
           }
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME)
-            .then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
+          
+          // Cache static assets
+          const shouldCache = Object.values(CACHE_PATTERNS).some(pattern => 
+            pattern.test(url.pathname)
+          );
+          
+          if (shouldCache) {
+            const responseToCache = response.clone();
+            caches.open(CACHE_NAME)
+              .then((cache) => {
+                cache.put(event.request, responseToCache);
+              });
+          }
+          
           return response;
+        }).catch(() => {
+          // Return cached response if network fails
+          return caches.match(event.request);
         });
       })
   );
