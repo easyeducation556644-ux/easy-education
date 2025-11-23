@@ -8,8 +8,27 @@ export default function UpdateNotification() {
   const [dismissedVersion, setDismissedVersion] = useState(null);
 
   useEffect(() => {
+    // Check if update was just completed - don't show notification for 10 seconds
+    const updateInProgress = sessionStorage.getItem('updateInProgress');
+    const lastUpdateTimestamp = localStorage.getItem('lastUpdateTimestamp');
+    const timeSinceUpdate = lastUpdateTimestamp ? Date.now() - parseInt(lastUpdateTimestamp) : Infinity;
+    
+    if (updateInProgress === 'true' || timeSinceUpdate < 10000) {
+      console.log('✅ Update recently completed - suppressing notifications');
+      sessionStorage.removeItem('updateInProgress');
+      return;
+    }
+    
     const checkVersion = async () => {
       try {
+        // Double-check update wasn't just completed
+        const recentUpdate = localStorage.getItem('lastUpdateTimestamp');
+        const timeSince = recentUpdate ? Date.now() - parseInt(recentUpdate) : Infinity;
+        if (timeSince < 10000) {
+          console.log('✅ Skipping version check - update just completed');
+          return;
+        }
+        
         const response = await fetch('/api/version?t=' + Date.now());
         const data = await response.json();
         const localVersion = localStorage.getItem('appVersion');
@@ -39,6 +58,14 @@ export default function UpdateNotification() {
     const versionCheckInterval = setInterval(checkVersion, 120000);
 
     const handleUpdateAvailable = (event) => {
+      // Don't show if update just completed
+      const recentUpdate = localStorage.getItem('lastUpdateTimestamp');
+      const timeSince = recentUpdate ? Date.now() - parseInt(recentUpdate) : Infinity;
+      if (timeSince < 10000) {
+        console.log('✅ Suppressing service worker update - update just completed');
+        return;
+      }
+      
       console.log('Update available event received');
       setRegistration(event.detail.registration);
       setShowUpdate(true);
@@ -50,6 +77,14 @@ export default function UpdateNotification() {
         window.location.reload();
       }
       if (event.data && event.data.type === 'VERSION_CHECK_RESULT' && event.data.needsUpdate) {
+        // Don't show if update just completed
+        const recentUpdate = localStorage.getItem('lastUpdateTimestamp');
+        const timeSince = recentUpdate ? Date.now() - parseInt(recentUpdate) : Infinity;
+        if (timeSince < 10000) {
+          console.log('✅ Suppressing version check result - update just completed');
+          return;
+        }
+        
         console.log('Version update needed');
         setIsVersionMismatch(true);
         setShowUpdate(true);
@@ -78,6 +113,9 @@ export default function UpdateNotification() {
     console.log('🔄 Starting update process...');
     setShowUpdate(false);
     
+    // Mark that update is in progress - prevent re-triggering
+    sessionStorage.setItem('updateInProgress', 'true');
+    localStorage.setItem('lastUpdateTimestamp', Date.now().toString());
     localStorage.removeItem('dismissedUpdateVersion');
     
     try {
