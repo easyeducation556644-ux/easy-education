@@ -86,7 +86,7 @@ export function AuthProvider({ children }) {
         return deviceInfo
       }
 
-      const devices = userData.devices || []
+      let devices = userData.devices || []
       const banCount = userData.banCount || 0
       const banHistory = userData.banHistory || []
       const permanentBan = userData.permanentBan || false
@@ -126,24 +126,28 @@ export function AuthProvider({ children }) {
         const now = new Date()
 
         if (banEndTime <= now) {
-          console.log('✅ Ban expired during login - clearing ban status only')
+          console.log('✅ Ban expired during login - clearing all devices for fresh start')
           console.log(`📊 Current ban count: ${banCount} (will be preserved for tracking violations)`)
           
-          // CRITICAL FIX: Only clear ban flags, NOT devices
-          // Let the device management happen in the normal flow below
-          // This ensures current device gets added and next multi-device login triggers violation
+          // CRITICAL: Clear ALL devices when ban expires
+          // This ensures fresh login required from ALL devices
+          // Current device will be added below in normal flow
           await updateDoc(userRef, {
             banned: false,
-            banExpiresAt: null
-            // banCount and devices intentionally NOT touched here
-            // devices will be managed by the normal flow below
+            banExpiresAt: null,
+            devices: []  // ✅ Clear all devices in database
+            // banCount intentionally preserved for violation tracking
+            // Current device will be added in normal flow below
           })
+          
+          // ✅ FIX: Also clear local devices variable to prevent re-ban
+          devices = []
           
           localStorage.removeItem('banInfo')
           setBanInfo(null)
           
           // DO NOT return - continue to normal device management flow below
-          // This allows current device to be added and proper violation tracking
+          // This allows current device to be added as the ONLY device
         } else {
           const banData = {
             isBanned: true,
@@ -744,26 +748,27 @@ export function AuthProvider({ children }) {
 
           // If ban expired, clear ban flags and force logout on ALL devices
           if (isBanned && !isBanActive && banExpiresAt) {
-            console.log('✅ Ban has expired in snapshot listener - clearing ban status only')
-            console.log(`📊 Preserving ban count: ${updatedProfile.banCount || 0} and devices for proper violation tracking`)
+            console.log('✅ Ban has expired in snapshot listener - clearing all devices for fresh start')
+            console.log(`📊 Preserving ban count: ${updatedProfile.banCount || 0} for violation tracking`)
             try {
               const userRef = doc(db, "users", currentUser.uid)
               
               const forceLogoutTimestamp = Timestamp.now()
               localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
               
-              // CRITICAL FIX: Only clear ban flags, NOT devices
-              // Preserving devices ensures next multi-device login properly triggers violation
+              // CRITICAL: Clear ALL devices when ban expires
+              // This forces ALL devices to logout and require fresh login
               // banCount persists to track cumulative violations
               await updateDoc(userRef, {
                 banned: false,
                 banExpiresAt: null,
+                devices: [],  // ✅ Clear all devices - force logout on ALL devices
                 forceLogoutAt: forceLogoutTimestamp,
-                forceLogoutReason: 'Ban expired - please log in again'
-                // banCount and devices intentionally NOT touched - preserved for violation tracking
+                forceLogoutReason: 'নিষেধাজ্ঞা সমাপ্ত - অনুগ্রহ করে আবার লগইন করুন'
+                // banCount intentionally preserved for violation tracking
               })
               
-              console.log(`✅ Ban cleared successfully - banCount and devices preserved for tracking`)
+              console.log(`✅ Ban cleared - ALL devices removed, users must login again`)
             } catch (error) {
               console.error('Error clearing ban on expiry:', error)
             }
