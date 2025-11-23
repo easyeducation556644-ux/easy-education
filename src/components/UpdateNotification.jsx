@@ -164,14 +164,6 @@ export default function UpdateNotification() {
               >
                 এখনই আপডেট করুন
               </button>
-              {!isVersionMismatch && (
-                <button
-                  onClick={handleDismiss}
-                  className="px-4 py-2 text-sm text-blue-100 hover:text-white transition-colors"
-                >
-                  পরে
-                </button>
-              )}
             </div>
           </div>
         </div>

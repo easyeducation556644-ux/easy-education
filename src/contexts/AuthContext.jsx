@@ -432,28 +432,9 @@ export function AuthProvider({ children }) {
       const user = userCredential.user
       const userRef = doc(db, "users", user.uid)
       
-      const userDocCheck = await getDoc(userRef)
-      if (userDocCheck.exists()) {
-        const userData = userDocCheck.data()
-        
-        if (userData.permanentBan) {
-          await firebaseSignOut(auth)
-          const banReason = userData.banHistory?.[userData.banHistory.length - 1]?.reason || 
-                          'Your account has been permanently banned due to multiple policy violations (3+ temporary bans).'
-          throw new Error(banReason)
-        }
-        
-        if (userData.banned && userData.banExpiresAt) {
-          const banEndTime = userData.banExpiresAt.toDate ? userData.banExpiresAt.toDate() : new Date(userData.banExpiresAt)
-          const now = new Date()
-          
-          if (banEndTime > now) {
-            await firebaseSignOut(auth)
-            const remainingTime = Math.ceil((banEndTime - now) / (1000 * 60))
-            throw new Error(`Your account is temporarily banned. Please try again in ${remainingTime} minutes.`)
-          }
-        }
-      }
+      // Note: We no longer block login for banned users here
+      // Instead, we let them login and the snapshot listener will show the ban overlay
+      // This prevents the login-logout loop and allows users to see their ban status
       
       const deviceInfo = await getDeviceInfo()
 
@@ -896,10 +877,12 @@ export function AuthProvider({ children }) {
           const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
 
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-          const isRecentLogin = timeSinceLogin < 30000 // 30 seconds grace period
+          const isRecentLogin = timeSinceLogin < 120000 // 2 minutes grace period (extended from 30 seconds to prevent false positives during video seeking/interaction)
 
           if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
-            console.log('Device removed - logging out')
+            console.log('⚠️ Device removed from allowed devices - logging out')
+            console.log('Device fingerprint:', deviceFingerprint)
+            console.log('Devices in profile:', devices.length)
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
