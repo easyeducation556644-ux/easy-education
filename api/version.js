@@ -1,4 +1,4 @@
-const APP_VERSION = 'v8.0';
+const APP_VERSION = 'v9.0';
 
 export default function versionHandler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
