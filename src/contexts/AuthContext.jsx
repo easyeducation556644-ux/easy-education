@@ -872,23 +872,31 @@ export function AuthProvider({ children }) {
           // ===============================================
           // 🔥 Finally check Device Removal (only if NOT banned)
           // ===============================================
-          const devices = updatedProfile.devices || []
-          const deviceFingerprint = storedFingerprint
-          const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
+          // IMPORTANT: Skip device removal check if user is banned
+          // Banned users should stay logged in to see ban overlay
+          const isUserBanned = updatedProfile.banned || updatedProfile.permanentBan
+          
+          if (!isUserBanned) {
+            const devices = updatedProfile.devices || []
+            const deviceFingerprint = storedFingerprint
+            const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
 
-          const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-          const isRecentLogin = timeSinceLogin < 300000 // 5 minutes grace period (extended to prevent false positives during video seeking/interaction)
+            const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
+            const isRecentLogin = timeSinceLogin < 300000 // 5 minutes grace period (extended to prevent false positives during video seeking/interaction)
 
-          if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
-            console.log('⚠️ Device removed from allowed devices - logging out')
-            console.log('Device fingerprint:', deviceFingerprint)
-            console.log('Devices in profile:', devices.length)
-            localStorage.removeItem('deviceWarning')
-            localStorage.removeItem('banInfo')
-            localStorage.removeItem('lastAckedLogoutAt')
-            await firebaseSignOut(auth)
-            window.location.reload()
-            return
+            if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
+              console.log('⚠️ Device removed from allowed devices - logging out')
+              console.log('Device fingerprint:', deviceFingerprint)
+              console.log('Devices in profile:', devices.length)
+              localStorage.removeItem('deviceWarning')
+              localStorage.removeItem('banInfo')
+              localStorage.removeItem('lastAckedLogoutAt')
+              await firebaseSignOut(auth)
+              window.location.reload()
+              return
+            }
+          } else {
+            console.log('🚫 User is banned - skipping device removal check to show ban overlay')
           }
         }
       },

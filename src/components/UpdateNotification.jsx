@@ -98,10 +98,11 @@ export default function UpdateNotification() {
       localStorage.removeItem('appVersion');
       console.log('✅ Version cleared, reloading...');
       
-      window.location.reload(true);
+      // Force hard reload with cache bypass
+      window.location.href = window.location.href.split('?')[0] + '?v=' + Date.now();
     } catch (error) {
       console.error('Error during update:', error);
-      window.location.reload(true);
+      window.location.href = window.location.href.split('?')[0] + '?v=' + Date.now();
     }
   };
 
