@@ -126,35 +126,24 @@ export function AuthProvider({ children }) {
         const now = new Date()
 
         if (banEndTime <= now) {
-          console.log('✅ Ban expired during login - clearing ban, kicking old devices, resetting device list')
+          console.log('✅ Ban expired during login - clearing ban status only')
+          console.log(`📊 Current ban count: ${banCount} (will be preserved for tracking violations)`)
           
-          const oldDevices = devices || []
-          const oldFingerprints = oldDevices.map(d => d.fingerprint).filter(Boolean)
-          const currentFingerprint = deviceInfo?.fingerprint
-          
-          const devicesToKick = currentFingerprint
-            ? oldFingerprints.filter(fp => fp !== currentFingerprint)
-            : oldFingerprints
-          
-          const newDevices = (deviceInfo && deviceInfo.fingerprint) ? [deviceInfo] : []
-          
-          const forceLogoutTimestamp = Timestamp.now()
-          
-          localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
-          
+          // CRITICAL FIX: Only clear ban flags, NOT devices
+          // Let the device management happen in the normal flow below
+          // This ensures current device gets added and next multi-device login triggers violation
           await updateDoc(userRef, {
             banned: false,
-            banExpiresAt: null,
-            kickedDevices: devicesToKick,
-            devices: newDevices,
-            forceLogoutAt: forceLogoutTimestamp,
-            forceLogoutReason: 'Ban expired - all devices logged out'
+            banExpiresAt: null
+            // banCount and devices intentionally NOT touched here
+            // devices will be managed by the normal flow below
           })
           
           localStorage.removeItem('banInfo')
           setBanInfo(null)
           
-          return deviceInfo
+          // DO NOT return - continue to normal device management flow below
+          // This allows current device to be added and proper violation tracking
         } else {
           const banData = {
             isBanned: true,
@@ -180,8 +169,9 @@ export function AuthProvider({ children }) {
 
       // NEW DEVICE DETECTED - This is where ban happens
       if (!existingDevice) {
+        // Check if this is a violation: multiple devices or repeated violations
         if (devices.length > 0) {
-          console.log('🚨 Multiple device login detected - devices count:', devices.length)
+          console.log('🚨 Multiple device login detected - devices count:', devices.length, 'cumulative ban count:', banCount)
           
           const newBanCount = banCount + 1
           const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
@@ -773,34 +763,26 @@ export function AuthProvider({ children }) {
 
           // If ban expired, clear ban flags and force logout on ALL devices
           if (isBanned && !isBanActive && banExpiresAt) {
-            console.log('✅ Ban has expired in snapshot listener - clearing ban and logging out all devices')
+            console.log('✅ Ban has expired in snapshot listener - clearing ban status only')
+            console.log(`📊 Preserving ban count: ${updatedProfile.banCount || 0} and devices for proper violation tracking`)
             try {
               const userRef = doc(db, "users", currentUser.uid)
-              const currentDevices = updatedProfile.devices || []
-              const deviceInfo = storedFingerprint ? { fingerprint: storedFingerprint, timestamp: new Date().toISOString() } : null
-              
-              // Kick ALL old devices to force logout everywhere
-              const allDeviceFingerprints = currentDevices.map(d => d.fingerprint).filter(Boolean)
-              const currentFingerprint = deviceInfo?.fingerprint
-              const devicesToKick = currentFingerprint 
-                ? allDeviceFingerprints.filter(fp => fp !== currentFingerprint)
-                : allDeviceFingerprints
-              
-              const newDevices = (deviceInfo && deviceInfo.fingerprint) ? [deviceInfo] : []
               
               const forceLogoutTimestamp = Timestamp.now()
               localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
               
+              // CRITICAL FIX: Only clear ban flags, NOT devices
+              // Preserving devices ensures next multi-device login properly triggers violation
+              // banCount persists to track cumulative violations
               await updateDoc(userRef, {
                 banned: false,
                 banExpiresAt: null,
-                kickedDevices: devicesToKick,
-                devices: newDevices,
                 forceLogoutAt: forceLogoutTimestamp,
-                forceLogoutReason: 'Ban expired - logging out all devices'
+                forceLogoutReason: 'Ban expired - please log in again'
+                // banCount and devices intentionally NOT touched - preserved for violation tracking
               })
               
-              console.log(`✅ Ban cleared - kicked ${devicesToKick.length} devices, current device can stay logged in`)
+              console.log(`✅ Ban cleared successfully - banCount and devices preserved for tracking`)
             } catch (error) {
               console.error('Error clearing ban on expiry:', error)
             }
@@ -1123,31 +1105,23 @@ export function AuthProvider({ children }) {
           const userDoc = await getDoc(userRef)
 
           if (userDoc.exists()) {
-            console.log('✅ Ban countdown expired - clearing ban, resetting devices and forcing logout on ALL devices')
-            
-            let deviceInfo = null
-            try {
-              deviceInfo = await getDeviceInfo()
-            } catch (error) {
-              console.warn('Failed to get device info during ban cleanup:', error)
-              const storedFingerprint = localStorage.getItem('currentDeviceFingerprint')
-              if (storedFingerprint) {
-                deviceInfo = { fingerprint: storedFingerprint, timestamp: new Date().toISOString() }
-              }
-            }
-            
-            const newDevices = (deviceInfo && deviceInfo.fingerprint) ? [deviceInfo] : []
+            const userData = userDoc.data()
+            const currentBanCount = userData.banCount || 0
+            console.log('✅ Ban countdown expired - clearing ban status only')
+            console.log(`📊 Preserving ban count: ${currentBanCount} and devices for proper violation tracking`)
             
             const forceLogoutTimestamp = Timestamp.now()
             localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
             
+            // CRITICAL FIX: Only clear ban flags, NOT devices
+            // Preserving devices ensures next multi-device login properly triggers violation
+            // banCount persists to track cumulative violations
             await updateDoc(userRef, {
               banned: false,
               banExpiresAt: null,
-              kickedDevices: [],
-              devices: newDevices,
               forceLogoutAt: forceLogoutTimestamp,
               forceLogoutReason: 'Ban expired - please log in again'
+              // banCount and devices intentionally NOT touched - preserved for violation tracking
             })
           }
         }

@@ -399,6 +399,7 @@ export default function ManageUsers() {
         try {
           console.log(" Removing user from course:", selectedUser.id, courseId)
 
+          // Remove from payments collection
           const paymentsQuery = query(
             collection(db, "payments"),
             where("userId", "==", selectedUser.id),
@@ -413,6 +414,17 @@ export default function ManageUsers() {
             await updateDoc(doc(db, "payments", paymentDoc.id), {
               courses: updatedCourses,
             })
+          }
+
+          // CRITICAL FIX: Also remove from userCourses collection
+          const userCourseDocId = `${selectedUser.id}_${courseId}`
+          const userCourseRef = doc(db, "userCourses", userCourseDocId)
+          
+          try {
+            await deleteDoc(userCourseRef)
+            console.log(` Successfully removed userCourses document: ${userCourseDocId}`)
+          } catch (error) {
+            console.warn(` userCourses document may not exist: ${userCourseDocId}`, error)
           }
 
           showSuccess("Student removed from course successfully!")
