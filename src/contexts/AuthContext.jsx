@@ -727,20 +727,19 @@ export function AuthProvider({ children }) {
             }
           }
 
-          const currentDeviceInfo = await getDeviceInfo()
-          const kickedDevices = updatedProfile.kickedDevices || []
+          // Use stored fingerprint instead of calling getDeviceInfo every time to avoid excessive API calls
           const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
-          const deviceFingerprintToCheck = currentDeviceInfo?.fingerprint || storedFingerprint
+          const kickedDevices = updatedProfile.kickedDevices || []
 
           // Check if this specific device was kicked
-          if (deviceFingerprintToCheck && kickedDevices.includes(deviceFingerprintToCheck)) {
+          if (storedFingerprint && kickedDevices.includes(storedFingerprint)) {
             console.log('✅ This device has been kicked - logging out immediately')
             localStorage.removeItem('deviceWarning')
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
             localStorage.removeItem('currentDeviceFingerprint')
 
-            const updatedKickedDevices = kickedDevices.filter(fp => fp !== deviceFingerprintToCheck)
+            const updatedKickedDevices = kickedDevices.filter(fp => fp !== storedFingerprint)
             await updateDoc(userRef, {
               kickedDevices: updatedKickedDevices
             })
@@ -778,7 +777,7 @@ export function AuthProvider({ children }) {
             try {
               const userRef = doc(db, "users", currentUser.uid)
               const currentDevices = updatedProfile.devices || []
-              const deviceInfo = currentDeviceInfo || (deviceFingerprintToCheck ? { fingerprint: deviceFingerprintToCheck, timestamp: new Date().toISOString() } : null)
+              const deviceInfo = storedFingerprint ? { fingerprint: storedFingerprint, timestamp: new Date().toISOString() } : null
               
               // Kick ALL old devices to force logout everywhere
               const allDeviceFingerprints = currentDevices.map(d => d.fingerprint).filter(Boolean)
@@ -911,7 +910,7 @@ export function AuthProvider({ children }) {
           // 🔥 Finally check Device Removal (only if NOT banned)
           // ===============================================
           const devices = updatedProfile.devices || []
-          const deviceFingerprint = currentDeviceInfo?.fingerprint || storedFingerprint
+          const deviceFingerprint = storedFingerprint
           const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
 
           const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
