@@ -4,6 +4,12 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 23, 2025** - UX Improvements & Offline Enhancement:
+- Added dismissible close button to update notification for non-critical updates (critical version mismatches still force updates)
+- Extended device removal grace period to 5 minutes to prevent false positive logouts during video seeking/forwarding
+- Enhanced service worker with better offline support: cache-first strategy for static assets (images, fonts, CSS, JS), Bangla offline fallback page, and smart caching that skips Firebase/external APIs
+- Improved offline PWA functionality with comprehensive resource caching while maintaining Firebase auth integrity
+
 **November 22, 2025** - Ban System & Service Worker Fixes:
 - Fixed service worker update notification loop - now properly handles cache updates and dismissal without persistent false notifications
 - Removed early ban check from signIn function to prevent login-logout loop - banned users can now login and see ban overlay
