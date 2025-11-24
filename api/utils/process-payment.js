@@ -168,10 +168,13 @@ export async function processPaymentAndEnrollUser(paymentData) {
       const batch = db.batch();
       const coursesToEnrollMap = new Map();
       
+      console.log(`📚 Processing ${courses.length} course(s) for enrollment:`, courses.map(c => ({ id: c.id, title: c.title })));
+      
       for (const course of courses) {
         try {
           if (course.bundleId || course.bundleIds) {
             const bundleIds = course.bundleIds || [course.bundleId];
+            console.log(`🔗 Course ${course.id} is part of bundle(s):`, bundleIds);
             
             if (coursesToEnrollMap.has(course.id)) {
               const existing = coursesToEnrollMap.get(course.id);
@@ -192,13 +195,16 @@ export async function processPaymentAndEnrollUser(paymentData) {
               });
             }
           } else {
+            console.log(`🔍 Checking if course ${course.id} (${course.title}) is a bundle...`);
             const courseDoc = await db.collection('courses').doc(course.id).get();
             if (courseDoc.exists()) {
               const courseData = courseDoc.data();
               
               if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
-                console.log(`Course ${course.id} is a bundle, adding bundled courses:`, courseData.bundledCourses);
+                console.log(`✅ Course ${course.id} is a BUNDLE with ${courseData.bundledCourses.length} courses:`, courseData.bundledCourses);
+                console.log(`📦 Bundle title: ${courseData.title}`);
                 courseData.bundledCourses.forEach(bundledCourseId => {
+                  console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
                   if (coursesToEnrollMap.has(bundledCourseId)) {
                     const existing = coursesToEnrollMap.get(bundledCourseId);
                     if (!existing.bundleIds) {
@@ -217,6 +223,7 @@ export async function processPaymentAndEnrollUser(paymentData) {
                   }
                 });
               } else {
+                console.log(`❌ Course ${course.id} is NOT a bundle (format: ${courseData.courseFormat}, bundledCourses: ${courseData.bundledCourses?.length || 0})`);
                 if (!coursesToEnrollMap.has(course.id)) {
                   coursesToEnrollMap.set(course.id, {
                     courseId: course.id,
@@ -224,10 +231,12 @@ export async function processPaymentAndEnrollUser(paymentData) {
                   });
                 }
               }
+            } else {
+              console.error(`❌ Course document ${course.id} not found in Firestore`);
             }
           }
         } catch (error) {
-          console.error(`Error processing course ${course.id}:`, error);
+          console.error(`❌ Error processing course ${course.id}:`, error);
           if (!coursesToEnrollMap.has(course.id)) {
             coursesToEnrollMap.set(course.id, {
               courseId: course.id,
@@ -236,6 +245,9 @@ export async function processPaymentAndEnrollUser(paymentData) {
           }
         }
       }
+      
+      console.log(`\n📋 Final enrollment map (${coursesToEnrollMap.size} courses):`, Array.from(coursesToEnrollMap.entries()).map(([id, data]) => ({ courseId: id, bundleId: data.bundleId })));
+      
       
       for (const [courseId, enrollmentData] of coursesToEnrollMap) {
         const userCourseRef = db.collection('userCourses').doc(`${userId}_${courseId}`);

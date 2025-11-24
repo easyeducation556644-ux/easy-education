@@ -270,7 +270,7 @@ export default function CourseClasses() {
                     <div className="pl-6 space-y-1">
                       {cls.resourceLinks.map((resource, idx) => (
                         <div key={idx} className="text-sm text-muted-foreground truncate">
-                          • {resource.title || `Resource ${idx + 1}`}
+                          • {resource.label || `Resource ${idx + 1}`}
                         </div>
                       ))}
                     </div>
