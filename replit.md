@@ -4,11 +4,14 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
-**November 24, 2025** - Bundle Course Enrollment Fix & Resources UI Enhancement:
+**November 24, 2025** - Bundle Course Enrollment Fix & Enhanced Error Handling:
 - CRITICAL FIX: Bundle course enrollment now correctly creates userCourses entries for BOTH the bundle course itself AND all individual courses within the bundle
-- Fixed issue where bundle courses purchased with coupons (including 100% discount coupons) were not granting access to individual courses
-- Enhanced resources display UI on course cards: classes and resources now shown side-by-side with gradient rounded backgrounds, improved visual hierarchy with color-coded badges (blue for classes, green for resources)
-- Bundle enrollment system now properly handles free enrollments via process-enrollment API endpoint
+- Added `isBundle` flag to userCourse entries for proper bundle identification and hiding from course listings
+- Fixed purchased bundle courses not being hidden from Home and Courses pages - now properly tracked and filtered
+- Enhanced enrollment error handling: detailed error logging with stack traces, structured error responses with details field, improved frontend toast messages showing specific error information
+- Enrollment response now includes `enrollmentDetails` (totalEnrolled count and enrolledCourses array) for both paid and free paths
+- Enhanced resources display UI on course cards: classes and resources shown side-by-side with gradient rounded backgrounds and color-coded badges (blue for classes, green for resources)
+- Backend logs now show detailed enrollment verification including which courses were enrolled and whether they are bundles or individual courses
 - Previous: Bundle Course Access Fix & UI Improvements (CourseClasses and CourseWatch userCourses collection checks, free course enrollment flow updates, resource titles display, class duration removal)
 
 **November 23, 2025** - UX Improvements & Offline Enhancement:
