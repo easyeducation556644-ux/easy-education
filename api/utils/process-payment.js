@@ -196,34 +196,44 @@ export async function processPaymentAndEnrollUser(paymentData) {
             }
           } else {
             console.log(`🔍 Checking if course ${course.id} (${course.title}) is a bundle...`);
-            const courseDoc = await db.collection('courses').doc(course.id).get();
-            if (courseDoc.exists()) {
-              const courseData = courseDoc.data();
-              
-              if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
-                console.log(`✅ Course ${course.id} is a BUNDLE with ${courseData.bundledCourses.length} courses:`, courseData.bundledCourses);
-                console.log(`📦 Bundle title: ${courseData.title}`);
-                courseData.bundledCourses.forEach(bundledCourseId => {
-                  console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
-                  if (coursesToEnrollMap.has(bundledCourseId)) {
-                    const existing = coursesToEnrollMap.get(bundledCourseId);
-                    if (!existing.bundleIds) {
-                      existing.bundleIds = existing.bundleId ? [existing.bundleId] : [];
+            try {
+              const courseDoc = await db.collection('courses').doc(course.id).get();
+              if (courseDoc.exists()) {
+                const courseData = courseDoc.data();
+                
+                if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
+                  console.log(`✅ Course ${course.id} is a BUNDLE with ${courseData.bundledCourses.length} courses:`, courseData.bundledCourses);
+                  console.log(`📦 Bundle title: ${courseData.title}`);
+                  courseData.bundledCourses.forEach(bundledCourseId => {
+                    console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
+                    if (coursesToEnrollMap.has(bundledCourseId)) {
+                      const existing = coursesToEnrollMap.get(bundledCourseId);
+                      if (!existing.bundleIds) {
+                        existing.bundleIds = existing.bundleId ? [existing.bundleId] : [];
+                      }
+                      if (!existing.bundleIds.includes(course.id)) {
+                        existing.bundleIds.push(course.id);
+                      }
+                      existing.bundleId = existing.bundleIds[0];
+                    } else {
+                      coursesToEnrollMap.set(bundledCourseId, {
+                        courseId: bundledCourseId,
+                        bundleId: course.id,
+                        bundleIds: [course.id]
+                      });
                     }
-                    if (!existing.bundleIds.includes(course.id)) {
-                      existing.bundleIds.push(course.id);
-                    }
-                    existing.bundleId = existing.bundleIds[0];
-                  } else {
-                    coursesToEnrollMap.set(bundledCourseId, {
-                      courseId: bundledCourseId,
-                      bundleId: course.id,
-                      bundleIds: [course.id]
+                  });
+                } else {
+                  console.log(`❌ Course ${course.id} is NOT a bundle (format: ${courseData.courseFormat}, bundledCourses: ${courseData.bundledCourses?.length || 0})`);
+                  if (!coursesToEnrollMap.has(course.id)) {
+                    coursesToEnrollMap.set(course.id, {
+                      courseId: course.id,
+                      bundleId: null
                     });
                   }
-                });
+                }
               } else {
-                console.log(`❌ Course ${course.id} is NOT a bundle (format: ${courseData.courseFormat}, bundledCourses: ${courseData.bundledCourses?.length || 0})`);
+                console.error(`❌ Course document ${course.id} not found in Firestore`);
                 if (!coursesToEnrollMap.has(course.id)) {
                   coursesToEnrollMap.set(course.id, {
                     courseId: course.id,
@@ -231,8 +241,19 @@ export async function processPaymentAndEnrollUser(paymentData) {
                   });
                 }
               }
-            } else {
-              console.error(`❌ Course document ${course.id} not found in Firestore`);
+            } catch (firestoreError) {
+              console.error(`❌ CRITICAL: Failed to fetch course ${course.id} from Firestore:`, firestoreError.message);
+              console.error(`   This may be due to missing Firebase Admin credentials (FIREBASE_SERVICE_ACCOUNT)`);
+              console.error(`   Bundle courses will NOT be expanded properly without proper credentials!`);
+              
+              // Add course anyway to prevent total failure, but flag it
+              if (!coursesToEnrollMap.has(course.id)) {
+                coursesToEnrollMap.set(course.id, {
+                  courseId: course.id,
+                  bundleId: null,
+                  credentialError: true
+                });
+              }
             }
           }
         } catch (error) {
