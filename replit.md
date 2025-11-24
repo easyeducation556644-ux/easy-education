@@ -4,12 +4,12 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
-**November 24, 2025** - Bundle Course Access Fix & UI Improvements:
-- Fixed bundle course access system: CourseClasses and CourseWatch now check userCourses collection first (supports bundle enrollments), with fallback to payments (supports legacy free enrollments)
-- Updated free course enrollment flow to create userCourses entries for consistency with paid/bundle enrollments
-- Improved course class cards: now display individual resource titles instead of just a count, with graceful fallback for unnamed resources
-- Removed class duration display from course class cards per user request
-- Dual access control ensures backward compatibility for all enrollment types: paid courses, bundle courses, new free enrollments, and legacy free enrollments
+**November 24, 2025** - Bundle Course Enrollment Fix & Resources UI Enhancement:
+- CRITICAL FIX: Bundle course enrollment now correctly creates userCourses entries for BOTH the bundle course itself AND all individual courses within the bundle
+- Fixed issue where bundle courses purchased with coupons (including 100% discount coupons) were not granting access to individual courses
+- Enhanced resources display UI on course cards: classes and resources now shown side-by-side with gradient rounded backgrounds, improved visual hierarchy with color-coded badges (blue for classes, green for resources)
+- Bundle enrollment system now properly handles free enrollments via process-enrollment API endpoint
+- Previous: Bundle Course Access Fix & UI Improvements (CourseClasses and CourseWatch userCourses collection checks, free course enrollment flow updates, resource titles display, class duration removal)
 
 **November 23, 2025** - UX Improvements & Offline Enhancement:
 - Added dismissible close button to update notification for non-critical updates (critical version mismatches still force updates)
