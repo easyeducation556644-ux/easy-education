@@ -164,9 +164,10 @@ export async function processPaymentAndEnrollUser(paymentData) {
     const paymentDocRef = await db.collection('payments').add(paymentRecord);
     const paymentId = paymentDocRef.id;
 
+    const coursesToEnrollMap = new Map();
+
     if (courses && courses.length > 0) {
       const batch = db.batch();
-      const coursesToEnrollMap = new Map();
       
       console.log(`📚 Processing ${courses.length} course(s) for enrollment:`, courses.map(c => ({ id: c.id, title: c.title })));
       
