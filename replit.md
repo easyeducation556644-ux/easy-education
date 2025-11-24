@@ -4,8 +4,18 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
-**November 24, 2025** - Bundle Course Enrollment Fix & Enhanced Error Handling:
-- CRITICAL FIX: Bundle course enrollment now correctly creates userCourses entries for BOTH the bundle course itself AND all individual courses within the bundle
+**November 24, 2025 (Part 2)** - Bundle Course Individual Access Fix & Frontend-Backend Data Flow Optimization:
+- CRITICAL FIX: Bundle course individual course access now works correctly - users can access all courses within purchased bundles
+- Fixed `courseToEnrollMap is not defined` error that prevented bundle enrollment completion
+- Optimized bundle enrollment to work without Firebase Admin credentials by passing bundle metadata from frontend
+- Frontend (Checkout.jsx) now normalizes bundledCourses to send only course IDs, preventing serialization issues
+- Backend (process-payment.js) handles both string IDs and course objects defensively for backward compatibility
+- Added validation to skip invalid bundled course entries with error logging
+- Bundle enrollment now creates userCourse entries for both the bundle itself AND all individual courses, ensuring proper access control
+- Frontend-first approach reduces dependency on Firebase Admin SDK for bundle expansion
+
+**November 24, 2025 (Part 1)** - Bundle Course Enrollment Fix & Enhanced Error Handling:
+- Bundle course enrollment now correctly creates userCourses entries for BOTH the bundle course itself AND all individual courses within the bundle
 - Added `isBundle` flag to userCourse entries for proper bundle identification and hiding from course listings
 - Fixed purchased bundle courses not being hidden from Home and Courses pages - now properly tracked and filtered
 - Enhanced enrollment error handling: detailed error logging with stack traces, structured error responses with details field, improved frontend toast messages showing specific error information
