@@ -1,4 +1,4 @@
-import { collection, addDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore'
+import { collection, addDoc, getDocs, query, where, serverTimestamp, doc, setDoc } from 'firebase/firestore'
 import { db } from './firebase'
 import { notifyAdminsOfEnrollment } from './notifications'
 
@@ -61,6 +61,15 @@ export async function enrollInFreeCourse(userId, userEmail, userName, course) {
     }
 
     await addDoc(collection(db, 'payments'), paymentData)
+    
+    // Create userCourses entry for access control (consistent with paid/bundle enrollments)
+    const userCourseRef = doc(db, 'userCourses', `${userId}_${course.id}`)
+    await setDoc(userCourseRef, {
+      userId,
+      courseId: course.id,
+      enrolledAt: serverTimestamp(),
+      progress: 0
+    }, { merge: true })
     
     notifyAdminsOfEnrollment({
       userId,

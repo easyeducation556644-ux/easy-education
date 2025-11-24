@@ -53,18 +53,25 @@ export default function CourseClasses() {
         if (isAdmin) {
           setHasAccess(true)
         } else if (currentUser) {
-          const paymentsQuery = query(
-            collection(db, "payments"),
-            where("userId", "==", currentUser.uid),
-            where("status", "==", "approved"),
-          )
-          const paymentsSnapshot = await getDocs(paymentsQuery)
-
-          const hasApprovedCourse = paymentsSnapshot.docs.some((doc) => {
-            const payment = doc.data()
-            return payment.courses?.some((c) => c.id === actualCourseId)
-          })
-          setHasAccess(hasApprovedCourse)
+          // Check userCourses collection first (supports bundles and new enrollments)
+          const userCourseDoc = await getDoc(doc(db, "userCourses", `${currentUser.uid}_${actualCourseId}`))
+          
+          if (userCourseDoc.exists()) {
+            setHasAccess(true)
+          } else {
+            // Fallback: Check payments for legacy free enrollments
+            const paymentsQuery = query(
+              collection(db, "payments"),
+              where("userId", "==", currentUser.uid),
+              where("status", "==", "approved")
+            )
+            const paymentsSnapshot = await getDocs(paymentsQuery)
+            const hasApprovedCourse = paymentsSnapshot.docs.some((doc) => {
+              const payment = doc.data()
+              return payment.courses?.some((c) => c.id === actualCourseId)
+            })
+            setHasAccess(hasApprovedCourse)
+          }
         }
 
         const classesQuery = query(collection(db, "classes"), where("courseId", "==", actualCourseId))
@@ -254,17 +261,19 @@ export default function CourseClasses() {
                   </div>
                 )}
 
-                {cls.duration && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="w-4 h-4" />
-                    <span>{cls.duration}</span>
-                  </div>
-                )}
-
                 {cls.resourceLinks && cls.resourceLinks.length > 0 && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <FileText className="w-4 h-4" />
-                    <span>{cls.resourceLinks.length} Resource{cls.resourceLinks.length > 1 ? 's' : ''}</span>
+                  <div className="mt-3 space-y-1">
+                    <div className="flex items-center gap-2 text-sm font-medium text-foreground mb-1">
+                      <FileText className="w-4 h-4" />
+                      <span>Resources:</span>
+                    </div>
+                    <div className="pl-6 space-y-1">
+                      {cls.resourceLinks.map((resource, idx) => (
+                        <div key={idx} className="text-sm text-muted-foreground truncate">
+                          • {resource.title || `Resource ${idx + 1}`}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

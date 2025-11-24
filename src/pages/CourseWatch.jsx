@@ -102,18 +102,25 @@ export default function CourseWatch() {
         if (isAdmin) {
           setHasAccess(true)
         } else if (currentUser) {
-          const paymentsQuery = query(
-            collection(db, "payments"),
-            where("userId", "==", currentUser.uid),
-            where("status", "==", "approved"),
-          )
-          const paymentsSnapshot = await getDocs(paymentsQuery)
-
-          const hasApprovedCourse = paymentsSnapshot.docs.some((doc) => {
-            const payment = doc.data()
-            return payment.courses?.some((c) => c.id === resolvedCourseId)
-          })
-          setHasAccess(hasApprovedCourse)
+          // Check userCourses collection first (supports bundles and new enrollments)
+          const userCourseDoc = await getDoc(doc(db, "userCourses", `${currentUser.uid}_${resolvedCourseId}`))
+          
+          if (userCourseDoc.exists()) {
+            setHasAccess(true)
+          } else {
+            // Fallback: Check payments for legacy free enrollments
+            const paymentsQuery = query(
+              collection(db, "payments"),
+              where("userId", "==", currentUser.uid),
+              where("status", "==", "approved")
+            )
+            const paymentsSnapshot = await getDocs(paymentsQuery)
+            const hasApprovedCourse = paymentsSnapshot.docs.some((doc) => {
+              const payment = doc.data()
+              return payment.courses?.some((c) => c.id === resolvedCourseId)
+            })
+            setHasAccess(hasApprovedCourse)
+          }
         }
 
         const classesQuery = query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))
