@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate, useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
-import { Play, ArrowLeft, Lock, Clock, User, Archive } from "lucide-react"
+import { Play, ArrowLeft, Lock, Clock, User, Archive, FileText } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -258,6 +258,13 @@ export default function CourseClasses() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="w-4 h-4" />
                     <span>{cls.duration}</span>
+                  </div>
+                )}
+
+                {cls.resourceLinks && cls.resourceLinks.length > 0 && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <FileText className="w-4 h-4" />
+                    <span>{cls.resourceLinks.length} Resource{cls.resourceLinks.length > 1 ? 's' : ''}</span>
                   </div>
                 )}
               </div>
