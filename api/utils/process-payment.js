@@ -295,11 +295,23 @@ export async function processPaymentAndEnrollUser(paymentData) {
           userCourseData.bundleId = enrollmentData.bundleId;
         }
         
+        // Mark if this is a bundle course itself (not an individual course within a bundle)
+        if (enrollmentData.isBundle) {
+          userCourseData.isBundle = true;
+        }
+        
         batch.set(userCourseRef, userCourseData, { merge: true });
       }
       
       await batch.commit();
-      console.log(`Successfully enrolled user ${userId} in ${coursesToEnrollMap.size} course(s) (including bundle courses)`);
+      const totalEnrolled = coursesToEnrollMap.size;
+      console.log(`✅ Successfully enrolled user ${userId} in ${totalEnrolled} course(s) (including bundle courses)`);
+      
+      // Log all enrolled courses for verification
+      console.log('📋 Enrolled courses:');
+      for (const [courseId, enrollmentData] of coursesToEnrollMap) {
+        console.log(`  - ${courseId}${enrollmentData.isBundle ? ' (BUNDLE)' : ''}${enrollmentData.bundleId ? ` [from bundle: ${enrollmentData.bundleId}]` : ''}`);
+      }
       
       try {
         await notifyAdminsOfEnrollment({
@@ -353,7 +365,11 @@ export async function processPaymentAndEnrollUser(paymentData) {
       success: true,
       alreadyProcessed: false,
       message: 'Payment processed and user enrolled successfully',
-      paymentRecord
+      paymentRecord,
+      enrollmentDetails: {
+        totalEnrolled: coursesToEnrollMap?.size || 0,
+        enrolledCourses: Array.from(coursesToEnrollMap?.keys() || [])
+      }
     };
 
   } catch (error) {

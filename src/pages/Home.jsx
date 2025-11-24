@@ -38,6 +38,11 @@ export default function Home() {
         
         for (const doc of userCoursesSnapshot.docs) {
           const userCourse = doc.data()
+          // If this userCourse entry is for a bundle course itself, hide it
+          if (userCourse.isBundle) {
+            purchasedBundleSet.add(userCourse.courseId)
+          }
+          // Also hide bundles if user has courses from that bundle
           if (userCourse.bundleId) {
             purchasedBundleSet.add(userCourse.bundleId)
           }

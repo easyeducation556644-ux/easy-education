@@ -59,6 +59,7 @@ export default async function handler(req, res) {
           message: 'Free enrollment successful',
           alreadyProcessed: result.alreadyProcessed,
           coursesEnrolled: requestCourses?.length || 0,
+          enrollmentDetails: result.enrollmentDetails,
           payment: {
             transaction_id,
             amount: 0,
@@ -69,16 +70,20 @@ export default async function handler(req, res) {
           }
         });
       } else {
+        console.error('Enrollment failed:', result.error, result.details);
         return res.status(500).json({
           success: false,
-          error: result.error
+          error: result.error || 'Enrollment failed',
+          details: result.details
         });
       }
     } catch (error) {
       console.error("Error processing free enrollment:", error);
+      console.error("Error stack:", error.stack);
       return res.status(500).json({
         success: false,
-        error: "Failed to process free enrollment. Please try again."
+        error: "Failed to process free enrollment. Please try again.",
+        details: error.message
       });
     }
   }
@@ -184,6 +189,7 @@ export default async function handler(req, res) {
         message: result.message,
         alreadyProcessed: result.alreadyProcessed,
         coursesEnrolled: courses.length,
+        enrollmentDetails: result.enrollmentDetails,
         payment: {
           transaction_id: paymentData.transaction_id,
           amount: paymentData.amount,
@@ -191,9 +197,11 @@ export default async function handler(req, res) {
         }
       });
     } else {
+      console.error('Enrollment failed:', result.error, result.details);
       return res.status(500).json({
         success: false,
-        error: result.error
+        error: result.error || 'Enrollment failed',
+        details: result.details
       });
     }
     

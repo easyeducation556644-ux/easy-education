@@ -235,12 +235,13 @@ export default function Checkout() {
         const enrollData = await enrollResponse.json()
 
         if (enrollData.success) {
+          const enrolledCount = enrollData.enrollmentDetails?.totalEnrolled || metadata.courses.length
           clearCart()
           sessionStorage.removeItem("appliedCoupon")
           toast({
             variant: "success",
             title: "Enrolled Successfully!",
-            description: "You have been enrolled in the course(s) for free!",
+            description: `You have been enrolled in ${enrolledCount} course(s) for free!`,
           })
           navigate('/checkout-complete', { 
             state: { 
@@ -249,7 +250,8 @@ export default function Checkout() {
             } 
           })
         } else {
-          throw new Error(enrollData.error || "Failed to process free enrollment")
+          const errorDetails = enrollData.details ? ` (${enrollData.details})` : ''
+          throw new Error(enrollData.error + errorDetails || "Failed to process free enrollment")
         }
         return
       }
