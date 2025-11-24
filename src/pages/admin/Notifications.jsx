@@ -23,8 +23,7 @@ export default function Notifications() {
     try {
       const notificationsQuery = query(
         collection(db, "notifications"),
-        orderBy("createdAt", "desc"),
-        limit(100)
+        orderBy("createdAt", "desc")
       )
       const snapshot = await getDocs(notificationsQuery)
       const data = snapshot.docs.map((doc) => ({

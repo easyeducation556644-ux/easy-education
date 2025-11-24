@@ -166,11 +166,9 @@ export async function processPaymentAndEnrollUser(paymentData) {
 
     if (courses && courses.length > 0) {
       const batch = db.batch();
-      const allCoursesToEnroll = new Set();
+      const coursesToEnrollMap = new Map();
       
       for (const course of courses) {
-        allCoursesToEnroll.add(course.id);
-        
         try {
           const courseDoc = await db.collection('courses').doc(course.id).get();
           if (courseDoc.exists()) {
@@ -179,27 +177,45 @@ export async function processPaymentAndEnrollUser(paymentData) {
             if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
               console.log(`Course ${course.id} is a bundle, adding bundled courses:`, courseData.bundledCourses);
               courseData.bundledCourses.forEach(bundledCourseId => {
-                allCoursesToEnroll.add(bundledCourseId);
+                coursesToEnrollMap.set(bundledCourseId, {
+                  courseId: bundledCourseId,
+                  bundleId: course.id
+                });
+              });
+            } else {
+              coursesToEnrollMap.set(course.id, {
+                courseId: course.id,
+                bundleId: null
               });
             }
           }
         } catch (error) {
           console.error(`Error fetching course ${course.id} for bundle check:`, error);
+          coursesToEnrollMap.set(course.id, {
+            courseId: course.id,
+            bundleId: null
+          });
         }
       }
       
-      for (const courseId of allCoursesToEnroll) {
+      for (const [courseId, enrollmentData] of coursesToEnrollMap) {
         const userCourseRef = db.collection('userCourses').doc(`${userId}_${courseId}`);
-        batch.set(userCourseRef, {
+        const userCourseData = {
           userId,
-          courseId: courseId,
+          courseId: enrollmentData.courseId,
           enrolledAt: FieldValue.serverTimestamp(),
           progress: 0
-        }, { merge: true });
+        };
+        
+        if (enrollmentData.bundleId) {
+          userCourseData.bundleId = enrollmentData.bundleId;
+        }
+        
+        batch.set(userCourseRef, userCourseData, { merge: true });
       }
       
       await batch.commit();
-      console.log(`Successfully enrolled user ${userId} in ${allCoursesToEnroll.size} course(s) (including bundle courses)`);
+      console.log(`Successfully enrolled user ${userId} in ${coursesToEnrollMap.size} course(s) (including bundle courses)`);
       
       try {
         await notifyAdminsOfEnrollment({

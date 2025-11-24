@@ -26,6 +26,9 @@ export default function ManageUsers() {
   const [grantingAccess, setGrantingAccess] = useState(false)
   const [userEnrollments, setUserEnrollments] = useState({})
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+  const [cleaningOrphans, setCleaningOrphans] = useState(false)
+  const [orphanedRecords, setOrphanedRecords] = useState([])
+  const [showOrphanedRecordsModal, setShowOrphanedRecordsModal] = useState(false)
 
   useEffect(() => {
     fetchUsers()
@@ -399,7 +402,14 @@ export default function ManageUsers() {
         try {
           console.log(" Removing user from course:", selectedUser.id, courseId)
 
-          // Remove from payments collection
+          const course = courses.find(c => c.id === courseId)
+          let coursesToRemove = [courseId]
+          
+          if (course && course.courseFormat === 'bundle' && course.bundledCourses && course.bundledCourses.length > 0) {
+            console.log(` Course ${courseId} is a bundle, also removing bundled courses:`, course.bundledCourses)
+            coursesToRemove = [courseId, ...course.bundledCourses]
+          }
+
           const paymentsQuery = query(
             collection(db, "payments"),
             where("userId", "==", selectedUser.id),
@@ -416,18 +426,19 @@ export default function ManageUsers() {
             })
           }
 
-          // CRITICAL FIX: Also remove from userCourses collection
-          const userCourseDocId = `${selectedUser.id}_${courseId}`
-          const userCourseRef = doc(db, "userCourses", userCourseDocId)
-          
-          try {
-            await deleteDoc(userCourseRef)
-            console.log(` Successfully removed userCourses document: ${userCourseDocId}`)
-          } catch (error) {
-            console.warn(` userCourses document may not exist: ${userCourseDocId}`, error)
+          for (const cId of coursesToRemove) {
+            const userCourseDocId = `${selectedUser.id}_${cId}`
+            const userCourseRef = doc(db, "userCourses", userCourseDocId)
+            
+            try {
+              await deleteDoc(userCourseRef)
+              console.log(` Successfully removed userCourses document: ${userCourseDocId}`)
+            } catch (error) {
+              console.warn(` userCourses document may not exist: ${userCourseDocId}`, error)
+            }
           }
 
-          showSuccess("Student removed from course successfully!")
+          showSuccess(`Student removed from course successfully! ${coursesToRemove.length > 1 ? `(${coursesToRemove.length} courses removed including bundle)` : ''}`)
           await fetchUserEnrollments()
           
           if (!userEnrollments[selectedUser.id] || userEnrollments[selectedUser.id].length <= 1) {
@@ -461,6 +472,114 @@ export default function ManageUsers() {
     return courses.filter(c => !enrolledCourseIds.includes(c.id))
   }
 
+  const scanForOrphanedRecords = async () => {
+    setCleaningOrphans(true)
+    try {
+      console.log(" Scanning for orphaned userCourses records")
+      
+      const userCoursesSnapshot = await getDocs(collection(db, "userCourses"))
+      const paymentsSnapshot = await getDocs(
+        query(collection(db, "payments"), where("status", "==", "approved"))
+      )
+      
+      const userPaymentsMap = new Map()
+      paymentsSnapshot.docs.forEach((paymentDoc) => {
+        const payment = paymentDoc.data()
+        if (!userPaymentsMap.has(payment.userId)) {
+          userPaymentsMap.set(payment.userId, [])
+        }
+        userPaymentsMap.get(payment.userId).push(payment)
+      })
+      
+      const suspiciousRecords = []
+      
+      for (const userCourseDoc of userCoursesSnapshot.docs) {
+        const userCourse = userCourseDoc.data()
+        const userPayments = userPaymentsMap.get(userCourse.userId) || []
+        
+        let hasPayment = false
+        let paymentDetails = null
+        
+        for (const payment of userPayments) {
+          const hasCourseInPayment = payment.courses?.some(c => c.id === userCourse.courseId)
+          if (hasCourseInPayment) {
+            hasPayment = true
+            paymentDetails = payment
+            break
+          }
+        }
+        
+        if (!hasPayment && userPayments.length === 0) {
+          const user = users.find(u => u.id === userCourse.userId)
+          const course = courses.find(c => c.id === userCourse.courseId)
+          
+          suspiciousRecords.push({
+            id: userCourseDoc.id,
+            userCourse,
+            userName: user?.name || 'Unknown User',
+            userEmail: user?.email || 'Unknown',
+            courseName: course?.title || 'Unknown Course',
+            bundleId: userCourse.bundleId || null,
+            hasAnyPayment: false,
+            confidence: 'high'
+          })
+        } else if (!hasPayment && userPayments.length > 0) {
+          const user = users.find(u => u.id === userCourse.userId)
+          const course = courses.find(c => c.id === userCourse.courseId)
+          
+          suspiciousRecords.push({
+            id: userCourseDoc.id,
+            userCourse,
+            userName: user?.name || 'Unknown User',
+            userEmail: user?.email || 'Unknown',
+            courseName: course?.title || 'Unknown Course',
+            bundleId: userCourse.bundleId || null,
+            hasAnyPayment: true,
+            confidence: userCourse.bundleId ? 'low' : 'medium'
+          })
+        }
+      }
+      
+      setOrphanedRecords(suspiciousRecords)
+      setShowOrphanedRecordsModal(true)
+      
+      toast({
+        title: "Scan Complete",
+        description: `Found ${suspiciousRecords.length} potentially orphaned record(s)`,
+      })
+      
+      console.log(` Scan complete. Found ${suspiciousRecords.length} suspicious records`)
+    } catch (error) {
+      console.error(" Error scanning for orphaned records:", error)
+      toast({
+        variant: "error",
+        title: "Scan Failed",
+        description: error.message || "Failed to scan for orphaned records",
+      })
+    } finally {
+      setCleaningOrphans(false)
+    }
+  }
+  
+  const deleteOrphanedRecord = async (recordId) => {
+    try {
+      await deleteDoc(doc(db, "userCourses", recordId))
+      setOrphanedRecords(prev => prev.filter(r => r.id !== recordId))
+      toast({
+        title: "Record Deleted",
+        description: "Orphaned record deleted successfully",
+      })
+      await fetchUserEnrollments()
+    } catch (error) {
+      console.error("Error deleting orphaned record:", error)
+      toast({
+        variant: "error",
+        title: "Delete Failed",
+        description: error.message || "Failed to delete record",
+      })
+    }
+  }
+
   return (
     <div>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
@@ -469,6 +588,14 @@ export default function ManageUsers() {
             <h1 className="text-3xl font-bold mb-2">Manage Users</h1>
             <p className="text-muted-foreground">View and manage all platform users</p>
           </div>
+          <button
+            onClick={scanForOrphanedRecords}
+            disabled={cleaningOrphans}
+            className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <AlertTriangle className="w-4 h-4" />
+            {cleaningOrphans ? "Scanning..." : "Scan for Orphaned Courses"}
+          </button>
         </div>
       </motion.div>
 
@@ -1041,6 +1168,114 @@ export default function ManageUsers() {
                 onClick={() => {
                   setShowUserDetailsModal(false)
                   setSelectedUser(null)
+                }}
+                className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
+              >
+                Close
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {showOrphanedRecordsModal && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold">Orphaned Course Records</h2>
+              <button
+                onClick={() => {
+                  setShowOrphanedRecordsModal(false)
+                  setOrphanedRecords([])
+                }}
+                className="p-2 hover:bg-muted rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg text-blue-500 text-sm">
+              <p className="font-semibold mb-2">Manual Review Required</p>
+              <p>These records may be orphaned due to the old bug. Review each one carefully before deleting:</p>
+              <ul className="mt-2 ml-4 space-y-1">
+                <li><strong>High confidence:</strong> User has NO payments at all</li>
+                <li><strong>Medium confidence:</strong> User has payments but this specific course isn't in any of them</li>
+                <li><strong>Low confidence:</strong> Record has bundleId - may be from a bundle purchase (verify carefully)</li>
+              </ul>
+            </div>
+
+            {orphanedRecords.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <Check className="w-16 h-16 mx-auto mb-4 text-green-500" />
+                <h3 className="text-lg font-semibold mb-2">No Orphaned Records Found!</h3>
+                <p>All userCourses records appear to have valid payment records.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {orphanedRecords.map((record) => (
+                  <div
+                    key={record.id}
+                    className={`p-4 border rounded-lg ${
+                      record.confidence === 'high'
+                        ? 'bg-red-500/5 border-red-500/20'
+                        : record.confidence === 'medium'
+                        ? 'bg-yellow-500/5 border-yellow-500/20'
+                        : 'bg-blue-500/5 border-blue-500/20'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span
+                            className={`px-2 py-1 rounded text-xs font-semibold ${
+                              record.confidence === 'high'
+                                ? 'bg-red-500 text-white'
+                                : record.confidence === 'medium'
+                                ? 'bg-yellow-500 text-white'
+                                : 'bg-blue-500 text-white'
+                            }`}
+                          >
+                            {record.confidence.toUpperCase()} CONFIDENCE
+                          </span>
+                          {record.bundleId && (
+                            <span className="px-2 py-1 rounded text-xs font-semibold bg-purple-500 text-white">
+                              FROM BUNDLE
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-semibold text-lg">{record.courseName}</p>
+                        <p className="text-sm text-muted-foreground">User: {record.userName} ({record.userEmail})</p>
+                        {record.bundleId && (
+                          <p className="text-sm text-muted-foreground">Bundle ID: {record.bundleId}</p>
+                        )}
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {record.hasAnyPayment
+                            ? '⚠️ User has other payments but this course is not in any of them'
+                            : '🚨 User has NO payment records at all'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => deleteOrphanedRecord(record.id)}
+                        className="ml-4 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-6 pt-4 border-t border-border">
+              <button
+                onClick={() => {
+                  setShowOrphanedRecordsModal(false)
+                  setOrphanedRecords([])
                 }}
                 className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
               >
