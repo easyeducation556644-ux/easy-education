@@ -170,31 +170,70 @@ export async function processPaymentAndEnrollUser(paymentData) {
       
       for (const course of courses) {
         try {
-          const courseDoc = await db.collection('courses').doc(course.id).get();
-          if (courseDoc.exists()) {
-            const courseData = courseDoc.data();
+          if (course.bundleId || course.bundleIds) {
+            const bundleIds = course.bundleIds || [course.bundleId];
             
-            if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
-              console.log(`Course ${course.id} is a bundle, adding bundled courses:`, courseData.bundledCourses);
-              courseData.bundledCourses.forEach(bundledCourseId => {
-                coursesToEnrollMap.set(bundledCourseId, {
-                  courseId: bundledCourseId,
-                  bundleId: course.id
-                });
+            if (coursesToEnrollMap.has(course.id)) {
+              const existing = coursesToEnrollMap.get(course.id);
+              if (!existing.bundleIds) {
+                existing.bundleIds = existing.bundleId ? [existing.bundleId] : [];
+              }
+              bundleIds.forEach(bundleId => {
+                if (!existing.bundleIds.includes(bundleId)) {
+                  existing.bundleIds.push(bundleId);
+                }
               });
+              existing.bundleId = existing.bundleIds[0];
             } else {
               coursesToEnrollMap.set(course.id, {
                 courseId: course.id,
-                bundleId: null
+                bundleId: bundleIds[0],
+                bundleIds: bundleIds
               });
+            }
+          } else {
+            const courseDoc = await db.collection('courses').doc(course.id).get();
+            if (courseDoc.exists()) {
+              const courseData = courseDoc.data();
+              
+              if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
+                console.log(`Course ${course.id} is a bundle, adding bundled courses:`, courseData.bundledCourses);
+                courseData.bundledCourses.forEach(bundledCourseId => {
+                  if (coursesToEnrollMap.has(bundledCourseId)) {
+                    const existing = coursesToEnrollMap.get(bundledCourseId);
+                    if (!existing.bundleIds) {
+                      existing.bundleIds = existing.bundleId ? [existing.bundleId] : [];
+                    }
+                    if (!existing.bundleIds.includes(course.id)) {
+                      existing.bundleIds.push(course.id);
+                    }
+                    existing.bundleId = existing.bundleIds[0];
+                  } else {
+                    coursesToEnrollMap.set(bundledCourseId, {
+                      courseId: bundledCourseId,
+                      bundleId: course.id,
+                      bundleIds: [course.id]
+                    });
+                  }
+                });
+              } else {
+                if (!coursesToEnrollMap.has(course.id)) {
+                  coursesToEnrollMap.set(course.id, {
+                    courseId: course.id,
+                    bundleId: null
+                  });
+                }
+              }
             }
           }
         } catch (error) {
-          console.error(`Error fetching course ${course.id} for bundle check:`, error);
-          coursesToEnrollMap.set(course.id, {
-            courseId: course.id,
-            bundleId: null
-          });
+          console.error(`Error processing course ${course.id}:`, error);
+          if (!coursesToEnrollMap.has(course.id)) {
+            coursesToEnrollMap.set(course.id, {
+              courseId: course.id,
+              bundleId: course.bundleId || null
+            });
+          }
         }
       }
       

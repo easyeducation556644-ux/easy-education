@@ -307,14 +307,52 @@ export default function ManageUsers() {
 
     setGrantingAccess(true)
     try {
-      const coursesToEnroll = selectedCoursesForGrant.map(courseId => {
+      const coursesToEnrollMap = new Map()
+      const bundlesGranted = []
+      
+      for (const courseId of selectedCoursesForGrant) {
         const course = courses.find(c => c.id === courseId)
-        return {
-          id: course.id,
-          title: course.title,
-          price: course.price || 0
+        if (!course) continue
+        
+        if (course.courseFormat === 'bundle' && course.bundledCourses && course.bundledCourses.length > 0) {
+          bundlesGranted.push({ id: course.id, title: course.title })
+          
+          for (const bundledCourseId of course.bundledCourses) {
+            const bundledCourse = courses.find(c => c.id === bundledCourseId)
+            if (bundledCourse) {
+              if (coursesToEnrollMap.has(bundledCourseId)) {
+                const existing = coursesToEnrollMap.get(bundledCourseId)
+                if (!existing.bundleIds) existing.bundleIds = []
+                if (!existing.bundleTitles) existing.bundleTitles = []
+                if (!existing.bundleIds.includes(course.id)) {
+                  existing.bundleIds.push(course.id)
+                  existing.bundleTitles.push(course.title)
+                }
+              } else {
+                coursesToEnrollMap.set(bundledCourseId, {
+                  id: bundledCourse.id,
+                  title: bundledCourse.title,
+                  price: 0,
+                  bundleId: course.id,
+                  bundleTitle: course.title,
+                  bundleIds: [course.id],
+                  bundleTitles: [course.title]
+                })
+              }
+            }
+          }
+        } else {
+          if (!coursesToEnrollMap.has(courseId)) {
+            coursesToEnrollMap.set(courseId, {
+              id: course.id,
+              title: course.title,
+              price: course.price || 0
+            })
+          }
         }
-      })
+      }
+      
+      const coursesToEnroll = Array.from(coursesToEnrollMap.values())
 
       const transactionId = `MANUAL_${Date.now()}_${selectedUser.id}`
       
@@ -341,10 +379,18 @@ export default function ManageUsers() {
       const result = await response.json()
 
       if (result.success) {
+        const totalCourses = coursesToEnroll.length
+        let message = `${userProfile?.name || 'Admin'} granted ${selectedUser.name} access to ${totalCourses} course(s)`
+        
+        if (bundlesGranted.length > 0) {
+          const bundleNames = bundlesGranted.map(b => b.title).join(', ')
+          message += ` via bundle${bundlesGranted.length > 1 ? 's' : ''}: ${bundleNames}`
+        }
+        
         await addDoc(collection(db, "notifications"), {
           type: 'admin_course_grant',
           title: 'Admin Granted Course Access',
-          message: `${userProfile?.name || 'Admin'} granted ${selectedUser.name} access to ${coursesToEnroll.length} course(s)`,
+          message: message,
           userId: selectedUser.id,
           userName: selectedUser.name,
           userEmail: selectedUser.email,
@@ -352,15 +398,23 @@ export default function ManageUsers() {
           adminName: userProfile?.name || 'Admin',
           adminEmail: userProfile?.email || 'admin@gmail.com',
           courses: coursesToEnroll,
+          bundles: bundlesGranted,
           transactionId: transactionId,
           isRead: false,
           createdAt: serverTimestamp(),
           link: '/admin/payments'
         })
 
+        let toastMessage = `Successfully granted access to ${totalCourses} course(s)`
+        if (bundlesGranted.length > 0) {
+          toastMessage += ` from ${bundlesGranted.length} bundle${bundlesGranted.length > 1 ? 's' : ''}!`
+        } else {
+          toastMessage += '!'
+        }
+
         toast({
           title: "Success",
-          description: `Successfully granted access to ${coursesToEnroll.length} course(s)!`,
+          description: toastMessage,
         })
         
         await fetchUserEnrollments()
