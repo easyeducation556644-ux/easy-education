@@ -204,6 +204,18 @@ export async function processPaymentAndEnrollUser(paymentData) {
                 if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
                   console.log(`✅ Course ${course.id} is a BUNDLE with ${courseData.bundledCourses.length} courses:`, courseData.bundledCourses);
                   console.log(`📦 Bundle title: ${courseData.title}`);
+                  
+                  // CRITICAL FIX: Add the bundle course itself to enrollment map
+                  if (!coursesToEnrollMap.has(course.id)) {
+                    coursesToEnrollMap.set(course.id, {
+                      courseId: course.id,
+                      bundleId: null,
+                      isBundle: true
+                    });
+                    console.log(`  ✅ Added bundle course itself: ${course.id}`);
+                  }
+                  
+                  // Add all individual courses within the bundle
                   courseData.bundledCourses.forEach(bundledCourseId => {
                     console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
                     if (coursesToEnrollMap.has(bundledCourseId)) {
