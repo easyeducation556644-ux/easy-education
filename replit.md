@@ -4,6 +4,13 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 24, 2025 (Part 3)** - CourseCard UI Refinements & Uniform Layout:
+- Removed user icon from course card placeholders - replaced with clean gradient background
+- Implemented uniform card heights using min-height for resources section - prevents layout shifts when resources are missing
+- Enhanced resources badge colors in light mode - darker text (blue-800, green-800) for better readability
+- Added responsive resources display with flex-wrap and scrollable overflow for 6-7+ resource items
+- Resources section now supports multiple rows with smooth scrolling, maintaining clean layout at all screen sizes
+
 **November 24, 2025 (Part 2)** - Bundle Course Individual Access Fix & Frontend-Backend Data Flow Optimization:
 - CRITICAL FIX: Bundle course individual course access now works correctly - users can access all courses within purchased bundles
 - Fixed `courseToEnrollMap is not defined` error that prevented bundle enrollment completion
