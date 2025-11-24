@@ -205,7 +205,9 @@ export default function Checkout() {
           title: item.title,
           price: parseFloat(item.price) || 0,
           courseFormat: item.courseFormat || 'regular',
-          bundledCourses: item.bundledCourses || [],
+          bundledCourses: (item.bundledCourses || []).map(course => 
+            typeof course === 'string' ? course : course.id
+          ),
         })),
         subtotal: parseFloat(subtotalAmount.toFixed(2)),
         discount: parseFloat(finalDiscount.toFixed(2)),

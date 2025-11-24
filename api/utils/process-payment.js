@@ -214,7 +214,12 @@ export async function processPaymentAndEnrollUser(paymentData) {
               }
               
               // Add all individual courses within the bundle
-              course.bundledCourses.forEach(bundledCourseId => {
+              course.bundledCourses.forEach(bundledCourse => {
+                const bundledCourseId = typeof bundledCourse === 'string' ? bundledCourse : bundledCourse.id;
+                if (!bundledCourseId) {
+                  console.error(`  ⚠️ Invalid bundled course entry:`, bundledCourse);
+                  return;
+                }
                 console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
                 if (coursesToEnrollMap.has(bundledCourseId)) {
                   const existing = coursesToEnrollMap.get(bundledCourseId);
@@ -255,7 +260,12 @@ export async function processPaymentAndEnrollUser(paymentData) {
                     }
                     
                     // Add all individual courses within the bundle
-                    courseData.bundledCourses.forEach(bundledCourseId => {
+                    courseData.bundledCourses.forEach(bundledCourse => {
+                      const bundledCourseId = typeof bundledCourse === 'string' ? bundledCourse : bundledCourse.id;
+                      if (!bundledCourseId) {
+                        console.error(`  ⚠️ Invalid bundled course entry:`, bundledCourse);
+                        return;
+                      }
                       console.log(`  ↳ Adding bundled course: ${bundledCourseId}`);
                       if (coursesToEnrollMap.has(bundledCourseId)) {
                         const existing = coursesToEnrollMap.get(bundledCourseId);
