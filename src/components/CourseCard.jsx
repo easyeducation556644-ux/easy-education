@@ -2,15 +2,15 @@
 
 import { useState, useEffect } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { ShoppingCart, Trash2, Users, Check, Clock, Tag } from "lucide-react"
+import { ShoppingCart, Trash2, Users, Check, Clock, Tag, FileText, Video } from "lucide-react"
 import { useCart } from "../contexts/CartContext"
 import { useAuth } from "../contexts/AuthContext"
-import { collection, query, where, getDocs } from "firebase/firestore"
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import ProgressBar from "./ProgressBar"
 import { toast } from "../hooks/use-toast"
 
-export default function CourseCard({ course, onAddToCart, showProgress = false }) {
+export default function CourseCard({ course, onAddToCart, showProgress = false, showResources = false }) {
   const { addToCart, removeFromCart, cartItems, openCart } = useCart()
   const { currentUser } = useAuth()
   const navigate = useNavigate()
@@ -19,6 +19,7 @@ export default function CourseCard({ course, onAddToCart, showProgress = false }
   const [loading, setLoading] = useState(true)
   const [progress, setProgress] = useState(0)
   const [hasPendingPayment, setHasPendingPayment] = useState(false)
+  const [resourceStats, setResourceStats] = useState({ classCount: 0, resourceCount: 0 })
 
   // Check cart status whenever cart or course ID changes
   useEffect(() => {
@@ -38,6 +39,12 @@ export default function CourseCard({ course, onAddToCart, showProgress = false }
     }
   }, [isPurchased, currentUser])
 
+  useEffect(() => {
+    if (showResources) {
+      fetchResourceStats()
+    }
+  }, [course.id, showResources])
+
   const checkIfPurchased = async () => {
     if (!currentUser) {
       setIsPurchased(false)
@@ -46,6 +53,16 @@ export default function CourseCard({ course, onAddToCart, showProgress = false }
     }
 
     try {
+      const userCourseDocId = `${currentUser.uid}_${course.id}`
+      const userCourseRef = doc(db, "userCourses", userCourseDocId)
+      const userCourseDoc = await getDoc(userCourseRef)
+      
+      if (userCourseDoc.exists()) {
+        setIsPurchased(true)
+        setLoading(false)
+        return
+      }
+
       const paymentsQuery = query(
         collection(db, "payments"),
         where("userId", "==", currentUser.uid),
@@ -122,6 +139,27 @@ export default function CourseCard({ course, onAddToCart, showProgress = false }
   const checkIfInCart = () => {
     const inCart = cartItems.some((item) => item.id === course.id)
     setIsInCart(inCart)
+  }
+
+  const fetchResourceStats = async () => {
+    try {
+      const classesQuery = query(collection(db, "classes"), where("courseId", "==", course.id))
+      const classesSnapshot = await getDocs(classesQuery)
+      const classCount = classesSnapshot.size
+      
+      let totalResources = 0
+      classesSnapshot.docs.forEach((doc) => {
+        const classData = doc.data()
+        if (classData.resourceLinks && Array.isArray(classData.resourceLinks)) {
+          totalResources += classData.resourceLinks.length
+        }
+      })
+      
+      setResourceStats({ classCount, resourceCount: totalResources })
+    } catch (error) {
+      console.error("Error fetching resource stats:", error)
+      setResourceStats({ classCount: 0, resourceCount: 0 })
+    }
   }
 
   const handleAddToCart = (e) => {
@@ -208,6 +246,24 @@ export default function CourseCard({ course, onAddToCart, showProgress = false }
               {course.category}
             </span>
           </div>
+
+          {/* Resource Stats */}
+          {showResources && (resourceStats.classCount > 0 || resourceStats.resourceCount > 0) && (
+            <div className="flex items-center gap-3 mb-3 text-xs text-muted-foreground">
+              {resourceStats.classCount > 0 && (
+                <div className="flex items-center gap-1">
+                  <Video className="w-3.5 h-3.5" />
+                  <span>{resourceStats.classCount} Classes</span>
+                </div>
+              )}
+              {resourceStats.resourceCount > 0 && (
+                <div className="flex items-center gap-1">
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{resourceStats.resourceCount} Resources</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Price Display */}
           <div className="mb-3 mt-auto">
