@@ -212,7 +212,10 @@ export default function CourseDetail() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <div className="bg-card border border-border rounded-xl p-6">
                 <h1 className="text-3xl md:text-4xl font-bold mb-4">{course.title}</h1>
-                <p className="text-base text-muted-foreground mb-6">{course.description}</p>
+                <div 
+                  className="text-base text-muted-foreground mb-6 prose prose-sm max-w-none dark:prose-invert"
+                  dangerouslySetInnerHTML={{ __html: course.description || '' }}
+                />
 
                 {/* Teachers Section */}
                 {teachers.length > 0 && (
