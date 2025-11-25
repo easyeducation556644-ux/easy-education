@@ -246,24 +246,22 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
           </div>
 
           {/* Resource Stats */}
-          {showResources && (
-            <div className="mb-3 min-h-[52px]">
-              {(resourceStats.classCount > 0 || resourceStats.resourceCount > 0) && (
-                <div className="flex flex-wrap items-center gap-2 max-h-[88px] overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                  {resourceStats.classCount > 0 && (
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-500/10 to-blue-600/10 rounded-full border border-blue-500/20">
-                      <Video className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                      <span className="text-xs font-medium text-blue-800 dark:text-blue-300">{resourceStats.classCount} Classes</span>
-                    </div>
-                  )}
-                  {resourceStats.resourceCount > 0 && (
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500/10 to-green-600/10 rounded-full border border-green-500/20">
-                      <FileText className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
-                      <span className="text-xs font-medium text-green-800 dark:text-green-300">{resourceStats.resourceCount} Resources</span>
-                    </div>
-                  )}
-                </div>
-              )}
+          {showResources && (resourceStats.classCount > 0 || resourceStats.resourceCount > 0) && (
+            <div className="mb-3">
+              <div className="flex flex-wrap items-center gap-2 max-h-[88px] overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                {resourceStats.classCount > 0 && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-500/10 to-blue-600/10 rounded-full border border-blue-500/20">
+                    <Video className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    <span className="text-xs font-medium text-blue-800 dark:text-blue-300">{resourceStats.classCount} Classes</span>
+                  </div>
+                )}
+                {resourceStats.resourceCount > 0 && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500/10 to-green-600/10 rounded-full border border-green-500/20">
+                    <FileText className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                    <span className="text-xs font-medium text-green-800 dark:text-green-300">{resourceStats.resourceCount} Resources</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate, useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
-import { Play, ArrowLeft, Lock, Clock, User, Archive, FileText } from "lucide-react"
+import { Play, ArrowLeft, Lock, Clock, Archive, FileText } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -255,8 +255,7 @@ export default function CourseClasses() {
                 </h3>
 
                 {cls.teacherName && (
-                  <div className="flex items-center gap-2 mb-2 text-sm text-muted-foreground">
-                    <User className="w-4 h-4" />
+                  <div className="mb-2 text-sm text-muted-foreground">
                     <span className="truncate">{cls.teacherName}</span>
                   </div>
                 )}

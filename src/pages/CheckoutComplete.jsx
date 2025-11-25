@@ -3,14 +3,13 @@
 import { useEffect, useState } from "react"
 import { useNavigate, useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
-import { CheckCircle, Clock, Home, Sparkles, ArrowRight, BookOpen, Loader2 } from "lucide-react"
+import { CheckCircle, Home, ArrowRight, BookOpen, Loader2 } from "lucide-react"
 import { useAuth } from "../contexts/AuthContext"
 
 export default function CheckoutComplete() {
   const navigate = useNavigate()
   const location = useLocation()
   const { currentUser } = useAuth()
-  const [timeRemaining, setTimeRemaining] = useState(24)
   const [isProcessing, setIsProcessing] = useState(false)
   const [purchasedCourses, setPurchasedCourses] = useState([])
   
@@ -74,19 +73,6 @@ export default function CheckoutComplete() {
     }
   }
   
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeRemaining((prev) => (prev > 0 ? prev - 1 : 0))
-    }, 3600000)
-    
-    return () => clearInterval(timer)
-  }, [])
-  
-  const steps = [
-    { number: 1, title: "Payment Verified", description: "Our team checks your transaction" },
-    { number: 2, title: "Approval Pending", description: "Admin review in progress", active: true },
-    { number: 3, title: "Access Granted", description: "Courses unlocked for you" },
-  ]
   
   if (isProcessing) {
     return (
@@ -122,9 +108,9 @@ export default function CheckoutComplete() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
-            className="text-2xl sm:text-3xl font-bold mb-2 bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent"
+            className="text-2xl sm:text-3xl font-bold mb-2 bg-gradient-to-r from-green-600 to-green-500 bg-clip-text text-transparent"
           >
-            Payment Submitted!
+            Payment Successful!
           </motion.h1>
 
           <motion.p
@@ -133,52 +119,8 @@ export default function CheckoutComplete() {
             transition={{ delay: 0.4 }}
             className="text-muted-foreground mb-6 text-sm sm:text-base"
           >
-            Your payment has been received and is pending admin approval.
+            Your course enrollment has been completed successfully. You can now access your course from your dashboard.
           </motion.p>
-
-          {/* Status Card */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.5 }}
-            className="bg-gradient-to-r from-primary/10 to-accent/10 border border-primary/20 rounded-xl p-4 mb-6"
-          >
-            <div className="flex items-center gap-3 justify-center flex-wrap">
-              <Clock className="w-5 h-5 text-primary flex-shrink-0" />
-              <div>
-                <p className="font-semibold text-primary text-sm sm:text-base">Status: Pending</p>
-                <p className="text-xs text-primary/70">Awaiting admin approval</p>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Progress Steps */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.55 }}
-            className="mb-8"
-          >
-            <div className="grid grid-cols-3 gap-2 sm:gap-4">
-              {steps.map((step, index) => (
-                <div key={step.number} className="flex flex-col items-center">
-                  <div
-                    className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm mb-2 transition-all ${
-                      step.active
-                        ? "bg-primary text-primary-foreground ring-2 ring-primary/30"
-                        : index < 1
-                          ? "bg-primary/20 text-primary"
-                          : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {step.number}
-                  </div>
-                  <p className="text-xs font-medium line-clamp-2">{step.title}</p>
-                  <p className="text-xs text-muted-foreground line-clamp-1">{step.description}</p>
-                </div>
-              ))}
-            </div>
-          </motion.div>
 
           {/* Purchased Courses Section */}
           {purchasedCourses.length > 0 && (
@@ -203,57 +145,29 @@ export default function CheckoutComplete() {
             </motion.div>
           )}
 
-          {/* Info Box */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.65 }}
-            className="bg-muted/50 rounded-xl p-4 mb-8 text-left"
-          >
-            <h3 className="font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base">
-              <Sparkles className="w-4 h-4 text-primary flex-shrink-0" />
-              What happens next?
-            </h3>
-            <ul className="space-y-2 text-xs sm:text-sm text-muted-foreground">
-              <li className="flex gap-2">
-                <span className="text-primary font-bold flex-shrink-0">1.</span>
-                <span>Our admin team will verify your payment</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-primary font-bold flex-shrink-0">2.</span>
-                <span>You'll receive an email confirmation</span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-primary font-bold flex-shrink-0">3.</span>
-                <span>Access your courses in "My Courses"</span>
-              </li>
-            </ul>
-          </motion.div>
 
           {/* Action Buttons */}
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.7 }}
+            transition={{ delay: 0.6 }}
             className="space-y-3"
           >
             <button
-              onClick={() => navigate("/dashboard")}
+              onClick={() => navigate("/my-courses")}
               className="w-full py-2.5 sm:py-3 bg-gradient-to-r from-primary to-accent hover:from-primary/90 hover:to-accent/90 text-primary-foreground rounded-lg transition-all font-medium flex items-center justify-center gap-2 text-sm sm:text-base"
             >
-              <Home className="w-4 h-4 flex-shrink-0" />
-              Go to Dashboard
+              <BookOpen className="w-4 h-4 flex-shrink-0" />
+              Go to My Courses
               <ArrowRight className="w-4 h-4 flex-shrink-0" />
             </button>
             <button
-              onClick={() => navigate("/my-courses")}
+              onClick={() => navigate("/courses")}
               className="w-full py-2.5 sm:py-3 bg-muted hover:bg-muted/80 text-foreground rounded-lg transition-colors font-medium text-sm sm:text-base"
             >
-              View My Courses
+              Browse More Courses
             </button>
           </motion.div>
-
-          <p className="text-xs text-muted-foreground mt-6">Typically approved within {timeRemaining} hours</p>
         </div>
 
         {/* Support Card */}
