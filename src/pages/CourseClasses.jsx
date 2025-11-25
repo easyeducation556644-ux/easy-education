@@ -224,32 +224,33 @@ export default function CourseClasses() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
               onClick={() => navigate(`/course/${courseId}/watch/${cls.id}`)}
-              className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left"
+              className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left flex flex-col"
             >
               <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-secondary/5 opacity-0 group-hover:opacity-100 transition-opacity" />
               
-              {/* Class Image */}
-              {cls.imageURL && !imageErrors[cls.id] && (
-                <div className="relative w-full h-48 overflow-hidden bg-muted">
-                  <img
-                    src={cls.imageURL}
-                    alt={cls.title}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                    onError={() => {
-                      setImageErrors((prev) => ({ ...prev, [cls.id]: true }))
-                    }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                </div>
-              )}
-
-              <div className="relative p-6">
-                {(!cls.imageURL || imageErrors[cls.id]) && (
-                  <div className="w-12 h-12 rounded-lg flex items-center justify-center mb-4 transition-colors bg-primary/10 group-hover:bg-primary/20">
-                    <Play className="w-6 h-6 fill-current text-primary" />
+              {/* Class Image - Always rendered */}
+              <div className="relative w-full h-48 overflow-hidden bg-muted flex-shrink-0">
+                {cls.imageURL && !imageErrors[cls.id] ? (
+                  <>
+                    <img
+                      src={cls.imageURL}
+                      alt={cls.title}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      onError={() => {
+                        setImageErrors((prev) => ({ ...prev, [cls.id]: true }))
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                    <Play className="w-12 h-12 fill-current text-primary" />
                   </div>
                 )}
+              </div>
+
+              <div className="relative p-6 flex-1 flex flex-col">
                 <h3 className="text-lg font-bold mb-3 line-clamp-2 transition-colors group-hover:text-primary">
                   {cls.title}
                 </h3>
@@ -261,7 +262,7 @@ export default function CourseClasses() {
                 )}
 
                 {cls.resourceLinks && cls.resourceLinks.length > 0 && (
-                  <div className="mt-3 space-y-1">
+                  <div className="mt-auto pt-3 space-y-1">
                     <div className="flex items-center gap-2 text-sm font-medium text-foreground mb-1">
                       <FileText className="w-4 h-4" />
                       <span>Resources:</span>
