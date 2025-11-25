@@ -21,6 +21,7 @@ export default function ManageCourses() {
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
   const [formData, setFormData] = useState({
     title: "",
+    searchKeywords: "",
     description: "",
     instructors: [],
     category: "",
@@ -69,6 +70,7 @@ export default function ManageCourses() {
       setEditingCourse(course)
       setFormData({
         title: course.title || "",
+        searchKeywords: course.searchKeywords || "",
         description: course.description || "",
         instructors: course.instructors || (course.instructorName ? [course.instructorName] : []),
         category: course.category || "",
@@ -87,6 +89,7 @@ export default function ManageCourses() {
       setEditingCourse(null)
       setFormData({
         title: "",
+        searchKeywords: "",
         description: "",
         instructors: [],
         category: "",
@@ -134,6 +137,7 @@ export default function ManageCourses() {
 
       const courseData = {
         title: formData.title,
+        searchKeywords: formData.searchKeywords || "",
         description: formData.description,
         instructors: formData.instructors,
         instructorName: formData.instructors.join(", "),
@@ -212,7 +216,8 @@ export default function ManageCourses() {
       course.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.instructorName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      course.category?.toLowerCase().includes(searchQuery.toLowerCase())
+      course.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      course.searchKeywords?.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
   return (
@@ -338,6 +343,20 @@ export default function ManageCourses() {
                   placeholder="Enter course title"
                   required
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Search Keywords</label>
+                <input
+                  type="text"
+                  value={formData.searchKeywords}
+                  onChange={(e) => setFormData({ ...formData, searchKeywords: e.target.value })}
+                  className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                  placeholder="Enter keywords for search (comma separated)"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  These keywords help students find this course. They won't be displayed anywhere.
+                </p>
               </div>
 
               <div>
