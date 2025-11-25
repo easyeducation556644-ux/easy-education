@@ -1,15 +1,16 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
+import { ThumbsUp, Heart, Laugh, Sparkles, Frown, Angry } from "lucide-react"
 import { collection, query, where, deleteDoc, doc, serverTimestamp, onSnapshot, setDoc, getDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 
 const REACTIONS = [
-  { type: "like", emoji: "👍", label: "Like", color: "#1877f2" },
-  { type: "love", emoji: "❤️", label: "Love", color: "#f33e58" },
-  { type: "haha", emoji: "😂", label: "Haha", color: "#f7b125" },
-  { type: "wow", emoji: "😮", label: "Wow", color: "#f7b125" },
-  { type: "sad", emoji: "😢", label: "Sad", color: "#f7b125" },
-  { type: "angry", emoji: "😠", label: "Angry", color: "#f15268" },
+  { type: "like", icon: ThumbsUp, label: "Like", color: "#1877f2", bgColor: "bg-blue-500/10", iconColor: "text-blue-500" },
+  { type: "love", icon: Heart, label: "Love", color: "#f33e58", bgColor: "bg-red-500/10", iconColor: "text-red-500" },
+  { type: "haha", icon: Laugh, label: "Haha", color: "#f7b125", bgColor: "bg-yellow-500/10", iconColor: "text-yellow-500" },
+  { type: "wow", icon: Sparkles, label: "Wow", color: "#f7b125", bgColor: "bg-purple-500/10", iconColor: "text-purple-500" },
+  { type: "sad", icon: Frown, label: "Sad", color: "#64748b", bgColor: "bg-slate-500/10", iconColor: "text-slate-500" },
+  { type: "angry", icon: Angry, label: "Angry", color: "#f15268", bgColor: "bg-orange-500/10", iconColor: "text-orange-500" },
 ]
 
 export default function ClassReactions({ classId, currentUser }) {
@@ -111,6 +112,7 @@ export default function ClassReactions({ classId, currentUser }) {
         {REACTIONS.map((reaction) => {
           const count = reactionCounts[reaction.type] || 0
           const isActive = userReaction === reaction.type
+          const Icon = reaction.icon
           
           return (
             <motion.button
@@ -118,15 +120,15 @@ export default function ClassReactions({ classId, currentUser }) {
               onClick={() => handleReaction(reaction.type)}
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg transition-all border-2 ${
+              className={`flex flex-col items-center gap-1.5 px-4 py-3 rounded-xl transition-all border-2 ${
                 isActive
-                  ? "bg-gradient-to-r from-primary/20 to-secondary/20 border-primary shadow-lg"
+                  ? `${reaction.bgColor} border-current shadow-lg ${reaction.iconColor}`
                   : "bg-muted/50 hover:bg-muted border-transparent hover:border-border"
               }`}
               title={reaction.label}
             >
-              <span className="text-2xl sm:text-3xl">{reaction.emoji}</span>
-              <span className={`text-xs font-semibold ${isActive ? "text-primary" : "text-muted-foreground"}`}>
+              <Icon className={`w-6 h-6 sm:w-7 sm:h-7 ${isActive ? reaction.iconColor : "text-muted-foreground"}`} strokeWidth={2.5} />
+              <span className={`text-xs font-bold ${isActive ? reaction.iconColor : "text-muted-foreground"}`}>
                 {count}
               </span>
             </motion.button>

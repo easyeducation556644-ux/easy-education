@@ -42,6 +42,7 @@ Preferred communication style: Simple, everyday language.
 - **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
 - **IP Geolocation:** Robust multi-API fallback system with error handling and Google Maps integration.
 - **SMS Notifications:** Automated enrollment confirmation messages via bulksmsbd.net API with mandatory Bangladeshi mobile number validation during checkout.
+- **Class Reactions System:** Icon-based reaction system (Lucide React icons) with 6 reaction types (Like, Love, Laugh, Wow, Sad, Angry). Each reaction displays real-time counts, user's selection is highlighted with color-coded backgrounds, and all reactions are visible in a single horizontal row. Icons are device-independent ensuring consistent display across all platforms.
 
 # External Dependencies
 
