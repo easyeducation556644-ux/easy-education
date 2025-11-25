@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate, Link } from "react-router-dom"
 import { motion } from "framer-motion"
-import { ThumbsUp, ThumbsDown, Play, BookOpen, GraduationCap, User, Award, Clock, Lock, FileQuestion, FileText, ExternalLink } from "lucide-react"
+import { Eye, Play, BookOpen, GraduationCap, User, Award, Clock, Lock, FileQuestion, FileText, ExternalLink } from "lucide-react"
 import {
   doc,
   getDoc,
@@ -17,6 +17,7 @@ import {
   increment,
   serverTimestamp,
   setDoc,
+  onSnapshot,
 } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -25,6 +26,8 @@ import CustomVideoPlayer from "../components/CustomVideoPlayer"
 import ExamCard from "../components/ExamCard"
 import Breadcrumb from "../components/Breadcrumb"
 import ResourceViewer from "../components/ResourceViewer"
+import ClassReactions from "../components/ClassReactions"
+import CommentsSection from "../components/CommentsSection"
 import { toast as showGlobalToast } from "../hooks/use-toast"
 import { isFirebaseId } from "../lib/utils/slugUtils"
 
@@ -38,8 +41,7 @@ export default function CourseWatch() {
   const [currentClass, setCurrentClass] = useState(null)
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [selectedChapter, setSelectedChapter] = useState(null)
-  const [userReaction, setUserReaction] = useState(null) // 'like' or 'dislike' or null
-  const [reactionDocId, setReactionDocId] = useState(null)
+  const [viewCount, setViewCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [courseNotFound, setCourseNotFound] = useState(false)
   const [hasAccess, setHasAccess] = useState(false)
@@ -55,9 +57,16 @@ export default function CourseWatch() {
 
   useEffect(() => {
     if (currentClass && currentUser) {
-      checkUserReaction()
+      trackClassView()
     }
   }, [currentClass, currentUser])
+
+  useEffect(() => {
+    if (currentClass) {
+      const unsubscribe = fetchViewCount()
+      return () => unsubscribe && unsubscribe()
+    }
+  }, [currentClass])
 
   useEffect(() => {
     if (actualCourseId) {
@@ -165,98 +174,42 @@ export default function CourseWatch() {
     }
   }
 
-  const checkUserReaction = async () => {
+  const trackClassView = async () => {
     if (!currentUser || !currentClass) return
 
     try {
-      const votesQuery = query(
-        collection(db, "votes"),
-        where("userId", "==", currentUser.uid),
-        where("classId", "==", currentClass.id),
+      const viewRef = doc(db, "classViews", `${currentUser.uid}_${currentClass.id}`)
+      await setDoc(
+        viewRef,
+        {
+          userId: currentUser.uid,
+          classId: currentClass.id,
+          timestamp: serverTimestamp(),
+        },
+        { merge: true }
       )
-      const votesSnapshot = await getDocs(votesQuery)
-
-      if (!votesSnapshot.empty) {
-        const voteDoc = votesSnapshot.docs[0]
-        setUserReaction(voteDoc.data().type) // 'like' or 'dislike'
-        setReactionDocId(voteDoc.id)
-      } else {
-        setUserReaction(null)
-        setReactionDocId(null)
-      }
     } catch (error) {
-      console.error("Error checking reaction:", error)
+      console.error("Error tracking view:", error)
     }
   }
 
-  const handleReaction = async (type) => {
-    if (!currentUser || !currentClass) return
+  const fetchViewCount = () => {
+    if (!currentClass) return
 
     try {
-      // If clicking the same reaction, remove it
-      if (userReaction === type && reactionDocId) {
-        await deleteDoc(doc(db, "votes", reactionDocId))
-
-        // Update class counts
-        if (type === "like") {
-          await updateDoc(doc(db, "classes", currentClass.id), {
-            likesCount: increment(-1),
-          })
-          setCurrentClass({ ...currentClass, likesCount: (currentClass.likesCount || 0) - 1 })
-        } else {
-          await updateDoc(doc(db, "classes", currentClass.id), {
-            dislikesCount: increment(-1),
-          })
-          setCurrentClass({ ...currentClass, dislikesCount: (currentClass.dislikesCount || 0) - 1 })
-        }
-
-        setUserReaction(null)
-        setReactionDocId(null)
-      } else {
-        // If switching reaction, remove old one first
-        if (reactionDocId) {
-          await deleteDoc(doc(db, "votes", reactionDocId))
-
-          // Decrement old reaction count
-          if (userReaction === "like") {
-            await updateDoc(doc(db, "classes", currentClass.id), {
-              likesCount: increment(-1),
-            })
-            setCurrentClass({ ...currentClass, likesCount: (currentClass.likesCount || 0) - 1 })
-          } else {
-            await updateDoc(doc(db, "classes", currentClass.id), {
-              dislikesCount: increment(-1),
-            })
-            setCurrentClass({ ...currentClass, dislikesCount: (currentClass.dislikesCount || 0) - 1 })
-          }
-        }
-
-        // Add new reaction
-        const voteDoc = await addDoc(collection(db, "votes"), {
-          userId: currentUser.uid,
-          classId: currentClass.id,
-          type: type, // 'like' or 'dislike'
-          timestamp: serverTimestamp(),
-        })
-
-        // Increment new reaction count
-        if (type === "like") {
-          await updateDoc(doc(db, "classes", currentClass.id), {
-            likesCount: increment(1),
-          })
-          setCurrentClass({ ...currentClass, likesCount: (currentClass.likesCount || 0) + 1 })
-        } else {
-          await updateDoc(doc(db, "classes", currentClass.id), {
-            dislikesCount: increment(1),
-          })
-          setCurrentClass({ ...currentClass, dislikesCount: (currentClass.dislikesCount || 0) + 1 })
-        }
-
-        setUserReaction(type)
-        setReactionDocId(voteDoc.id)
-      }
+      const viewsQuery = query(
+        collection(db, "classViews"),
+        where("classId", "==", currentClass.id)
+      )
+      
+      const unsubscribe = onSnapshot(viewsQuery, (snapshot) => {
+        setViewCount(snapshot.size)
+      })
+      
+      return unsubscribe
     } catch (error) {
-      console.error("Error handling reaction:", error)
+      console.error("Error fetching view count:", error)
+      return null
     }
   }
 
@@ -499,7 +452,21 @@ export default function CourseWatch() {
 
             
             <div className="bg-card border border-border rounded-lg sm:rounded-xl p-4 sm:p-6 shadow-lg">
-              <h1 className="text-xl sm:text-2xl font-bold mb-3">{currentClass?.title || "Select a class to watch"}</h1>
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <h1 className="text-xl sm:text-2xl font-bold flex-1">{currentClass?.title || "Select a class to watch"}</h1>
+                {viewCount > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-muted rounded-full">
+                    <Eye className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-sm font-semibold text-muted-foreground">{viewCount}</span>
+                  </div>
+                )}
+              </div>
+
+              {currentClass && currentClass.topic && (
+                <div className="mb-4">
+                  <p className="text-base sm:text-lg text-muted-foreground font-medium">{currentClass.topic}</p>
+                </div>
+              )}
 
               {currentClass && currentClass.duration && (
                 <div className="flex items-center gap-2 mb-4">
@@ -509,35 +476,13 @@ export default function CourseWatch() {
               )}
 
               {currentUser && currentClass && (
-                <div className="flex items-center gap-2 sm:gap-3">
-                  <button
-                    onClick={() => handleReaction("like")}
-                    className={`flex items-center gap-2 px-4 sm:px-6 py-2.5 sm:py-3 rounded-lg transition-all text-sm sm:text-base ${
-                      userReaction === "like"
-                        ? "bg-primary text-primary-foreground shadow-lg"
-                        : "bg-muted hover:bg-muted/80 text-foreground"
-                    }`}
-                  >
-                    <ThumbsUp className={`w-4 h-4 sm:w-5 sm:h-5 ${userReaction === "like" ? "fill-current" : ""}`} />
-                    <span className="font-medium">{currentClass.likesCount || 0}</span>
-                  </button>
-
-                  <button
-                    onClick={() => handleReaction("dislike")}
-                    className={`flex items-center gap-2 px-4 sm:px-6 py-2.5 sm:py-3 rounded-lg transition-all text-sm sm:text-base ${
-                      userReaction === "dislike"
-                        ? "bg-red-500 text-white shadow-lg"
-                        : "bg-muted hover:bg-muted/80 text-foreground"
-                    }`}
-                  >
-                    <ThumbsDown
-                      className={`w-4 h-4 sm:w-5 sm:h-5 ${userReaction === "dislike" ? "fill-current" : ""}`}
-                    />
-                    <span className="font-medium">{currentClass.dislikesCount || 0}</span>
-                  </button>
-                </div>
+                <ClassReactions classId={currentClass.id} currentUser={currentUser} />
               )}
             </div>
+
+            {currentUser && currentClass && (
+              <CommentsSection classId={currentClass.id} currentUser={currentUser} isAdmin={isAdmin} />
+            )}
 
             {currentClass?.resourceLinks && currentClass.resourceLinks.length > 0 && (
               <div className="bg-card border border-border rounded-lg sm:rounded-xl p-4 sm:p-6 shadow-lg">

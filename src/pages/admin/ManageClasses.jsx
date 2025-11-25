@@ -23,6 +23,7 @@ export default function ManageClasses() {
   const [videoType, setVideoType] = useState("youtube")
   const [formData, setFormData] = useState({
     title: "",
+    topic: "",
     chapter: "",
     subject: "",
     order: 0,
@@ -193,6 +194,7 @@ export default function ManageClasses() {
       setEditingClass(classItem)
       setFormData({
         title: classItem.title || "",
+        topic: classItem.topic || "",
         chapter: Array.isArray(classItem.chapter) ? classItem.chapter : classItem.chapter ? [classItem.chapter] : [],
         subject: Array.isArray(classItem.subject) ? classItem.subject : classItem.subject ? [classItem.subject] : [],
         order: classItem.order || 0,
@@ -216,6 +218,7 @@ export default function ManageClasses() {
       const nextOrder = await getNextActiveClassOrder()
       setFormData({
         title: "",
+        topic: "",
         chapter: [],
         subject: [],
         order: nextOrder,
@@ -266,6 +269,7 @@ export default function ManageClasses() {
       const classData = {
         courseId: selectedCourse,
         title: formData.title,
+        topic: formData.topic,
         chapter: Array.isArray(formData.chapter) ? formData.chapter : formData.chapter ? [formData.chapter] : [],
         subject: Array.isArray(formData.subject) ? formData.subject : formData.subject ? [formData.subject] : [],
         order: Number.parseInt(formData.order),
@@ -744,6 +748,17 @@ export default function ManageClasses() {
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                   required
+                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium mb-1">Topic</label>
+                <input
+                  type="text"
+                  value={formData.topic}
+                  onChange={(e) => setFormData({ ...formData, topic: e.target.value })}
+                  placeholder="Enter class topic"
                   className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
