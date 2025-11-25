@@ -271,59 +271,93 @@ export default function CourseDetail() {
                 </h3>
                 
                 {selectedDemoVideo ? (
-                  <div className="space-y-4">
-                    <div className="aspect-video rounded-lg overflow-hidden bg-black">
-                      <iframe
-                        className="w-full h-full"
-                        src={`https://www.youtube.com/embed/${selectedDemoVideo.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}`}
-                        title={selectedDemoVideo.title}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-lg font-medium">{selectedDemoVideo.title}</h4>
-                      <button
-                        onClick={() => setSelectedDemoVideo(null)}
-                        className="px-4 py-2 text-sm bg-muted hover:bg-muted/80 rounded-lg transition-colors"
-                      >
-                        View All
-                      </button>
-                    </div>
-                  </div>
+                  (() => {
+                    const getYouTubeID = (url) => {
+                      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+                      const match = url.match(regExp);
+                      return (match && match[2].length === 11) ? match[2] : null;
+                    };
+                    const videoId = getYouTubeID(selectedDemoVideo.url);
+                    
+                    return (
+                      <div className="space-y-4">
+                        <div className="aspect-video rounded-lg overflow-hidden bg-black">
+                          {videoId ? (
+                            <iframe
+                              className="w-full h-full"
+                              src={`https://www.youtube.com/embed/${videoId}`}
+                              title={selectedDemoVideo.title}
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                              allowFullScreen
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                              Invalid YouTube URL
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-lg font-medium">{selectedDemoVideo.title}</h4>
+                          <button
+                            onClick={() => setSelectedDemoVideo(null)}
+                            className="px-4 py-2 text-sm bg-muted hover:bg-muted/80 rounded-lg transition-colors"
+                          >
+                            View All
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()
                 ) : (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {course.demoVideos.map((video, index) => (
-                      <motion.div
-                        key={index}
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: index * 0.1 }}
-                        onClick={() => setSelectedDemoVideo(video)}
-                        className="group cursor-pointer bg-muted/30 border border-border rounded-lg overflow-hidden hover:shadow-lg hover:border-primary/50 transition-all"
-                      >
-                        <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 relative">
-                          <img
-                            src={`https://img.youtube.com/vi/${video.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}/maxresdefault.jpg`}
-                            alt={video.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.target.src = `https://img.youtube.com/vi/${video.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}/hqdefault.jpg`
-                            }}
-                          />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/50 transition-colors">
-                            <div className="w-16 h-16 rounded-full bg-primary/90 flex items-center justify-center group-hover:scale-110 transition-transform">
-                              <Play className="w-8 h-8 text-white ml-1" />
+                    {course.demoVideos.map((video, index) => {
+                      const getYouTubeID = (url) => {
+                        const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+                        const match = url.match(regExp);
+                        return (match && match[2].length === 11) ? match[2] : null;
+                      };
+                      
+                      const videoId = getYouTubeID(video.url);
+                      
+                      return (
+                        <motion.div
+                          key={index}
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ delay: index * 0.1 }}
+                          onClick={() => setSelectedDemoVideo(video)}
+                          className="group cursor-pointer bg-muted/30 border border-border rounded-lg overflow-hidden hover:shadow-lg hover:border-primary/50 transition-all"
+                        >
+                          <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 relative">
+                            {videoId ? (
+                              <img
+                                src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+                                alt={video.title}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  e.target.onerror = null;
+                                  e.target.src = `https://img.youtube.com/vi/${videoId}/default.jpg`;
+                                }}
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Video className="w-12 h-12 text-primary/50" />
+                              </div>
+                            )}
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/50 transition-colors">
+                              <div className="w-16 h-16 rounded-full bg-primary/90 flex items-center justify-center group-hover:scale-110 transition-transform">
+                                <Play className="w-8 h-8 text-white ml-1" />
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div className="p-4">
-                          <h4 className="font-medium text-sm line-clamp-2 group-hover:text-primary transition-colors">
-                            {video.title}
-                          </h4>
-                        </div>
-                      </motion.div>
-                    ))}
+                          <div className="p-4">
+                            <h4 className="font-medium text-sm line-clamp-2 group-hover:text-primary transition-colors">
+                              {video.title}
+                            </h4>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
                   </div>
                 )}
               </motion.div>

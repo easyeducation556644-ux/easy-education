@@ -14,12 +14,15 @@ export async function sendEnrollmentSMS(mobileNumber, userName, courses) {
   }
 
   try {
-    const courseNames = courses?.map(c => c.title).join(', ') || 'কোর্সে';
-    const coursesText = courses?.length > 1 
-      ? `${courses.length}টি কোর্সে` 
-      : courses?.[0]?.title || 'কোর্সে';
+    const courseName = courses?.length > 1 
+      ? `${courses.length} courses` 
+      : courses?.[0]?.title || 'course';
 
-    const message = `প্রিয় ${userName || 'শিক্ষার্থী'}, আপনি সফলভাবে ${coursesText} নিবন্ধিত হয়েছেন। শুভেচ্ছা, Easy Education`;
+    const message = `Hello, ${userName || 'Student'} you have successfully enrolled to "${courseName}" course.
+Regards, Easy Education Team
+
+Join Here:
+https://t.me/Easy_Education_01`;
 
     const formattedNumber = mobileNumber.startsWith('88') ? mobileNumber : `88${mobileNumber}`;
 

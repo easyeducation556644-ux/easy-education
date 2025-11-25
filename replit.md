@@ -4,11 +4,18 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 25, 2025 (Part 4)** - Demo Video Thumbnails & SMS Format Update:
+- Fixed demo video thumbnails not displaying - implemented improved YouTube ID extraction using robust regex parser
+- Thumbnails now load with mqdefault.jpg quality with automatic fallback to default.jpg if unavailable
+- Updated SMS notification format from Bangla to English with custom template including user name, course name, and Telegram community link
+- SMS message format: "Hello, [Name] you have successfully enrolled to '[Course]' course. Regards, Easy Education Team\n\nJoin Here:\nhttps://t.me/Easy_Education_01"
+- Enhanced video player with proper error handling for invalid YouTube URLs
+
 **November 25, 2025 (Part 3)** - Course Modal, Mobile Checkout & SMS Notifications:
 - Expanded course add/edit modal to 98% viewport width (max-w-[98vw]) for maximum screen utilization
 - Updated course details page: hero image displays first on mobile above course info, demo videos use YouTube iframe embeds with responsive grid (2 columns mobile, 4 columns desktop)
 - Added mandatory Bangladeshi mobile number field to checkout page with strict validation (supports 880XXXXXXXXXX or 01XXXXXXXXX formats)
-- Implemented SMS notification system using bulksmsbd.net API - sends Bangla enrollment confirmation messages to students after successful course enrollment
+- Implemented SMS notification system using bulksmsbd.net API - sends enrollment confirmation messages to students after successful course enrollment
 - Mobile number properly threaded through entire enrollment flow: Checkout → process-enrollment → process-payment → send-sms
 - SMS credentials (BULKSMS_API_KEY, BULKSMS_SENDER_ID) securely stored in Replit Secrets
 - SMS sending includes graceful error handling and detailed logging for troubleshooting
