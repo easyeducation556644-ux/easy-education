@@ -9,7 +9,6 @@ import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { useCart } from "../contexts/CartContext"
 import { isFirebaseId } from "../lib/slug"
-import CustomVideoPlayer from "../components/CustomVideoPlayer"
 
 export default function CourseDetail() {
   const { courseId } = useParams()
@@ -188,6 +187,27 @@ export default function CourseDetail() {
   return (
     <div className="min-h-screen py-12 px-4">
       <div className="container mx-auto max-w-6xl">
+        {/* Mobile Course Image - Show at top on mobile only */}
+        <div className="lg:hidden mb-6">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-xl overflow-hidden"
+          >
+            {course.thumbnailURL ? (
+              <img
+                src={course.thumbnailURL || "/placeholder.svg"}
+                alt={course.title}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <Play className="w-24 h-24 text-primary/50" />
+              </div>
+            )}
+          </motion.div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
@@ -253,7 +273,13 @@ export default function CourseDetail() {
                 {selectedDemoVideo ? (
                   <div className="space-y-4">
                     <div className="aspect-video rounded-lg overflow-hidden bg-black">
-                      <CustomVideoPlayer url={selectedDemoVideo.url} />
+                      <iframe
+                        className="w-full h-full"
+                        src={`https://www.youtube.com/embed/${selectedDemoVideo.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}`}
+                        title={selectedDemoVideo.title}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
                     </div>
                     <div className="flex items-center justify-between">
                       <h4 className="text-lg font-medium">{selectedDemoVideo.title}</h4>
@@ -266,7 +292,7 @@ export default function CourseDetail() {
                     </div>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {course.demoVideos.map((video, index) => (
                       <motion.div
                         key={index}
@@ -306,11 +332,11 @@ export default function CourseDetail() {
 
           {/* Sidebar - Image and Purchase Card */}
           <div className="lg:col-span-1">
-            {/* Course Image */}
+            {/* Course Image - Desktop only (mobile shows at top) */}
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-xl overflow-hidden mb-6"
+              className="hidden lg:block aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-xl overflow-hidden mb-6"
             >
               {course.thumbnailURL ? (
                 <img

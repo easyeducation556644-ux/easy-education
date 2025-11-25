@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     });
   }
   
-  const { transaction_id, userId, skipPaymentVerification, userName, userEmail, courses: requestCourses, subtotal, discount, couponCode, finalAmount, paymentMethod } = req.body;
+  const { transaction_id, userId, skipPaymentVerification, userName, userEmail, mobileNumber, courses: requestCourses, subtotal, discount, couponCode, finalAmount, paymentMethod } = req.body;
   
   if (!userId) {
     return res.status(400).json({
@@ -40,6 +40,7 @@ export default async function handler(req, res) {
         userId,
         userName: userName || 'N/A',
         userEmail: userEmail || '',
+        mobileNumber: mobileNumber || '',
         transactionId: transaction_id,
         invoiceId: transaction_id,
         trxId: transaction_id,
@@ -149,6 +150,7 @@ export default async function handler(req, res) {
     
     const courses = metadata.courses || [];
     const metadataUserId = metadata.userId;
+    const metadataMobileNumber = metadata.mobileNumber || '';
     
     // Validate user ID matches
     if (!metadataUserId) {
@@ -170,6 +172,7 @@ export default async function handler(req, res) {
       userId: metadataUserId,
       userName: paymentData.fullname || metadata.fullname || 'N/A',
       userEmail: paymentData.email || metadata.email,
+      mobileNumber: metadataMobileNumber,
       transactionId: paymentData.transaction_id,
       invoiceId: paymentData.transaction_id,
       trxId: paymentData.trx_id || paymentData.transaction_id,

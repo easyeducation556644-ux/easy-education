@@ -372,7 +372,7 @@ export default function ManageCourses() {
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-lg max-w-[70vw] w-full max-h-[90vh] overflow-y-auto"
+            className="bg-card border border-border rounded-lg max-w-[98vw] w-full max-h-[90vh] overflow-y-auto"
           >
             <div className="sticky top-0 bg-card border-b border-border p-4 flex items-center justify-between">
               <h2 className="text-lg font-bold">{editingCourse ? "Edit Course" : "Add New Course"}</h2>

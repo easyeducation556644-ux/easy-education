@@ -21,6 +21,8 @@ export default function Checkout() {
   const [purchasedCourses, setPurchasedCourses] = useState(new Set())
   const [isCouponLoaded, setIsCouponLoaded] = useState(false)
   const [isPurchasedLoaded, setIsPurchasedLoaded] = useState(false)
+  const [mobileNumber, setMobileNumber] = useState("")
+  const [mobileError, setMobileError] = useState("")
 
   useEffect(() => {
     const storedCoupon = sessionStorage.getItem("appliedCoupon")
@@ -180,7 +182,36 @@ export default function Checkout() {
     return Math.max(0, subtotal - calculateDiscount)
   }, [getTotal, calculateDiscount])
 
+  const validateBangladeshiMobile = (number) => {
+    const cleaned = number.replace(/[\s-]/g, '')
+    
+    const bdMobilePattern1 = /^880(13|14|15|16|17|18|19)\d{8}$/
+    const bdMobilePattern2 = /^(013|014|015|016|017|018|019)\d{8}$/
+    
+    if (bdMobilePattern1.test(cleaned)) {
+      return { valid: true, formatted: cleaned }
+    }
+    
+    if (bdMobilePattern2.test(cleaned)) {
+      return { valid: true, formatted: '88' + cleaned }
+    }
+    
+    return { valid: false, formatted: null }
+  }
+
   const handleCheckout = async () => {
+    setMobileError("")
+    
+    if (!mobileNumber.trim()) {
+      setMobileError("মোবাইল নম্বর আবশ্যক (Mobile number is required)")
+      return
+    }
+
+    const mobileValidation = validateBangladeshiMobile(mobileNumber)
+    if (!mobileValidation.valid) {
+      setMobileError("বৈধ বাংলাদেশি মোবাইল নম্বর লিখুন। উদাহরণ: 01712345678 অথবা 8801712345678 (Please enter a valid Bangladeshi mobile number. Example: 01712345678 or 8801712345678)")
+      return
+    }
     const alreadyPurchased = cartItems.filter((item) => purchasedCourses.has(item.id))
     if (alreadyPurchased.length > 0) {
       toast({
@@ -200,6 +231,7 @@ export default function Checkout() {
       
       const metadata = {
         userId: currentUser.uid,
+        mobileNumber: mobileValidation.formatted,
         courses: cartItems.map((item) => ({
           id: item.id,
           title: item.title,
@@ -225,6 +257,7 @@ export default function Checkout() {
             userId: currentUser.uid,
             userName: userProfile?.name || currentUser.displayName || "User",
             userEmail: userProfile?.email || currentUser.email,
+            mobileNumber: mobileValidation.formatted,
             transaction_id: `FREE_${Date.now()}_${currentUser.uid}`,
             courses: metadata.courses,
             subtotal: metadata.subtotal,
@@ -431,6 +464,32 @@ export default function Checkout() {
                       <span className="text-sm font-medium">Email:</span>
                       <span className="text-sm">{userProfile?.email || currentUser?.email}</span>
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      মোবাইল নম্বর (Mobile Number) <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      value={mobileNumber}
+                      onChange={(e) => {
+                        setMobileNumber(e.target.value)
+                        setMobileError("")
+                      }}
+                      placeholder="01712345678 or 8801712345678"
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      আপনার বাংলাদেশি মোবাইল নম্বর দিন। নিবন্ধন সম্পূর্ণ হলে এই নম্বরে SMS পাঠানো হবে। (Enter your Bangladeshi mobile number. You will receive an SMS after enrollment.)
+                    </p>
+                    {mobileError && (
+                      <div className="flex items-start gap-2 p-2 mt-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg">
+                        <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                        <p className="text-xs text-red-600 dark:text-red-400">{mobileError}</p>
+                      </div>
+                    )}
                   </div>
 
                   <button

@@ -1,6 +1,7 @@
 import { initializeApp, getApps, cert, applicationDefault } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
+import { sendEnrollmentSMS } from './send-sms.js';
 
 let db;
 let messaging;
@@ -113,6 +114,7 @@ export async function processPaymentAndEnrollUser(paymentData) {
     userId,
     userName,
     userEmail,
+    mobileNumber,
     transactionId,
     trxId,
     paymentMethod,
@@ -374,6 +376,22 @@ export async function processPaymentAndEnrollUser(paymentData) {
         });
       } catch (notifyError) {
         console.error('Failed to notify admins:', notifyError);
+      }
+
+      try {
+        if (mobileNumber) {
+          console.log(`📱 Attempting to send enrollment SMS to ${mobileNumber}`);
+          const smsResult = await sendEnrollmentSMS(mobileNumber, userName, courses);
+          if (smsResult.success) {
+            console.log('✅ Enrollment SMS sent successfully');
+          } else {
+            console.warn(`⚠️ Failed to send enrollment SMS: ${smsResult.error}`);
+          }
+        } else {
+          console.log('📱 No mobile number provided, skipping SMS notification');
+        }
+      } catch (smsError) {
+        console.error('❌ Error sending enrollment SMS:', smsError);
       }
 
       try {
