@@ -4,6 +4,18 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 25, 2025** - Hero Section Redesign & UX Improvements:
+- Redesigned hero section with two-column layout (text left, image right) matching provided design reference
+- Added promotional badge "20% OFF | LEARN FROM TODAY" with gradient styling
+- Implemented responsive hero design with proper mobile/desktop breakpoints
+- Fixed home page carousel to show 20% of next slide on desktop for preview effect
+- Corrected carousel calc() CSS syntax for proper browser parsing
+- Fixed course class card image positioning - images now consistently display at top of cards regardless of resource availability
+- Improved dark mode support for hero section with better gradient backgrounds
+- Decorative floating elements hidden on mobile to reduce visual clutter
+- Verified Jodit rich text editor integration in course edit modal
+- All hero assets moved to public folder for production deployment compatibility
+
 **November 24, 2025 (Part 3)** - CourseCard UI Refinements & Uniform Layout:
 - Removed user icon from course card placeholders - replaced with clean gradient background
 - Implemented uniform card heights using min-height for resources section - prevents layout shifts when resources are missing
