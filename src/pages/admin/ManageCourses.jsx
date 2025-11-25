@@ -1,7 +1,7 @@
 "use client"
 import { toast } from "../../hooks/use-toast"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { motion } from "framer-motion"
 import { Plus, Search, Edit2, Trash2, X, BookOpen, Upload, Link as LinkIcon, Tag } from "lucide-react"
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore"
@@ -9,8 +9,10 @@ import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import { generateSlug } from "../../lib/slug"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import JoditEditor from "jodit-react"
 
 export default function ManageCourses() {
+  const editor = useRef(null)
   const [courses, setCourses] = useState([])
   const [categories, setCategories] = useState([])
   const [teachers, setTeachers] = useState([])
@@ -39,6 +41,46 @@ export default function ManageCourses() {
   const [tagInput, setTagInput] = useState("")
   const [imageFile, setImageFile] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+
+  const editorConfig = useMemo(
+    () => ({
+      readonly: false,
+      placeholder: "Enter course description...",
+      height: 300,
+      toolbar: true,
+      spellcheck: true,
+      language: "en",
+      toolbarButtonSize: "small",
+      toolbarAdaptive: false,
+      showCharsCounter: true,
+      showWordsCounter: true,
+      showXPathInStatusbar: false,
+      askBeforePasteHTML: false,
+      askBeforePasteFromWord: false,
+      buttons: [
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "|",
+        "ul",
+        "ol",
+        "|",
+        "font",
+        "fontsize",
+        "paragraph",
+        "|",
+        "align",
+        "|",
+        "link",
+        "image",
+        "|",
+        "undo",
+        "redo",
+      ],
+    }),
+    []
+  )
 
   useEffect(() => {
     fetchData()
@@ -361,13 +403,15 @@ export default function ManageCourses() {
 
               <div>
                 <label className="block text-sm font-medium mb-1.5">Description</label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  rows={3}
-                  className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  placeholder="Enter course description"
-                />
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <JoditEditor
+                    ref={editor}
+                    value={formData.description}
+                    config={editorConfig}
+                    onBlur={(newContent) => setFormData({ ...formData, description: newContent })}
+                    onChange={(newContent) => {}}
+                  />
+                </div>
               </div>
 
               <div>
