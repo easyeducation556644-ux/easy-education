@@ -3,12 +3,13 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { motion } from "framer-motion"
-import { ShoppingCart, Play, BookOpen, Clock, Users, Tag, Check, AlertCircle } from "lucide-react"
+import { ShoppingCart, Play, BookOpen, Clock, Users, Tag, Check, AlertCircle, Video } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { useCart } from "../contexts/CartContext"
 import { isFirebaseId } from "../lib/slug"
+import CustomVideoPlayer from "../components/CustomVideoPlayer"
 
 export default function CourseDetail() {
   const { courseId } = useParams()
@@ -21,6 +22,7 @@ export default function CourseDetail() {
   const [isInCart, setIsInCart] = useState(false)
   const [hasPendingPayment, setHasPendingPayment] = useState(false)
   const [teachers, setTeachers] = useState([])
+  const [selectedDemoVideo, setSelectedDemoVideo] = useState(null)
 
   useEffect(() => {
     fetchCourseData()
@@ -189,27 +191,8 @@ export default function CourseDetail() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Course Image */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-xl overflow-hidden"
-            >
-              {course.thumbnailURL ? (
-                <img
-                  src={course.thumbnailURL || "/placeholder.svg"}
-                  alt={course.title}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <Play className="w-24 h-24 text-primary/50" />
-                </div>
-              )}
-            </motion.div>
-
             {/* Course Info */}
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
               <div className="bg-card border border-border rounded-xl p-6">
                 <h1 className="text-3xl md:text-4xl font-bold mb-4">{course.title}</h1>
                 <div 
@@ -253,13 +236,100 @@ export default function CourseDetail() {
                 )}
               </div>
             </motion.div>
+
+            {/* Demo Videos Section */}
+            {course.demoVideos && course.demoVideos.length > 0 && (
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                transition={{ delay: 0.2 }}
+                className="bg-card border border-border rounded-xl p-6"
+              >
+                <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                  <Video className="w-5 h-5" />
+                  Demo Videos
+                </h3>
+                
+                {selectedDemoVideo ? (
+                  <div className="space-y-4">
+                    <div className="aspect-video rounded-lg overflow-hidden bg-black">
+                      <CustomVideoPlayer url={selectedDemoVideo.url} />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-lg font-medium">{selectedDemoVideo.title}</h4>
+                      <button
+                        onClick={() => setSelectedDemoVideo(null)}
+                        className="px-4 py-2 text-sm bg-muted hover:bg-muted/80 rounded-lg transition-colors"
+                      >
+                        View All
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {course.demoVideos.map((video, index) => (
+                      <motion.div
+                        key={index}
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: index * 0.1 }}
+                        onClick={() => setSelectedDemoVideo(video)}
+                        className="group cursor-pointer bg-muted/30 border border-border rounded-lg overflow-hidden hover:shadow-lg hover:border-primary/50 transition-all"
+                      >
+                        <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 relative">
+                          <img
+                            src={`https://img.youtube.com/vi/${video.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}/maxresdefault.jpg`}
+                            alt={video.title}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.target.src = `https://img.youtube.com/vi/${video.url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/)?.[1]}/hqdefault.jpg`
+                            }}
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/50 transition-colors">
+                            <div className="w-16 h-16 rounded-full bg-primary/90 flex items-center justify-center group-hover:scale-110 transition-transform">
+                              <Play className="w-8 h-8 text-white ml-1" />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="p-4">
+                          <h4 className="font-medium text-sm line-clamp-2 group-hover:text-primary transition-colors">
+                            {video.title}
+                          </h4>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
           </div>
 
-          {/* Sidebar - Purchase Card */}
+          {/* Sidebar - Image and Purchase Card */}
           <div className="lg:col-span-1">
+            {/* Course Image */}
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
+              className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 rounded-xl overflow-hidden mb-6"
+            >
+              {course.thumbnailURL ? (
+                <img
+                  src={course.thumbnailURL || "/placeholder.svg"}
+                  alt={course.title}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <Play className="w-24 h-24 text-primary/50" />
+                </div>
+              )}
+            </motion.div>
+
+            {/* Purchase Card */}
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.1 }}
               className="bg-card border border-border rounded-xl p-6 sticky top-24"
             >
               {hasAccess ? (

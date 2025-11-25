@@ -4,7 +4,18 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
-**November 25, 2025** - UX Improvements & Carousel Fix:
+**November 25, 2025 (Part 2)** - Course Details UI Enhancements & Demo Videos Feature:
+- Reorganized course details page layout - moved course image to sidebar above purchase section for better visual hierarchy
+- Implemented demo videos section with CustomVideoPlayer component displaying YouTube videos as cards with titles below course description
+- Expanded course add/edit modal to 70% viewport width with two-column desktop layout (single column on mobile) to reduce scrolling
+- Added vertical divider between columns in modal for clear visual separation
+- Implemented demo video management allowing admins to add multiple YouTube links with titles during course creation/editing
+- Fixed critical state management race condition in ManageCourses modal using atomic state updates to prevent demoVideos undefined crashes
+- Refactored modal state to use single atomic state object (`modalState = {isOpen, form, editingCourse}`) with backward-compatibility layer
+- Added smart setFormData wrapper supporting both functional and direct updates while maintaining proper nested state structure
+- Demo videos persist in Firestore and display correctly on course detail pages with responsive card layout
+
+**November 25, 2025 (Part 1)** - UX Improvements & Carousel Fix:
 - Fixed home page carousel to show 20% of next slide on desktop for preview effect
 - Corrected carousel calc() CSS syntax for proper browser parsing
 - Fixed course class card image positioning - images now consistently display at top of cards regardless of resource availability

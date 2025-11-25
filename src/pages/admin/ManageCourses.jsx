@@ -11,36 +11,54 @@ import { generateSlug } from "../../lib/slug"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import JoditEditor from "jodit-react"
 
+const initialForm = () => ({
+  title: "",
+  searchKeywords: "",
+  description: "",
+  instructors: [],
+  category: "",
+  type: "subject",
+  courseFormat: "single",
+  bundledCourses: [],
+  price: "",
+  status: "running",
+  publishStatus: "published",
+  imageType: "upload",
+  imageLink: "",
+  telegramLink: "",
+  tags: [],
+  demoVideos: [],
+})
+
 export default function ManageCourses() {
   const editor = useRef(null)
   const [courses, setCourses] = useState([])
   const [categories, setCategories] = useState([])
   const [teachers, setTeachers] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
-  const [editingCourse, setEditingCourse] = useState(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
-  const [formData, setFormData] = useState({
-    title: "",
-    searchKeywords: "",
-    description: "",
-    instructors: [],
-    category: "",
-    type: "subject",
-    courseFormat: "single",
-    bundledCourses: [],
-    price: "",
-    status: "running",
-    publishStatus: "published",
-    imageType: "upload",
-    imageLink: "",
-    telegramLink: "",
-    tags: [],
+  const [modalState, setModalState] = useState({
+    isOpen: false,
+    form: initialForm(),
+    editingCourse: null,
   })
+  
+  // Derived values for backward compatibility during refactor
+  const showModal = modalState.isOpen
+  const formData = modalState.form
+  const editingCourse = modalState.editingCourse
+  const setFormData = (updater) => {
+    setModalState(prev => ({
+      ...prev,
+      form: typeof updater === 'function' ? updater(prev.form) : updater
+    }))
+  }
+  
   const [tagInput, setTagInput] = useState("")
   const [imageFile, setImageFile] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [demoVideoInput, setDemoVideoInput] = useState({ title: "", url: "" })
 
   const editorConfig = useMemo(
     () => ({
@@ -108,54 +126,45 @@ export default function ManageCourses() {
   }
 
   const handleOpenModal = (course = null) => {
-    if (course) {
-      setEditingCourse(course)
-      setFormData({
-        title: course.title || "",
-        searchKeywords: course.searchKeywords || "",
-        description: course.description || "",
-        instructors: course.instructors || (course.instructorName ? [course.instructorName] : []),
-        category: course.category || "",
-        type: course.type || "subject",
-        courseFormat: course.courseFormat || "single",
-        bundledCourses: course.bundledCourses || [],
-        price: course.price || "",
-        status: course.status || "running",
-        publishStatus: course.publishStatus || "published",
-        imageType: course.thumbnailURL ? "link" : "upload",
-        imageLink: course.thumbnailURL || "",
-        telegramLink: course.telegramLink || "",
-        tags: course.tags || [],
-      })
-    } else {
-      setEditingCourse(null)
-      setFormData({
-        title: "",
-        searchKeywords: "",
-        description: "",
-        instructors: [],
-        category: "",
-        type: "subject",
-        courseFormat: "single",
-        bundledCourses: [],
-        price: "",
-        status: "running",
-        publishStatus: "published",
-        imageType: "upload",
-        imageLink: "",
-        telegramLink: "",
-        tags: [],
-      })
-    }
+    const nextForm = course ? {
+      title: course.title || "",
+      searchKeywords: course.searchKeywords || "",
+      description: course.description || "",
+      instructors: course.instructors || (course.instructorName ? [course.instructorName] : []),
+      category: course.category || "",
+      type: course.type || "subject",
+      courseFormat: course.courseFormat || "single",
+      bundledCourses: course.bundledCourses || [],
+      price: course.price || "",
+      status: course.status || "running",
+      publishStatus: course.publishStatus || "published",
+      imageType: course.thumbnailURL ? "link" : "upload",
+      imageLink: course.thumbnailURL || "",
+      telegramLink: course.telegramLink || "",
+      tags: course.tags || [],
+      demoVideos: course.demoVideos ?? [],
+    } : initialForm()
+    
+    // Atomic state update ensures form data is ready before modal renders
+    setModalState({
+      isOpen: true,
+      form: nextForm,
+      editingCourse: course ?? null,
+    })
+    
     setImageFile(null)
     setTagInput("")
-    setShowModal(true)
+    setDemoVideoInput({ title: "", url: "" })
   }
 
   const handleCloseModal = () => {
-    setShowModal(false)
-    setEditingCourse(null)
+    setModalState({
+      isOpen: false,
+      form: initialForm(),
+      editingCourse: null,
+    })
     setImageFile(null)
+    setDemoVideoInput({ title: "", url: "" })
   }
 
   const handleSubmit = async (e) => {
@@ -193,6 +202,7 @@ export default function ManageCourses() {
         thumbnailURL: thumbnailURL || "",
         telegramLink: formData.telegramLink || "",
         tags: formData.tags || [],
+        demoVideos: formData.demoVideos || [],
         slug: generateSlug(formData.title),
         updatedAt: serverTimestamp(),
       }
@@ -362,7 +372,7 @@ export default function ManageCourses() {
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+            className="bg-card border border-border rounded-lg max-w-[70vw] w-full max-h-[90vh] overflow-y-auto"
           >
             <div className="sticky top-0 bg-card border-b border-border p-4 flex items-center justify-between">
               <h2 className="text-lg font-bold">{editingCourse ? "Edit Course" : "Add New Course"}</h2>
@@ -374,330 +384,417 @@ export default function ManageCourses() {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-4 space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Course Title *</label>
-                <input
-                  type="text"
-                  value={formData.title}
-                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  placeholder="Enter course title"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Search Keywords</label>
-                <input
-                  type="text"
-                  value={formData.searchKeywords}
-                  onChange={(e) => setFormData({ ...formData, searchKeywords: e.target.value })}
-                  className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  placeholder="Enter keywords for search (comma separated)"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  These keywords help students find this course. They won't be displayed anywhere.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Description</label>
-                <div className="border border-border rounded-lg overflow-hidden">
-                  <JoditEditor
-                    ref={editor}
-                    value={formData.description}
-                    config={editorConfig}
-                    onBlur={(newContent) => setFormData({ ...formData, description: newContent })}
-                    onChange={(newContent) => {}}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Tags (Max 6)</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        if (tagInput.trim() && formData.tags.length < 6 && !formData.tags.includes(tagInput.trim())) {
-                          setFormData({ ...formData, tags: [...formData.tags, tagInput.trim()] })
-                          setTagInput("")
-                        }
-                      }
-                    }}
-                    className="flex-1 px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                    placeholder="Type a tag and press Enter"
-                    disabled={formData.tags.length >= 6}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (tagInput.trim() && formData.tags.length < 6 && !formData.tags.includes(tagInput.trim())) {
-                        setFormData({ ...formData, tags: [...formData.tags, tagInput.trim()] })
-                        setTagInput("")
-                      }
-                    }}
-                    disabled={!tagInput.trim() || formData.tags.length >= 6}
-                    className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                  >
-                    Add
-                  </button>
-                </div>
-                {formData.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {formData.tags.map((tag, index) => (
-                      <span
-                        key={index}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 bg-primary/10 text-primary text-xs rounded-full"
-                      >
-                        <Tag className="w-3 h-3" />
-                        {tag}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFormData({ ...formData, tags: formData.tags.filter((_, i) => i !== index) })
-                          }}
-                          className="hover:text-red-500 transition-colors"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </span>
-                    ))}
+            <form onSubmit={handleSubmit} className="p-4">
+              {/* Two Column Layout on Desktop */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Left Column */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Course Title *</label>
+                    <input
+                      type="text"
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      placeholder="Enter course title"
+                      required
+                    />
                   </div>
-                )}
-                <p className="text-xs text-muted-foreground mt-1">
-                  {formData.tags.length}/6 tags added
-                </p>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Telegram Group Link</label>
-                <input
-                  type="url"
-                  value={formData.telegramLink}
-                  onChange={(e) => setFormData({ ...formData, telegramLink: e.target.value })}
-                  className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  placeholder="https://t.me/your_group"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Students will see this link to join the course Telegram community
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium mb-2">Instructors</label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 p-3 bg-muted/30 rounded-lg border border-border max-h-48 overflow-y-auto">
-                    {teachers.length > 0 ? (
-                      teachers.map((teacher) => (
-                        <label
-                          key={teacher.id}
-                          className="flex items-center gap-2 p-2 rounded hover:bg-muted/50 cursor-pointer transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={formData.instructors.includes(teacher.name)}
-                            onChange={(e) => {
-                              const newInstructors = e.target.checked
-                                ? [...formData.instructors, teacher.name]
-                                : formData.instructors.filter((name) => name !== teacher.name)
-                              setFormData({ ...formData, instructors: newInstructors })
-                            }}
-                            className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
-                          />
-                          <span className="text-xs truncate">{teacher.name}</span>
-                        </label>
-                      ))
-                    ) : (
-                      <p className="text-xs text-muted-foreground col-span-full text-center py-2">
-                        No teachers available
-                      </p>
-                    )}
-                  </div>
-                  {formData.instructors.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-1.5">
-                      Selected: {formData.instructors.join(", ")}
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Search Keywords</label>
+                    <input
+                      type="text"
+                      value={formData.searchKeywords}
+                      onChange={(e) => setFormData({ ...formData, searchKeywords: e.target.value })}
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      placeholder="Enter keywords for search (comma separated)"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      These keywords help students find this course.
                     </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Description</label>
+                    <div className="border border-border rounded-lg overflow-hidden">
+                      <JoditEditor
+                        ref={editor}
+                        value={formData.description}
+                        config={editorConfig}
+                        onBlur={(newContent) => setFormData({ ...formData, description: newContent })}
+                        onChange={(newContent) => {}}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Tags (Max 6)</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={tagInput}
+                        onChange={(e) => setTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            if (tagInput.trim() && formData.tags.length < 6 && !formData.tags.includes(tagInput.trim())) {
+                              setFormData({ ...formData, tags: [...formData.tags, tagInput.trim()] })
+                              setTagInput("")
+                            }
+                          }
+                        }}
+                        className="flex-1 px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                        placeholder="Type a tag and press Enter"
+                        disabled={formData.tags.length >= 6}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (tagInput.trim() && formData.tags.length < 6 && !formData.tags.includes(tagInput.trim())) {
+                            setFormData({ ...formData, tags: [...formData.tags, tagInput.trim()] })
+                            setTagInput("")
+                          }
+                        }}
+                        disabled={!tagInput.trim() || formData.tags.length >= 6}
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {formData.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {formData.tags.map((tag, index) => (
+                          <span
+                            key={index}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-primary/10 text-primary text-xs rounded-full"
+                          >
+                            <Tag className="w-3 h-3" />
+                            {tag}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData({ ...formData, tags: formData.tags.filter((_, i) => i !== index) })
+                              }}
+                              className="hover:text-red-500 transition-colors"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {formData.tags.length}/6 tags added
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Telegram Group Link</label>
+                    <input
+                      type="url"
+                      value={formData.telegramLink}
+                      onChange={(e) => setFormData({ ...formData, telegramLink: e.target.value })}
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      placeholder="https://t.me/your_group"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Students will see this link to join the course Telegram community
+                    </p>
+                  </div>
+
+                  {/* Demo Videos Section */}
+                  {formData.demoVideos !== undefined && (
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Demo Videos (YouTube Links)</label>
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={demoVideoInput.title}
+                            onChange={(e) => setDemoVideoInput({ ...demoVideoInput, title: e.target.value })}
+                            className="flex-1 px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                            placeholder="Video title"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="url"
+                            value={demoVideoInput.url}
+                            onChange={(e) => setDemoVideoInput({ ...demoVideoInput, url: e.target.value })}
+                            className="flex-1 px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                            placeholder="https://youtube.com/watch?v=..."
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (demoVideoInput.title.trim() && demoVideoInput.url.trim()) {
+                                setFormData(prev => ({ 
+                                  ...prev, 
+                                  demoVideos: [...(prev.demoVideos || []), { ...demoVideoInput }] 
+                                }))
+                                setDemoVideoInput({ title: "", url: "" })
+                              }
+                            }}
+                            disabled={!demoVideoInput.title.trim() || !demoVideoInput.url.trim()}
+                            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                      {formData.demoVideos.length > 0 && (
+                        <div className="mt-2 space-y-2">
+                          {formData.demoVideos.map((video, index) => (
+                            <div
+                              key={index}
+                              className="flex items-center justify-between p-2 bg-muted/30 border border-border rounded-lg"
+                            >
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate">{video.title}</p>
+                                <p className="text-xs text-muted-foreground truncate">{video.url}</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFormData(prev => ({ 
+                                    ...prev, 
+                                    demoVideos: (prev.demoVideos || []).filter((_, i) => i !== index) 
+                                  }))
+                                }}
+                                className="ml-2 p-1.5 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {formData.demoVideos.length} demo video{formData.demoVideos.length !== 1 ? 's' : ''} added
+                      </p>
+                    </div>
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Category</label>
-                  <select
-                    value={formData.category}
-                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  >
-                    <option value="">Select category</option>
-                    {categories.map((cat) => (
-                      <option key={cat.id} value={cat.title}>
-                        {cat.title}
-                      </option>
-                    ))}
-                  </select>
+                {/* Divider */}
+                <div className="hidden md:flex items-center justify-center">
+                  <div className="h-full w-px bg-border"></div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Course Type</label>
-                  <select
-                    value={formData.type}
-                    onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  >
-                    <option value="subject">Subject</option>
-                    <option value="batch">Batch</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Course Format</label>
-                  <select
-                    value={formData.courseFormat}
-                    onChange={(e) => setFormData({ ...formData, courseFormat: e.target.value, bundledCourses: e.target.value === 'single' ? [] : formData.bundledCourses })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  >
-                    <option value="single">Single</option>
-                    <option value="bundle">Bundle</option>
-                  </select>
-                </div>
-
-                {formData.courseFormat === 'bundle' && (
-                  <div className="col-span-full">
-                    <label className="block text-sm font-medium mb-1.5">Bundled Courses</label>
-                    <div className="border border-border rounded-lg p-3 max-h-40 overflow-y-auto">
-                      {courses.filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle').length > 0 ? (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {courses
-                            .filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle')
-                            .map((course) => (
-                              <label
-                                key={course.id}
-                                className="flex items-center gap-2 p-2 hover:bg-muted rounded cursor-pointer text-sm"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={formData.bundledCourses.includes(course.id)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setFormData({
-                                        ...formData,
-                                        bundledCourses: [...formData.bundledCourses, course.id]
-                                      })
-                                    } else {
-                                      setFormData({
-                                        ...formData,
-                                        bundledCourses: formData.bundledCourses.filter(id => id !== course.id)
-                                      })
-                                    }
-                                  }}
-                                  className="rounded border-border"
-                                />
-                                <span className="flex-1">{course.title}</span>
-                              </label>
-                            ))}
-                        </div>
+                {/* Right Column */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Instructors</label>
+                    <div className="grid grid-cols-2 gap-2 p-3 bg-muted/30 rounded-lg border border-border max-h-48 overflow-y-auto">
+                      {teachers.length > 0 ? (
+                        teachers.map((teacher) => (
+                          <label
+                            key={teacher.id}
+                            className="flex items-center gap-2 p-2 rounded hover:bg-muted/50 cursor-pointer transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={formData.instructors.includes(teacher.name)}
+                              onChange={(e) => {
+                                const newInstructors = e.target.checked
+                                  ? [...formData.instructors, teacher.name]
+                                  : formData.instructors.filter((name) => name !== teacher.name)
+                                setFormData({ ...formData, instructors: newInstructors })
+                              }}
+                              className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
+                            />
+                            <span className="text-xs truncate">{teacher.name}</span>
+                          </label>
+                        ))
                       ) : (
-                        <p className="text-xs text-muted-foreground text-center py-2">
-                          No single courses available to bundle
+                        <p className="text-xs text-muted-foreground col-span-full text-center py-2">
+                          No teachers available
                         </p>
                       )}
                     </div>
-                    {formData.bundledCourses.length > 0 && (
+                    {formData.instructors.length > 0 && (
                       <p className="text-xs text-muted-foreground mt-1.5">
-                        Selected: {formData.bundledCourses.length} course{formData.bundledCourses.length > 1 ? 's' : ''}
+                        Selected: {formData.instructors.join(", ")}
                       </p>
                     )}
                   </div>
-                )}
 
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Price (৳)</label>
-                  <input
-                    type="number"
-                    value={formData.price}
-                    onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                    placeholder="0"
-                    min="0"
-                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Category</label>
+                      <select
+                        value={formData.category}
+                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      >
+                        <option value="">Select category</option>
+                        {categories.map((cat) => (
+                          <option key={cat.id} value={cat.title}>
+                            {cat.title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Course Type</label>
+                      <select
+                        value={formData.type}
+                        onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      >
+                        <option value="subject">Subject</option>
+                        <option value="batch">Batch</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Course Format</label>
+                      <select
+                        value={formData.courseFormat}
+                        onChange={(e) => setFormData({ ...formData, courseFormat: e.target.value, bundledCourses: e.target.value === 'single' ? [] : formData.bundledCourses })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      >
+                        <option value="single">Single</option>
+                        <option value="bundle">Bundle</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Price (৳)</label>
+                      <input
+                        type="number"
+                        value={formData.price}
+                        onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                        placeholder="0"
+                        min="0"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Course Status</label>
+                      <select
+                        value={formData.status}
+                        onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      >
+                        <option value="running">Running</option>
+                        <option value="ongoing">Ongoing</option>
+                        <option value="complete">Complete</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Publish Status</label>
+                      <select
+                        value={formData.publishStatus}
+                        onChange={(e) => setFormData({ ...formData, publishStatus: e.target.value })}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      >
+                        <option value="published">Published</option>
+                        <option value="draft">Draft</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {formData.courseFormat === 'bundle' && (
+                    <div>
+                      <label className="block text-sm font-medium mb-1.5">Bundled Courses</label>
+                      <div className="border border-border rounded-lg p-3 max-h-40 overflow-y-auto">
+                        {courses.filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle').length > 0 ? (
+                          <div className="grid grid-cols-1 gap-2">
+                            {courses
+                              .filter(c => c.id !== editingCourse?.id && c.courseFormat !== 'bundle')
+                              .map((course) => (
+                                <label
+                                  key={course.id}
+                                  className="flex items-center gap-2 p-2 hover:bg-muted rounded cursor-pointer text-sm"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={formData.bundledCourses.includes(course.id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setFormData({
+                                          ...formData,
+                                          bundledCourses: [...formData.bundledCourses, course.id]
+                                        })
+                                      } else {
+                                        setFormData({
+                                          ...formData,
+                                          bundledCourses: formData.bundledCourses.filter(id => id !== course.id)
+                                        })
+                                      }
+                                    }}
+                                    className="rounded border-border"
+                                  />
+                                  <span className="flex-1">{course.title}</span>
+                                </label>
+                              ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground text-center py-2">
+                            No single courses available to bundle
+                          </p>
+                        )}
+                      </div>
+                      {formData.bundledCourses.length > 0 && (
+                        <p className="text-xs text-muted-foreground mt-1.5">
+                          Selected: {formData.bundledCourses.length} course{formData.bundledCourses.length > 1 ? 's' : ''}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1.5">Thumbnail Image</label>
+                    <div className="flex gap-3 mb-3">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, imageType: "upload" })}
+                        className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                          formData.imageType === "upload"
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-card border-border hover:bg-muted"
+                        }`}
+                      >
+                        <Upload className="w-4 h-4 inline mr-1.5" />
+                        Upload
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, imageType: "link" })}
+                        className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                          formData.imageType === "link"
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-card border-border hover:bg-muted"
+                        }`}
+                      >
+                        <LinkIcon className="w-4 h-4 inline mr-1.5" />
+                        Link
+                      </button>
+                    </div>
+
+                    {formData.imageType === "upload" ? (
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setImageFile(e.target.files[0])}
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg text-sm file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
+                      />
+                    ) : (
+                      <input
+                        type="url"
+                        value={formData.imageLink}
+                        onChange={(e) => setFormData({ ...formData, imageLink: e.target.value })}
+                        placeholder="https://example.com/image.jpg"
+                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                      />
+                    )}
+                  </div>
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Course Status</label>
-                  <select
-                    value={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  >
-                    <option value="running">Running</option>
-                    <option value="ongoing">Ongoing</option>
-                    <option value="complete">Complete</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">Publish Status</label>
-                  <select
-                    value={formData.publishStatus}
-                    onChange={(e) => setFormData({ ...formData, publishStatus: e.target.value })}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  >
-                    <option value="published">Published</option>
-                    <option value="draft">Draft</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium mb-1.5">Thumbnail Image</label>
-                <div className="flex gap-3 mb-3">
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, imageType: "upload" })}
-                    className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
-                      formData.imageType === "upload"
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-card border-border hover:bg-muted"
-                    }`}
-                  >
-                    <Upload className="w-4 h-4 inline mr-1.5" />
-                    Upload
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, imageType: "link" })}
-                    className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
-                      formData.imageType === "link"
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-card border-border hover:bg-muted"
-                    }`}
-                  >
-                    <LinkIcon className="w-4 h-4 inline mr-1.5" />
-                    Link
-                  </button>
-                </div>
-
-                {formData.imageType === "upload" ? (
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setImageFile(e.target.files[0])}
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg text-sm file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
-                  />
-                ) : (
-                  <input
-                    type="url"
-                    value={formData.imageLink}
-                    onChange={(e) => setFormData({ ...formData, imageLink: e.target.value })}
-                    placeholder="https://example.com/image.jpg"
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                  />
-                )}
               </div>
 
               <div className="flex gap-3 pt-4 border-t border-border">
