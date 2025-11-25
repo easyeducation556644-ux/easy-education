@@ -480,10 +480,6 @@ export default function CourseWatch() {
               )}
             </div>
 
-            {currentUser && currentClass && (
-              <CommentsSection classId={currentClass.id} currentUser={currentUser} isAdmin={isAdmin} />
-            )}
-
             {currentClass?.resourceLinks && currentClass.resourceLinks.length > 0 && (
               <div className="bg-card border border-border rounded-lg sm:rounded-xl p-4 sm:p-6 shadow-lg">
                 <h2 className="text-lg sm:text-xl font-bold flex items-center gap-2 mb-4">
@@ -500,48 +496,11 @@ export default function CourseWatch() {
               </div>
             )}
 
-          </div>
-          {currentClass?.teacherName && (
-              <div className="bg-gradient-to-br from-primary/10 via-secondary/5 to-primary/5 border-2 border-primary/20 rounded-xl sm:rounded-2xl p-4 sm:p-6 shadow-lg">
-                <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-6">
-                  <div className="relative flex-shrink-0">
-                    {currentClass.teacherImageURL ? (
-                      <div className="relative">
-                        <div className="absolute inset-0 bg-gradient-to-br from-primary to-secondary rounded-full blur-md opacity-50"></div>
-                        <img
-                          src={currentClass.teacherImageURL || "/placeholder.svg"}
-                          alt={currentClass.teacherName}
-                          className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover border-4 border-background shadow-xl"
-                        />
-                      </div>
-                    ) : (
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-xl border-4 border-background">
-                        <User className="w-8 h-8 sm:w-10 sm:h-10 text-white" />
-                      </div>
-                    )}
-                    <div className="absolute -bottom-1 -right-1 w-7 h-7 sm:w-8 sm:h-8 bg-primary rounded-full flex items-center justify-center border-2 border-background shadow-lg">
-                      <GraduationCap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white" />
-                    </div>
-                  </div>
-
-                  <div className="flex-1 text-center sm:text-left">
-                    <p className="text-xs sm:text-sm font-medium text-muted-foreground mb-1 uppercase tracking-wider">
-                      Instructor
-                    </p>
-                    <h3 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent mb-2">
-                      {currentClass.teacherName}
-                    </h3>
-                    <p className="text-xs sm:text-sm text-muted-foreground">Teaching with dedication and excellence</p>
-                  </div>
-
-                  <div className="hidden md:block">
-                    <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-primary/10 flex items-center justify-center">
-                      <Award className="w-7 h-7 sm:w-8 sm:h-8 text-primary" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+            {currentUser && currentClass && (
+              <CommentsSection classId={currentClass.id} currentUser={currentUser} isAdmin={isAdmin} />
             )}
+
+          </div>
         </div>
       </div>
 

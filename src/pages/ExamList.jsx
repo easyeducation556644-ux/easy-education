@@ -76,9 +76,19 @@ export default function ExamList() {
       }
 
       const activeExamsData = await getActiveExamsByCourse(resolvedCourseId)
+      activeExamsData.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || a.createdAt?.toMillis?.() / 1000 || 0
+        const timeB = b.createdAt?.seconds || b.createdAt?.toMillis?.() / 1000 || 0
+        return timeB - timeA
+      })
       setActiveExams(activeExamsData)
 
       const archivedExamsData = await getArchivedExamsByCourse(resolvedCourseId)
+      archivedExamsData.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || a.createdAt?.toMillis?.() / 1000 || 0
+        const timeB = b.createdAt?.seconds || b.createdAt?.toMillis?.() / 1000 || 0
+        return timeB - timeA
+      })
       setArchivedExams(archivedExamsData)
 
       if (currentUser) {
