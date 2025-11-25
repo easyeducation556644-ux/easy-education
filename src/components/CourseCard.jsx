@@ -10,7 +10,7 @@ import { db } from "../lib/firebase"
 import ProgressBar from "./ProgressBar"
 import { toast } from "../hooks/use-toast"
 
-export default function CourseCard({ course, onAddToCart, showProgress = false, showResources = false }) {
+export default function CourseCard({ course, onAddToCart, showProgress = false, showResources = false, showMinimal = false }) {
   const { addToCart, removeFromCart, cartItems, openCart } = useCart()
   const { currentUser } = useAuth()
   const navigate = useNavigate()
@@ -192,7 +192,7 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
   
   return (
     <Link to={courseUrl}>
-      <div className="bg-card border border-border rounded-xl overflow-hidden hover:border-primary hover:shadow-lg transition-all group relative h-full flex flex-col">
+      <div className="bg-card border border-border rounded-xl overflow-hidden hover:border-primary hover:shadow-xl transition-all group relative h-full flex flex-col">
         <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 relative overflow-hidden">
           {course.thumbnailURL ? (
             <img
@@ -210,7 +210,9 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
                 course.status === "running" 
                   ? "bg-green-500 text-white" 
                   : course.status === "ongoing" 
-                  ? "bg-blue-500 text-white" 
+                  ? "bg-blue-500 text-white"
+                  : course.status === "complete"
+                  ? "bg-red-500 text-white"
                   : "bg-gray-500 text-white"
               }`}>
                 {course.status}
@@ -222,51 +224,56 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
           <h3 className="font-semibold text-lg mb-2 line-clamp-2 group-hover:text-primary transition-colors">
             {course.title}
           </h3>
-          {course.tags && course.tags.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 mb-3 min-h-[40px]">
-              {course.tags.slice(0, 6).map((tag, index) => (
-                <span
-                  key={index}
-                  className="inline-flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium"
-                >
-                  <Tag className="w-3 h-3" />
-                  {tag}
+          
+          {!showMinimal && (
+            <>
+              {course.tags && course.tags.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 mb-3 min-h-[40px]">
+                  {course.tags.slice(0, 6).map((tag, index) => (
+                    <span
+                      key={index}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium"
+                    >
+                      <Tag className="w-3 h-3" />
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground mb-3 line-clamp-2 leading-relaxed">
+                  {truncateDescription(course.description)}
+                </p>
+              )}
+              <div className="flex items-center justify-end mb-3">
+                <span className="px-3 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium">
+                  {course.category}
                 </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground mb-3 line-clamp-2 leading-relaxed">
-              {truncateDescription(course.description)}
-            </p>
-          )}
-          <div className="flex items-center justify-end mb-3">
-            <span className="px-3 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium">
-              {course.category}
-            </span>
-          </div>
-
-          {/* Resource Stats */}
-          {showResources && (resourceStats.classCount > 0 || resourceStats.resourceCount > 0) && (
-            <div className="mb-3">
-              <div className="flex flex-wrap items-center gap-2 max-h-[88px] overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-                {resourceStats.classCount > 0 && (
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-500/10 to-blue-600/10 rounded-full border border-blue-500/20">
-                    <Video className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                    <span className="text-xs font-medium text-blue-800 dark:text-blue-300">{resourceStats.classCount} Classes</span>
-                  </div>
-                )}
-                {resourceStats.resourceCount > 0 && (
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500/10 to-green-600/10 rounded-full border border-green-500/20">
-                    <FileText className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
-                    <span className="text-xs font-medium text-green-800 dark:text-green-300">{resourceStats.resourceCount} Resources</span>
-                  </div>
-                )}
               </div>
-            </div>
+
+              {/* Resource Stats */}
+              {showResources && (resourceStats.classCount > 0 || resourceStats.resourceCount > 0) && (
+                <div className="mb-3">
+                  <div className="flex flex-wrap items-center gap-2 max-h-[88px] overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                    {resourceStats.classCount > 0 && (
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-500/10 to-blue-600/10 rounded-full border border-blue-500/20">
+                        <Video className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                        <span className="text-xs font-medium text-blue-800 dark:text-blue-300">{resourceStats.classCount} Classes</span>
+                      </div>
+                    )}
+                    {resourceStats.resourceCount > 0 && (
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500/10 to-green-600/10 rounded-full border border-green-500/20">
+                        <FileText className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                        <span className="text-xs font-medium text-green-800 dark:text-green-300">{resourceStats.resourceCount} Resources</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Price Display */}
-          <div className="mb-3 mt-auto">
+          <div className={`${showMinimal ? 'mt-auto' : 'mb-3 mt-auto'}`}>
             {course.price && course.price > 0 ? (
               <div className="flex items-center gap-2">
                 <span className="text-2xl font-bold text-primary">৳{course.price}</span>
@@ -279,65 +286,69 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
             )}
           </div>
 
-          {loading ? (
-            <div className="w-full h-10 flex items-center justify-center border border-border rounded-lg text-muted-foreground text-sm">
-              Loading Status...
-            </div>
-          ) : isPurchased ? (
+          {!showMinimal && (
             <>
-              <div className="mb-3">
-                <ProgressBar progress={progress} showLabel={true} showPercentage={true} animated={false} />
-              </div>
-              <button 
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  navigate(course.type === "batch" ? `/course/${course.slug || course.id}/subjects` : `/course/${course.slug || course.id}/chapters`)
-                }}
-                className="w-full px-4 py-2 bg-green-500/20 text-green-700 dark:text-green-400 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium hover:bg-green-500/30"
-              >
-                <Check className="w-4 h-4" />
-                Continue Course
-              </button>
+              {loading ? (
+                <div className="w-full h-10 flex items-center justify-center border border-border rounded-lg text-muted-foreground text-sm">
+                  Loading Status...
+                </div>
+              ) : isPurchased ? (
+                <>
+                  <div className="mb-3">
+                    <ProgressBar progress={progress} showLabel={true} showPercentage={true} animated={false} />
+                  </div>
+                  <button 
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      navigate(course.type === "batch" ? `/course/${course.slug || course.id}/subjects` : `/course/${course.slug || course.id}/chapters`)
+                    }}
+                    className="w-full px-4 py-2 bg-green-500/20 text-green-700 dark:text-green-400 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium hover:bg-green-500/30"
+                  >
+                    <Check className="w-4 h-4" />
+                    Continue Course
+                  </button>
+                </>
+              ) : hasPendingPayment ? (
+                <button
+                  disabled
+                  className="w-full px-4 py-2 bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 rounded-lg flex items-center justify-center gap-2 text-sm font-medium cursor-not-allowed opacity-90"
+                >
+                  <Clock className="w-4 h-4" />
+                  Request Pending
+                </button>
+              ) : isInCart ? (
+                <button
+                  onClick={handleRemoveFromCart}
+                  className="w-full px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Remove from Cart
+                </button>
+              ) : !course.price || course.price === 0 || course.price === "0" || course.price === null ? (
+                <button 
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    navigate(courseUrl)
+                  }}
+                  className="w-full px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
+                >
+                  Enroll Free
+                </button>
+              ) : (
+                <button 
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    navigate(courseUrl)
+                  }}
+                  className="w-full px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
+                >
+                  Buy Now
+                </button>
+              )}
             </>
-          ) : hasPendingPayment ? (
-            <button
-              disabled
-              className="w-full px-4 py-2 bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 rounded-lg flex items-center justify-center gap-2 text-sm font-medium cursor-not-allowed opacity-90"
-            >
-              <Clock className="w-4 h-4" />
-              Request Pending
-            </button>
-          ) : isInCart ? (
-            <button
-              onClick={handleRemoveFromCart}
-              className="w-full px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
-            >
-              <Trash2 className="w-4 h-4" />
-              Remove from Cart
-            </button>
-          ) : !course.price || course.price === 0 || course.price === "0" || course.price === null ? (
-            <button 
-              onClick={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                navigate(courseUrl)
-              }}
-              className="w-full px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
-            >
-              Enroll Free
-            </button>
-          ) : (
-            <button 
-              onClick={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                navigate(courseUrl)
-              }}
-              className="w-full px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
-            >
-              Buy Now
-            </button>
           )}
         </div>
       </div>

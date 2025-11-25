@@ -266,7 +266,7 @@ export default function Home() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.1 }}
                 >
-                  <CourseCard course={course} />
+                  <CourseCard course={course} showMinimal={true} />
                 </motion.div>
               ))}
             </div>

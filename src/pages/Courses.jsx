@@ -117,8 +117,8 @@ export default function Courses() {
     <div className="min-h-screen py-8 md:py-12 px-4 md:px-6">
       <div className="container mx-auto max-w-5xl">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-          <h1 className="text-3xl md:text-4xl font-bold mb-2">Explore Courses</h1>
-          <p className="text-base md:text-lg text-muted-foreground">Discover our collection of educational courses</p>
+          <h1 className="text-3xl md:text-4xl font-bold mb-2">Available Courses</h1>
+          <p className="text-base md:text-lg text-muted-foreground">তোমার প্রয়োজনীয় কোর্সটি পেতে সার্চ করো।</p>
         </motion.div>
 
         <div className="bg-card border border-border rounded-lg p-4 md:p-6 mb-8 shadow-sm">
@@ -204,7 +204,7 @@ export default function Courses() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.05 }}
               >
-                <CourseCard course={course} />
+                <CourseCard course={course} showMinimal={true} />
               </motion.div>
             ))}
           </div>
