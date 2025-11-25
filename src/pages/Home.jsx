@@ -8,6 +8,8 @@ import CourseCard from "../components/CourseCard"
 import { collection, query, orderBy, limit, getDocs, where } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
+import useEmblaCarousel from "embla-carousel-react"
+import Autoplay from "embla-carousel-autoplay"
 
 export default function Home() {
   const navigate = useNavigate()
@@ -17,6 +19,16 @@ export default function Home() {
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)
   const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(new Set())
+  
+  const [emblaRef] = useEmblaCarousel(
+    { 
+      loop: true, 
+      align: 'start',
+      slidesToScroll: 1,
+      containScroll: 'trimSnaps'
+    },
+    [Autoplay({ delay: 3000, stopOnInteraction: false })]
+  )
 
   useEffect(() => {
     fetchData()
@@ -50,7 +62,7 @@ export default function Home() {
         setPurchasedBundleCourses(purchasedBundleSet)
       }
 
-      const coursesQuery = query(collection(db, "courses"), orderBy("createdAt", "desc"), limit(20))
+      const coursesQuery = query(collection(db, "courses"), orderBy("createdAt", "desc"))
       const coursesSnapshot = await getDocs(coursesQuery)
       let coursesData = coursesSnapshot.docs.map((doc) => ({
         id: doc.id,
@@ -67,7 +79,7 @@ export default function Home() {
         )
       }
       
-      setTrendingCourses(coursesData.slice(0, 6))
+      setTrendingCourses(coursesData)
 
       const categoriesQuery = query(collection(db, "categories"), limit(8))
       const categoriesSnapshot = await getDocs(categoriesQuery)
@@ -241,15 +253,15 @@ export default function Home() {
 
       {/* Trending Courses */}
       <section className="py-12 md:py-14 px-4 bg-gradient-to-b from-background via-primary/5 to-background">
-        <div className="container mx-auto max-w-6xl">
+        <div className="container mx-auto max-w-7xl">
           <div className="flex items-center gap-3 mb-8">
             <TrendingUp className="w-6 h-6 text-primary" />
             <h2 className="text-3xl md:text-4xl font-serif font-bold">Trending Courses</h2>
           </div>
 
           {loading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {[...Array(6)].map((_, i) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {[...Array(8)].map((_, i) => (
                 <div key={i} className="bg-card border border-border rounded-xl p-4 animate-pulse">
                   <div className="aspect-video bg-muted rounded-lg mb-4"></div>
                   <div className="h-6 bg-muted rounded mb-2"></div>
@@ -258,17 +270,17 @@ export default function Home() {
               ))}
             </div>
           ) : trendingCourses.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
-              {trendingCourses.map((course, index) => (
-                <motion.div
-                  key={course.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.1 }}
-                >
-                  <CourseCard course={course} showMinimal={true} />
-                </motion.div>
-              ))}
+            <div className="overflow-hidden" ref={emblaRef}>
+              <div className="flex gap-4 md:gap-5">
+                {trendingCourses.map((course) => (
+                  <div
+                    key={course.id}
+                    className="flex-[0_0_100%] min-w-0 sm:flex-[0_0_50%] md:flex-[0_0_33.333%] lg:flex-[0_0_25%]"
+                  >
+                    <CourseCard course={course} showMinimal={true} />
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="text-center py-12 text-muted-foreground">
