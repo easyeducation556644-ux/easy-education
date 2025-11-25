@@ -4,6 +4,19 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 25, 2025 (Part 5)** - Phone Number Integration, Payment Search & Telegram Modal Enhancements:
+- Integrated phone number tracking throughout enrollment flow - checkout now captures mobile number and saves it to payment records
+- Enhanced admin payments page with phone number column and improved notification system displaying phone numbers in toasts
+- Implemented comprehensive search functionality on ManagePayments - search by course name, user name, email, phone number, or transaction ID with live result count display
+- Search filter safely handles legacy payment records without phone numbers using default empty string fallbacks
+- Redesigned Telegram submission flow - replaced inline forms with professional modal dialogs on CourseChapters and CourseSubjects pages
+- Added prominent Bangla "টেলিগ্রাম গ্রুপে যুক্ত হন" button above course content for easy discovery
+- Implemented two-step required form in modal: Step 1 captures Telegram ID, Step 2 captures mobile number with Bangla instructions
+- Added smooth step transitions with Framer Motion animations, validation states, and loading indicators
+- Success state displays confirmation message with direct Telegram group link button
+- Modal includes warning text about one-time submission limit to ensure accurate data collection
+- All Telegram forms now use Bangla language for better user experience (toast notifications, form labels, buttons)
+
 **November 25, 2025 (Part 4)** - Demo Video Thumbnails & SMS Format Update:
 - Fixed demo video thumbnails not displaying - implemented improved YouTube ID extraction using robust regex parser
 - Thumbnails now load with mqdefault.jpg quality with automatic fallback to default.jpg if unavailable
