@@ -88,12 +88,19 @@ export default function Courses() {
     let filtered = courses ? [...courses] : []
 
     if (searchQuery && searchQuery.trim()) {
-      filtered = filtered.filter(
-        (course) =>
-          course.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          course.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          course.category?.toLowerCase().includes(searchQuery.toLowerCase()),
-      )
+      const query = searchQuery.toLowerCase()
+      filtered = filtered.filter((course) => {
+        const searchableKeywords = Array.isArray(course.searchKeywords)
+          ? course.searchKeywords.join(',').toLowerCase()
+          : (course.searchKeywords || '').toLowerCase()
+        
+        return (
+          course.title?.toLowerCase().includes(query) ||
+          course.description?.toLowerCase().includes(query) ||
+          course.category?.toLowerCase().includes(query) ||
+          searchableKeywords.includes(query)
+        )
+      })
     }
 
     if (categoryFilter && categoryFilter !== "all") {

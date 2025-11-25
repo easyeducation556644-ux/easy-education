@@ -25,7 +25,12 @@ export default function Home() {
       loop: true, 
       align: 'start',
       slidesToScroll: 1,
-      containScroll: 'trimSnaps'
+      containScroll: 'trimSnaps',
+      breakpoints: {
+        '(max-width: 640px)': { 
+          align: 'center'
+        }
+      }
     },
     [Autoplay({ delay: 3000, stopOnInteraction: false })]
   )
@@ -270,12 +275,12 @@ export default function Home() {
               ))}
             </div>
           ) : trendingCourses.length > 0 ? (
-            <div className="overflow-hidden" ref={emblaRef}>
+            <div className="overflow-hidden -mx-4 px-4" ref={emblaRef}>
               <div className="flex gap-4 md:gap-5">
                 {trendingCourses.map((course) => (
                   <div
                     key={course.id}
-                    className="flex-[0_0_100%] min-w-0 sm:flex-[0_0_50%] md:flex-[0_0_33.333%] lg:flex-[0_0_25%]"
+                    className="flex-[0_0_80%] min-w-0 sm:flex-[0_0_50%] md:flex-[0_0_33.333%] lg:flex-[0_0_25%]"
                   >
                     <CourseCard course={course} showMinimal={true} />
                   </div>

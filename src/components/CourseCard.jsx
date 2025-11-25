@@ -221,7 +221,7 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
           )}
         </div>
         <div className="p-5 flex flex-col flex-1">
-          <h3 className="font-semibold text-lg mb-2 line-clamp-2 group-hover:text-primary transition-colors">
+          <h3 className="font-semibold text-base mb-2 line-clamp-2 group-hover:text-primary transition-colors">
             {course.title}
           </h3>
           
