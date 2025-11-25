@@ -55,6 +55,7 @@
     "html2pdf.js": "latest",
     "input-otp": "1.4.1",
     "jiti": "latest",
+    "jodit-react": "^5.2.38",
     "less": "latest",
     "lightningcss": "latest",
     "lucide-react": "^0.454.0",
