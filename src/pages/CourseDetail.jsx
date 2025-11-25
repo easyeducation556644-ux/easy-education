@@ -22,6 +22,7 @@ export default function CourseDetail() {
   const [hasPendingPayment, setHasPendingPayment] = useState(false)
   const [teachers, setTeachers] = useState([])
   const [selectedDemoVideo, setSelectedDemoVideo] = useState(null)
+  const [enrolledCount, setEnrolledCount] = useState(0)
 
   useEffect(() => {
     fetchCourseData()
@@ -53,6 +54,17 @@ export default function CourseDetail() {
       
       if (courseData) {
         setCourse(courseData)
+
+        const enrolledQuery = query(
+          collection(db, "userCourses"),
+          where("courseId", "==", courseData.id)
+        )
+        const enrolledSnapshot = await getDocs(enrolledQuery)
+        const actualEnrolledCount = enrolledSnapshot.docs.filter(doc => {
+          const data = doc.data()
+          return !data.isBundle && !data.bundleId
+        }).length
+        setEnrolledCount(actualEnrolledCount)
 
         if (courseData.instructors && courseData.instructors.length > 0) {
           const teachersQuery = query(
@@ -442,6 +454,13 @@ export default function CourseDetail() {
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">One-time payment • Lifetime access</p>
+                  </div>
+
+                  <div className="flex items-center justify-center gap-2 py-3 bg-muted/50 rounded-lg">
+                    <Users className="w-5 h-5 text-primary" />
+                    <span className="text-sm font-medium">
+                      {enrolledCount} {enrolledCount === 1 ? 'student' : 'students'} enrolled
+                    </span>
                   </div>
 
                   <div className="space-y-3">
