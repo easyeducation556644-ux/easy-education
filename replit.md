@@ -4,6 +4,15 @@ Easy Education is a Progressive Web Application (PWA) delivering free online cou
 
 # Recent Changes
 
+**November 25, 2025 (Part 3)** - Course Modal, Mobile Checkout & SMS Notifications:
+- Expanded course add/edit modal to 98% viewport width (max-w-[98vw]) for maximum screen utilization
+- Updated course details page: hero image displays first on mobile above course info, demo videos use YouTube iframe embeds with responsive grid (2 columns mobile, 4 columns desktop)
+- Added mandatory Bangladeshi mobile number field to checkout page with strict validation (supports 880XXXXXXXXXX or 01XXXXXXXXX formats)
+- Implemented SMS notification system using bulksmsbd.net API - sends Bangla enrollment confirmation messages to students after successful course enrollment
+- Mobile number properly threaded through entire enrollment flow: Checkout → process-enrollment → process-payment → send-sms
+- SMS credentials (BULKSMS_API_KEY, BULKSMS_SENDER_ID) securely stored in Replit Secrets
+- SMS sending includes graceful error handling and detailed logging for troubleshooting
+
 **November 25, 2025 (Part 2)** - Course Details UI Enhancements & Demo Videos Feature:
 - Reorganized course details page layout - moved course image to sidebar above purchase section for better visual hierarchy
 - Implemented demo videos section with CustomVideoPlayer component displaying YouTube videos as cards with titles below course description
@@ -81,7 +90,7 @@ Preferred communication style: Simple, everyday language.
 
 **Server Framework:** Express.js on Node.js.
 **Deployment Model:** Hybrid approach using an Express server for development and Vercel serverless functions (`/api`) for production.
-**API Structure:** Endpoints for payment processing, enrollment, image uploads, and dynamic PWA manifest generation.
+**API Structure:** Endpoints for payment processing, enrollment, image uploads, dynamic PWA manifest generation, and SMS notifications.
 
 ## Data Storage
 
@@ -97,7 +106,7 @@ Preferred communication style: Simple, everyday language.
 
 ## UI/UX Decisions
 
-Custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode. Radix UI primitives for accessibility, Tailwind CSS for flexible styling. Mobile-responsive UI for BanOverlay and Admin Ban Management pages.
+Custom design system inspired by Vercel's minimalist aesthetic, supporting dark mode. Radix UI primitives for accessibility, Tailwind CSS for flexible styling. Mobile-responsive UI for BanOverlay and Admin Ban Management pages. Course add/edit modal at 98% width for maximum content visibility. Course details page optimized for mobile-first viewing with YouTube iframe embeds.
 
 ## Technical Implementations
 
@@ -107,12 +116,14 @@ Custom design system inspired by Vercel's minimalist aesthetic, supporting dark 
 - **Admin Attribution:** Payment records store `approvedBy` and `rejectedBy`.
 - **Notification System:** Admin panel displays real-time ban notification badges via Firestore listeners.
 - **IP Geolocation:** Robust multi-API fallback system with error handling and Google Maps integration for device location tracking.
+- **SMS Notifications:** Automated Bangla enrollment confirmation messages sent via bulksmsbd.net API with mandatory Bangladeshi mobile number validation during checkout.
 
 # External Dependencies
 
 **Payment Gateway:** RupantorPay (RESTful API for checkout and verification, webhook support).
 **Image Hosting:** ImgBB API (RESTful API for Base64 image uploads).
 **IP Address Tracking:** ipify.org.
+**SMS Gateway:** bulksmsbd.net (RESTful API for sending Bangla SMS notifications to students).
 **Firebase Services:** Firebase Authentication (Google OAuth), Firebase Firestore, Firebase Cloud Messaging (FCM) for push notifications (via VAPID key and `/firebase-messaging-sw.js`, Admin SDK).
 **Analytics:** Vercel Analytics (`@vercel/analytics`).
 **Deployment Platform:** Vercel (`vercel.json` configuration).
