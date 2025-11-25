@@ -1,16 +1,15 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { ThumbsUp, Heart, Laugh, Sparkles, Frown, Angry } from "lucide-react"
+import { ThumbsUp, Heart, Laugh, Sparkles, Angry } from "lucide-react"
 import { collection, query, where, deleteDoc, doc, serverTimestamp, onSnapshot, setDoc, getDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 
 const REACTIONS = [
-  { type: "like", icon: ThumbsUp, label: "Like", color: "#1877f2", bgColor: "bg-blue-500/10", iconColor: "text-blue-500" },
-  { type: "love", icon: Heart, label: "Love", color: "#f33e58", bgColor: "bg-red-500/10", iconColor: "text-red-500" },
-  { type: "haha", icon: Laugh, label: "Haha", color: "#f7b125", bgColor: "bg-yellow-500/10", iconColor: "text-yellow-500" },
-  { type: "wow", icon: Sparkles, label: "Wow", color: "#f7b125", bgColor: "bg-purple-500/10", iconColor: "text-purple-500" },
-  { type: "sad", icon: Frown, label: "Sad", color: "#64748b", bgColor: "bg-slate-500/10", iconColor: "text-slate-500" },
-  { type: "angry", icon: Angry, label: "Angry", color: "#f15268", bgColor: "bg-orange-500/10", iconColor: "text-orange-500" },
+  { type: "like", icon: ThumbsUp, label: "Like", color: "#1877f2", bgColor: "bg-blue-500/20", iconColor: "text-blue-600" },
+  { type: "love", icon: Heart, label: "Love", color: "#f33e58", bgColor: "bg-pink-500/20", iconColor: "text-pink-600" },
+  { type: "haha", icon: Laugh, label: "Haha", color: "#f7b125", bgColor: "bg-yellow-500/20", iconColor: "text-yellow-600" },
+  { type: "wow", icon: Sparkles, label: "Wow", color: "#9333ea", bgColor: "bg-purple-500/20", iconColor: "text-purple-600" },
+  { type: "angry", icon: Angry, label: "Angry", color: "#f15268", bgColor: "bg-orange-500/20", iconColor: "text-orange-600" },
 ]
 
 export default function ClassReactions({ classId, currentUser }) {

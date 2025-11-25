@@ -25,7 +25,7 @@ const initialForm = () => ({
   publishStatus: "published",
   imageType: "upload",
   imageLink: "",
-  telegramLink: "",
+  telegramLinks: [],
   tags: [],
   demoVideos: [],
 })
@@ -59,6 +59,7 @@ export default function ManageCourses() {
   const [imageFile, setImageFile] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [demoVideoInput, setDemoVideoInput] = useState({ title: "", url: "" })
+  const [telegramLinkInput, setTelegramLinkInput] = useState("")
 
   const editorConfig = useMemo(
     () => ({
@@ -140,7 +141,7 @@ export default function ManageCourses() {
       publishStatus: course.publishStatus || "published",
       imageType: course.thumbnailURL ? "link" : "upload",
       imageLink: course.thumbnailURL || "",
-      telegramLink: course.telegramLink || "",
+      telegramLinks: course.telegramLinks || (course.telegramLink ? [course.telegramLink] : []),
       tags: course.tags || [],
       demoVideos: course.demoVideos ?? [],
     } : initialForm()
@@ -155,6 +156,7 @@ export default function ManageCourses() {
     setImageFile(null)
     setTagInput("")
     setDemoVideoInput({ title: "", url: "" })
+    setTelegramLinkInput("")
   }
 
   const handleCloseModal = () => {
@@ -165,6 +167,7 @@ export default function ManageCourses() {
     })
     setImageFile(null)
     setDemoVideoInput({ title: "", url: "" })
+    setTelegramLinkInput("")
   }
 
   const handleSubmit = async (e) => {
@@ -200,7 +203,8 @@ export default function ManageCourses() {
         status: formData.status,
         publishStatus: formData.publishStatus,
         thumbnailURL: thumbnailURL || "",
-        telegramLink: formData.telegramLink || "",
+        telegramLink: formData.telegramLinks?.[0] || "",
+        telegramLinks: formData.telegramLinks || [],
         tags: formData.tags || [],
         demoVideos: formData.demoVideos || [],
         slug: generateSlug(formData.title),
@@ -490,16 +494,71 @@ export default function ManageCourses() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium mb-1.5">Telegram Group Link</label>
-                    <input
-                      type="url"
-                      value={formData.telegramLink}
-                      onChange={(e) => setFormData({ ...formData, telegramLink: e.target.value })}
-                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                      placeholder="https://t.me/your_group"
-                    />
+                    <label className="block text-sm font-medium mb-1.5">Telegram Group Links</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        value={telegramLinkInput}
+                        onChange={(e) => setTelegramLinkInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            if (telegramLinkInput.trim() && !formData.telegramLinks.includes(telegramLinkInput.trim())) {
+                              setFormData({ ...formData, telegramLinks: [...formData.telegramLinks, telegramLinkInput.trim()] })
+                              setTelegramLinkInput("")
+                            }
+                          }
+                        }}
+                        className="flex-1 px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                        placeholder="https://t.me/your_group"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (telegramLinkInput.trim() && !formData.telegramLinks.includes(telegramLinkInput.trim())) {
+                            setFormData({ ...formData, telegramLinks: [...formData.telegramLinks, telegramLinkInput.trim()] })
+                            setTelegramLinkInput("")
+                          }
+                        }}
+                        disabled={!telegramLinkInput.trim()}
+                        className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {formData.telegramLinks.length > 0 && (
+                      <div className="mt-2 space-y-2">
+                        {formData.telegramLinks.map((link, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center justify-between p-2 bg-muted/30 border border-border rounded-lg"
+                          >
+                            <a 
+                              href={link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:underline truncate flex-1"
+                            >
+                              {link}
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData({ 
+                                  ...formData, 
+                                  telegramLinks: formData.telegramLinks.filter((_, i) => i !== index) 
+                                })
+                              }}
+                              className="ml-2 p-1.5 text-red-600 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground mt-1">
-                      Students will see this link to join the course Telegram community
+                      {formData.telegramLinks.length} Telegram link{formData.telegramLinks.length !== 1 ? 's' : ''} added. Students will see all links after form submission.
                     </p>
                   </div>
 

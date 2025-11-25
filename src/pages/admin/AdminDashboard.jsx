@@ -22,6 +22,7 @@ import {
   Bell,
   Ban,
   AlertTriangle,
+  MessageSquare,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -47,6 +48,7 @@ import ManageTelegramSubmissions from "./ManageTelegramSubmissions"
 import Notifications from "./Notifications"
 import BannedNotifications from "./BannedNotifications"
 import BanManagement from "./BanManagement"
+import ClassComments from "./ClassComments"
 
 export default function AdminDashboard() {
   const location = useLocation()
@@ -92,6 +94,7 @@ export default function AdminDashboard() {
     { name: "Subjects", path: "/admin/subjects", icon: BookMarked },
     { name: "Chapters", path: "/admin/chapters", icon: BookMarked },
     { name: "Classes", path: "/admin/classes", icon: Video },
+    { name: "Class Comments", path: "/admin/class-comments", icon: MessageSquare },
     { name: "Exams", path: "/admin/exams", icon: FileQuestion },
     { name: "Exam Results", path: "/admin/exam-results", icon: BarChart3 },
     { name: "CQ Submissions", path: "/admin/exam-submissions", icon: FileQuestion },
@@ -181,6 +184,7 @@ export default function AdminDashboard() {
               <Route path="users" element={<ManageUsers />} />
               <Route path="courses" element={<ManageCourses />} />
               <Route path="classes" element={<ManageClasses />} />
+              <Route path="class-comments" element={<ClassComments />} />
               <Route path="exams" element={<ManageExams />} />
               <Route path="exams/:examId/questions" element={<ManageExamQuestions />} />
               <Route path="exam-results" element={<ViewExamResults />} />
