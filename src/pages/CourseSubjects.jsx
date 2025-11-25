@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
-import { motion } from "framer-motion"
-import { BookOpen, ArrowLeft, Lock, Archive, FileQuestion, Send, CheckCircle2 } from "lucide-react"
+import { motion, AnimatePresence } from "framer-motion"
+import { BookOpen, ArrowLeft, Lock, Archive, FileQuestion, Send, CheckCircle2, X, ArrowRight } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -29,6 +29,8 @@ export default function CourseSubjects() {
   const [telegramMobile, setTelegramMobile] = useState("")
   const [telegramSubmitted, setTelegramSubmitted] = useState(false)
   const [submittingTelegram, setSubmittingTelegram] = useState(false)
+  const [showTelegramModal, setShowTelegramModal] = useState(false)
+  const [telegramStep, setTelegramStep] = useState(1)
 
   useEffect(() => {
     fetchCourseData()
@@ -78,18 +80,30 @@ export default function CourseSubjects() {
       setTelegramId("")
       setTelegramMobile("")
       showGlobalToast({
-        title: "Success!",
-        description: "Telegram information submitted successfully!",
+        title: "সফল!",
+        description: "টেলিগ্রাম তথ্য সফলভাবে জমা হয়েছে!",
       })
     } catch (error) {
       console.error("Error submitting telegram info:", error)
       showGlobalToast({
         variant: "destructive",
-        title: "Error",
-        description: "Failed to submit. Please try again.",
+        title: "ত্রুটি",
+        description: "জমা দিতে ব্যর্থ। আবার চেষ্টা করুন।",
       })
     } finally {
       setSubmittingTelegram(false)
+    }
+  }
+
+  const handleNextStep = () => {
+    if (telegramStep === 1 && telegramId.trim()) {
+      setTelegramStep(2)
+    }
+  }
+
+  const handlePrevStep = () => {
+    if (telegramStep === 2) {
+      setTelegramStep(1)
     }
   }
 
@@ -264,6 +278,18 @@ export default function CourseSubjects() {
           <h1 className="text-3xl font-bold mb-2">{course?.title}</h1>
           <p className="text-muted-foreground">Select a subject to view chapters</p>
         </div>
+
+        {course?.telegramLink && currentUser && hasAccess && (
+          <div className="mb-6">
+            <button
+              onClick={() => setShowTelegramModal(true)}
+              className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-500 dark:to-cyan-500 text-white rounded-lg hover:shadow-lg transition-all duration-300 flex items-center justify-center gap-2 font-medium"
+            >
+              <Send className="w-5 h-5" />
+              টেলিগ্রাম গ্রুপে যুক্ত হন
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {exams.length > 0 && (
@@ -506,6 +532,165 @@ export default function CourseSubjects() {
           </div>
         )}
       </div>
+
+      {/* Telegram Submission Modal */}
+      <AnimatePresence>
+        {showTelegramModal && currentUser && hasAccess && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-card border border-border rounded-2xl p-6 w-full max-w-lg shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-xl font-bold mb-1 bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-400 dark:to-cyan-400 bg-clip-text text-transparent">
+                    টেলিগ্রাম গ্রুপে যুক্ত হন
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    ধাপ {telegramStep} / 2
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowTelegramModal(false)
+                    setTelegramStep(1)
+                  }}
+                  className="p-1 hover:bg-muted rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {!telegramSubmitted ? (
+                <form onSubmit={handleTelegramSubmit} className="space-y-4">
+                  {telegramStep === 1 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 20 }}
+                      className="space-y-4"
+                    >
+                      <div>
+                        <label className="block text-sm font-medium mb-2">
+                          তোমার টেলিগ্রাম আইডির নাম লিখো *
+                        </label>
+                        <input
+                          type="text"
+                          value={telegramId}
+                          onChange={(e) => setTelegramId(e.target.value)}
+                          placeholder="উদাহরণ: Shakib"
+                          required
+                          className="w-full px-4 py-3 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          যেই আইডি থেকে রিকুয়েস্ট পাঠানো হয়েছে সেই আইডির নাম লিখো
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleNextStep}
+                        disabled={!telegramId.trim()}
+                        className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-muted disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                      >
+                        পরবর্তী
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </motion.div>
+                  )}
+
+                  {telegramStep === 2 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      className="space-y-4"
+                    >
+                      <div>
+                        <label className="block text-sm font-medium mb-2">
+                          মোবাইল নম্বর *
+                        </label>
+                        <input
+                          type="tel"
+                          value={telegramMobile}
+                          onChange={(e) => setTelegramMobile(e.target.value)}
+                          placeholder="01912345678"
+                          required
+                          className="w-full px-4 py-3 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+
+                      <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                        <p className="text-xs text-blue-700 dark:text-blue-300">
+                          টেলিগ্রাম গ্রুপে জয়েন রিকুয়েস্ট দেওয়ার আগে এই ফর্মটা সাবমিট করে তারপর রিকুয়েস্ট দিবে। ফর্মটা একবারের বেশি সাবমিট করা যাবেনা তাই সঠিক ইনফর্মেশন দিয়ে সাবমিট করবে।
+                        </p>
+                      </div>
+
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={handlePrevStep}
+                          className="flex-1 py-3 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
+                        >
+                          পূর্ববর্তী
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={submittingTelegram || !telegramMobile.trim()}
+                          className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                        >
+                          {submittingTelegram ? (
+                            <>
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>জমা হচ্ছে...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4" />
+                              <span>জমা দিন</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </form>
+              ) : (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="space-y-4"
+                >
+                  <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg p-4 flex items-start gap-3">
+                    <CheckCircle2 className="w-6 h-6 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-green-700 dark:text-green-300 mb-1">
+                        সফলভাবে জমা হয়েছে!
+                      </p>
+                      <p className="text-sm text-green-600/80 dark:text-green-400/80">
+                        এখন নিচের বাটনে ক্লিক করে টেলিগ্রাম গ্রুপে জয়েন রিকুয়েস্ট পাঠাও
+                      </p>
+                    </div>
+                  </div>
+
+                  <a
+                    href={course?.telegramLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-3 bg-gradient-to-r from-blue-600 to-cyan-600 dark:from-blue-500 dark:to-cyan-500 text-white rounded-lg hover:shadow-lg transition-all duration-300 flex items-center justify-center gap-2 font-medium"
+                  >
+                    <Send className="w-5 h-5" />
+                    <span>টেলিগ্রাম গ্রুপে যান</span>
+                  </a>
+                </motion.div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

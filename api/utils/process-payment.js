@@ -147,6 +147,7 @@ export async function processPaymentAndEnrollUser(paymentData) {
       userId,
       userName,
       userEmail,
+      mobileNumber: mobileNumber || '',
       transactionId,
       invoiceId: paymentData.invoiceId || transactionId,
       trxId: trxId || transactionId,

@@ -3,7 +3,7 @@ import { toast } from "../../hooks/use-toast"
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { CreditCard, Check, X, Clock, Download, Trash2 } from "lucide-react"
+import { CreditCard, Check, X, Clock, Download, Trash2, Search } from "lucide-react"
 import { collection, getDocs, updateDoc, doc, setDoc, serverTimestamp, query, orderBy, deleteDoc, where, addDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { sendPaymentConfirmationEmail } from "../../lib/email"
@@ -15,6 +15,7 @@ export default function ManagePayments() {
   const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState("all")
+  const [searchQuery, setSearchQuery] = useState("")
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
 
   useEffect(() => {
@@ -86,6 +87,7 @@ export default function ManagePayments() {
                 userId: payment.userId,
                 userName: payment.userName,
                 userEmail: payment.userEmail,
+                mobileNumber: payment.mobileNumber || '',
                 amount: payment.finalAmount,
                 transactionId: payment.transactionId,
                 approvedBy: userProfile?.name || userProfile?.email || "Admin",
@@ -151,6 +153,7 @@ export default function ManagePayments() {
                 userId: paymentDoc.userId,
                 userName: paymentDoc.userName,
                 userEmail: paymentDoc.userEmail,
+                mobileNumber: paymentDoc.mobileNumber || '',
                 amount: paymentDoc.finalAmount,
                 transactionId: paymentDoc.transactionId,
                 rejectedBy: userProfile?.name || userProfile?.email || "Admin",
@@ -221,11 +224,11 @@ export default function ManagePayments() {
       return
     }
 
-    const headers = ["Name", "Email", "Sender Number", "Transaction ID", "Amount", "Courses", "Approved At"]
+    const headers = ["Name", "Email", "Phone Number", "Transaction ID", "Amount", "Courses", "Approved At"]
     const rows = approvedPayments.map(payment => [
       payment.userName,
       payment.userEmail,
-      payment.senderNumber,
+      payment.mobileNumber || '',
       payment.transactionId,
       payment.finalAmount,
       payment.courses?.map(c => c.title).join("; ") || "",
@@ -255,8 +258,21 @@ export default function ManagePayments() {
   }
 
   const filteredPayments = payments.filter((payment) => {
-    if (filter === "all") return true
-    return payment.status === filter
+    const matchesFilter = filter === "all" || payment.status === filter
+    
+    if (!searchQuery.trim()) return matchesFilter
+    
+    const query = searchQuery.toLowerCase()
+    const matchesSearch = 
+      (payment.userName || "").toLowerCase().includes(query) ||
+      (payment.userEmail || "").toLowerCase().includes(query) ||
+      (payment.mobileNumber || "").toLowerCase().includes(query) ||
+      (payment.transactionId || "").toLowerCase().includes(query) ||
+      payment.courses?.some(course => 
+        (course.title || "").toLowerCase().includes(query)
+      )
+    
+    return matchesFilter && matchesSearch
   })
 
   const getStatusBadge = (status) => {
@@ -321,6 +337,24 @@ export default function ManagePayments() {
         </div>
       </div>
 
+      <div className="mb-4 sm:mb-6">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <input
+            type="text"
+            placeholder="কোর্সের নাম, ইউজারের নাম, ফোন নম্বর, ট্রানজেকশন আইডি দিয়ে সার্চ করুন..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 sm:py-3 bg-card border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent text-sm sm:text-base"
+          />
+        </div>
+        {searchQuery && (
+          <p className="mt-2 text-xs sm:text-sm text-muted-foreground">
+            {filteredPayments.length} টি রেজাল্ট পাওয়া গেছে
+          </p>
+        )}
+      </div>
+
       <div className="space-y-4">
         {filteredPayments.map((payment) => (
           <motion.div
@@ -340,8 +374,8 @@ export default function ManagePayments() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                 <div>
-                  <p className="text-xs sm:text-sm text-muted-foreground mb-1">Sender Number</p>
-                  <p className="font-medium text-sm sm:text-base break-all">{payment.senderNumber}</p>
+                  <p className="text-xs sm:text-sm text-muted-foreground mb-1">Phone Number</p>
+                  <p className="font-medium text-sm sm:text-base break-all">{payment.mobileNumber || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-xs sm:text-sm text-muted-foreground mb-1">Transaction ID</p>
