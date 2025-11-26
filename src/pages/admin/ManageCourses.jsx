@@ -390,7 +390,7 @@ export default function ManageCourses() {
 
             <form onSubmit={handleSubmit} className="p-4">
               {/* Two Column Layout on Desktop */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_1px_1fr] gap-6">
                 {/* Left Column */}
                 <div className="space-y-4">
                   <div>
