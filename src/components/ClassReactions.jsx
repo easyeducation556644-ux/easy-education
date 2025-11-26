@@ -1,13 +1,12 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { ThumbsUp, Heart, Laugh, Sparkles, Angry } from "lucide-react"
 import { collection, query, where, deleteDoc, doc, serverTimestamp, onSnapshot, setDoc, getDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 
 const REACTIONS = [
   { 
     type: "like", 
-    icon: ThumbsUp, 
+    emoji: "👍", 
     label: "Like", 
     color: "#1778F2",
     bgColor: "rgba(23, 120, 242, 0.15)",
@@ -15,7 +14,7 @@ const REACTIONS = [
   },
   { 
     type: "love", 
-    icon: Heart, 
+    emoji: "❤️", 
     label: "Love", 
     color: "#F0284A",
     bgColor: "rgba(240, 40, 74, 0.15)",
@@ -23,7 +22,7 @@ const REACTIONS = [
   },
   { 
     type: "haha", 
-    icon: Laugh, 
+    emoji: "😂", 
     label: "Haha", 
     color: "#F7B125",
     bgColor: "rgba(247, 177, 37, 0.15)",
@@ -31,7 +30,7 @@ const REACTIONS = [
   },
   { 
     type: "wow", 
-    icon: Sparkles, 
+    emoji: "😮", 
     label: "Wow", 
     color: "#FAD664",
     bgColor: "rgba(250, 214, 100, 0.15)",
@@ -39,7 +38,7 @@ const REACTIONS = [
   },
   { 
     type: "angry", 
-    icon: Angry, 
+    emoji: "😡", 
     label: "Angry", 
     color: "#E9710F",
     bgColor: "rgba(233, 113, 15, 0.15)",
@@ -146,7 +145,6 @@ export default function ClassReactions({ classId, currentUser }) {
         {REACTIONS.map((reaction) => {
           const count = reactionCounts[reaction.type] || 0
           const isActive = userReaction === reaction.type
-          const Icon = reaction.icon
           
           return (
             <motion.button
@@ -165,12 +163,9 @@ export default function ClassReactions({ classId, currentUser }) {
               }`}
               title={reaction.label}
             >
-              <Icon 
-                className="w-6 h-6 sm:w-7 sm:h-7" 
-                strokeWidth={2.5}
-                style={{ color: isActive ? reaction.color : undefined }}
-                color={isActive ? reaction.color : "currentColor"}
-              />
+              <span className="text-3xl sm:text-4xl leading-none">
+                {reaction.emoji}
+              </span>
               <span 
                 className="text-xs font-bold"
                 style={{ color: isActive ? reaction.color : undefined }}
