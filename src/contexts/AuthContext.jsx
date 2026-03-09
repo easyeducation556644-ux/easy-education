@@ -12,6 +12,7 @@ import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
 import { usePresence } from "../hooks/usePresence"
+import { toast } from "../hooks/use-toast"
 
 const AuthContext = createContext({})
 
@@ -185,11 +186,13 @@ export function AuthProvider({ children }) {
       }
 
       if (!existingDevice) {
+        toast({ title: "DEBUG 3", description: `New device - replacing ${devices.length} old device(s) with this one` })
         await updateDoc(userRef, {
           devices: [deviceInfo]
         })
+        toast({ title: "DEBUG 4", description: "Device array updated in Firestore" })
       } else {
-        // Existing device - update last seen
+        toast({ title: "DEBUG 3", description: "Same device - updating last seen" })
         const updatedDevices = devices.map(d =>
           d.fingerprint === deviceInfo.fingerprint
             ? { ...d, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress }
@@ -201,6 +204,7 @@ export function AuthProvider({ children }) {
       return deviceInfo
     } catch (error) {
       console.error("Device check error:", error)
+      toast({ title: "DEBUG ERROR", description: `Device check error: ${error.message}` })
       throw error
     }
   }
@@ -281,7 +285,9 @@ export function AuthProvider({ children }) {
   const signIn = async (email, password) => {
     try {
       setLoginFlowComplete(false)
+      toast({ title: "DEBUG 1", description: "Login started - loginFlowComplete=false" })
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
+      toast({ title: "DEBUG 1.1", description: "Firebase auth success" })
       const userRef = doc(db, "users", userCredential.user.uid)
 
       const loginTimestamp = Date.now()
@@ -290,6 +296,7 @@ export function AuthProvider({ children }) {
       localStorage.setItem('lastAckedLogoutAt', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
+      toast({ title: "DEBUG 1.2", description: `Got device fingerprint: ${deviceInfo?.fingerprint?.substring(0, 8)}...` })
 
       if (deviceInfo && deviceInfo.fingerprint) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
@@ -327,11 +334,13 @@ export function AuthProvider({ children }) {
         } else {
           const userData = userDoc.data()
 
+          toast({ title: "DEBUG 2", description: `User exists, devices in DB: ${(userData.devices || []).length}` })
           await checkAndHandleDeviceLogin(
             userCredential.user.uid,
             userCredential.user.email,
             userData.name || "User"
           )
+          toast({ title: "DEBUG 5", description: "checkAndHandleDeviceLogin done" })
 
           const updateData = {
             online: true,
@@ -346,9 +355,11 @@ export function AuthProvider({ children }) {
         }
       } catch (firestoreError) {
         console.error("Firestore error during sign in:", firestoreError)
+        toast({ title: "DEBUG ERROR", description: `Firestore error: ${firestoreError.message}` })
       }
 
       const profile = await fetchUserProfile(userCredential.user.uid)
+      toast({ title: "DEBUG 6", description: "Profile fetched" })
 
       if (profile.forceLogoutAt) {
         try {
@@ -359,7 +370,6 @@ export function AuthProvider({ children }) {
           const CLEANUP_THRESHOLD = 2 * 60 * 1000
 
           if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
-            console.log('🧹 Cleaning up old forceLogoutAt on successful sign-in')
             await updateDoc(doc(db, "users", userCredential.user.uid), {
               forceLogoutAt: deleteField(),
               forceLogoutReason: deleteField(),
@@ -372,6 +382,7 @@ export function AuthProvider({ children }) {
       }
 
       setLoginFlowComplete(true)
+      toast({ title: "DEBUG 7", description: "Login flow COMPLETE - loginFlowComplete=true" })
       return { userCredential, profile }
     } catch (error) {
       console.error("Sign in error:", error)
@@ -383,7 +394,9 @@ export function AuthProvider({ children }) {
   const signInWithGoogle = async () => {
     try {
       setLoginFlowComplete(false)
+      toast({ title: "DEBUG G1", description: "Google login started - loginFlowComplete=false" })
       const userCredential = await signInWithPopup(auth, googleProvider)
+      toast({ title: "DEBUG G1.1", description: "Google auth success" })
       const user = userCredential.user
       const userRef = doc(db, "users", user.uid)
 
@@ -393,6 +406,7 @@ export function AuthProvider({ children }) {
       localStorage.setItem('lastAckedLogoutAt', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
+      toast({ title: "DEBUG G1.2", description: `Got device fingerprint: ${deviceInfo?.fingerprint?.substring(0, 8)}...` })
 
       if (deviceInfo && deviceInfo.fingerprint) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
@@ -431,11 +445,13 @@ export function AuthProvider({ children }) {
         } else {
           const userData = userDoc.data()
 
+          toast({ title: "DEBUG G2", description: `User exists, devices in DB: ${(userData.devices || []).length}` })
           await checkAndHandleDeviceLogin(
             user.uid,
             user.email,
             userData.name || user.displayName || "User"
           )
+          toast({ title: "DEBUG G5", description: "checkAndHandleDeviceLogin done" })
 
           const updateData = {
             online: true,
@@ -450,9 +466,11 @@ export function AuthProvider({ children }) {
         }
       } catch (firestoreError) {
         console.error("Firestore error during Google sign in:", firestoreError)
+        toast({ title: "DEBUG G ERROR", description: `Firestore error: ${firestoreError.message}` })
       }
 
       const profile = await fetchUserProfile(user.uid)
+      toast({ title: "DEBUG G6", description: "Profile fetched" })
 
       if (profile.forceLogoutAt) {
         try {
@@ -463,7 +481,6 @@ export function AuthProvider({ children }) {
           const CLEANUP_THRESHOLD = 2 * 60 * 1000
 
           if (timeSinceForceLogout > CLEANUP_THRESHOLD) {
-            console.log('🧹 Cleaning up old forceLogoutAt on successful Google sign-in')
             await updateDoc(doc(db, "users", user.uid), {
               forceLogoutAt: deleteField(),
               forceLogoutReason: deleteField(),
@@ -476,6 +493,7 @@ export function AuthProvider({ children }) {
       }
 
       setLoginFlowComplete(true)
+      toast({ title: "DEBUG G7", description: "Google login flow COMPLETE - loginFlowComplete=true" })
       return { userCredential, profile }
     } catch (error) {
       console.error("Google sign in error:", error)
@@ -611,7 +629,6 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // **CRITICAL: onSnapshot Listener to handle real-time updates and logouts**
   useEffect(() => {
     if (!currentUser) {
       setBanInfo(null)
@@ -784,7 +801,7 @@ export function AuthProvider({ children }) {
             const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
 
             if (timeSinceForceLogout < 300000 && forceLogoutTimestamp > lastAckedTimestamp) {
-              console.log('⚠️ Force logout triggered by admin')
+              toast({ title: "SNAPSHOT FORCE-LOGOUT", description: `Admin force logout! timeSince=${Math.round(timeSinceForceLogout/1000)}s` })
               localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
               localStorage.removeItem('currentDeviceFingerprint')
               localStorage.removeItem('lastLoginTimestamp')
@@ -794,25 +811,30 @@ export function AuthProvider({ children }) {
             }
           }
 
-          if (loginFlowComplete) {
-            const devices = updatedProfile.devices || []
-            const deviceFingerprint = storedFingerprint
-            const savedDeviceID = localStorage.getItem('deviceID')
+          const devices = updatedProfile.devices || []
+          const deviceFingerprint = storedFingerprint
+          const savedDeviceID = localStorage.getItem('deviceID')
+          toast({ title: "SNAPSHOT", description: `loginFlowComplete=${loginFlowComplete}, devices=${devices.length}, myFP=${deviceFingerprint?.substring(0,8) || 'null'}, devicesInDB=${devices.map(d=>d.fingerprint?.substring(0,8)).join(',')}` })
 
+          if (loginFlowComplete) {
             if (deviceFingerprint && devices.length > 0) {
               const deviceExists = devices.some(d => d.fingerprint === deviceFingerprint)
               const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
 
               if (!deviceExists && !deviceExistsByID) {
-                console.log('⚠️ This device is no longer in the allowed list - logging out')
+                toast({ title: "SNAPSHOT LOGOUT", description: "Device NOT in list - logging out!" })
                 localStorage.removeItem('currentDeviceFingerprint')
                 localStorage.removeItem('deviceID')
                 localStorage.removeItem('lastLoginTimestamp')
                 await firebaseSignOut(auth)
                 window.location.reload()
                 return
+              } else {
+                toast({ title: "SNAPSHOT OK", description: "Device found in list - staying logged in" })
               }
             }
+          } else {
+            toast({ title: "SNAPSHOT SKIP", description: "Skipping device check - login flow not complete" })
           }
         }
       },
@@ -918,6 +940,7 @@ export function AuthProvider({ children }) {
             }
             await ensureAdminRole(user.uid, user.email)
             await fetchUserProfile(user.uid)
+            toast({ title: "AUTH STATE", description: `Returning user detected, setting loginFlowComplete=true, fp=${localStorage.getItem('currentDeviceFingerprint')?.substring(0,8) || 'null'}` })
             setLoginFlowComplete(true)
           } else {
             setUserProfile(null)
