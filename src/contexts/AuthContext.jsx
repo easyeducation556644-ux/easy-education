@@ -32,6 +32,7 @@ export function AuthProvider({ children }) {
   const [deviceWarning, setDeviceWarning] = useState(null)
   const [lastLoginTimestamp, setLastLoginTimestamp] = useState(null)
   const [currentDeviceFingerprint, setCurrentDeviceFingerprint] = useState(null)
+  const [loginFlowComplete, setLoginFlowComplete] = useState(false)
 
   usePresence(currentUser)
 
@@ -268,15 +269,18 @@ export function AuthProvider({ children }) {
       localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       const profile = await fetchUserProfile(user.uid)
+      setLoginFlowComplete(true)
       return { userCredential, profile }
     } catch (error) {
       console.error("Sign up error:", error)
+      setLoginFlowComplete(true)
       throw error
     }
   }
 
   const signIn = async (email, password) => {
     try {
+      setLoginFlowComplete(false)
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
 
@@ -367,15 +371,18 @@ export function AuthProvider({ children }) {
         }
       }
 
+      setLoginFlowComplete(true)
       return { userCredential, profile }
     } catch (error) {
       console.error("Sign in error:", error)
+      setLoginFlowComplete(true)
       throw error
     }
   }
 
   const signInWithGoogle = async () => {
     try {
+      setLoginFlowComplete(false)
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const userRef = doc(db, "users", user.uid)
@@ -468,9 +475,11 @@ export function AuthProvider({ children }) {
         }
       }
 
+      setLoginFlowComplete(true)
       return { userCredential, profile }
     } catch (error) {
       console.error("Google sign in error:", error)
+      setLoginFlowComplete(true)
       throw error
     }
   }
@@ -785,22 +794,24 @@ export function AuthProvider({ children }) {
             }
           }
 
-          const devices = updatedProfile.devices || []
-          const deviceFingerprint = storedFingerprint
-          const savedDeviceID = localStorage.getItem('deviceID')
+          if (loginFlowComplete) {
+            const devices = updatedProfile.devices || []
+            const deviceFingerprint = storedFingerprint
+            const savedDeviceID = localStorage.getItem('deviceID')
 
-          if (deviceFingerprint && devices.length > 0) {
-            const deviceExists = devices.some(d => d.fingerprint === deviceFingerprint)
-            const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
+            if (deviceFingerprint && devices.length > 0) {
+              const deviceExists = devices.some(d => d.fingerprint === deviceFingerprint)
+              const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
 
-            if (!deviceExists && !deviceExistsByID) {
-              console.log('⚠️ This device is no longer in the allowed list - logging out')
-              localStorage.removeItem('currentDeviceFingerprint')
-              localStorage.removeItem('deviceID')
-              localStorage.removeItem('lastLoginTimestamp')
-              await firebaseSignOut(auth)
-              window.location.reload()
-              return
+              if (!deviceExists && !deviceExistsByID) {
+                console.log('⚠️ This device is no longer in the allowed list - logging out')
+                localStorage.removeItem('currentDeviceFingerprint')
+                localStorage.removeItem('deviceID')
+                localStorage.removeItem('lastLoginTimestamp')
+                await firebaseSignOut(auth)
+                window.location.reload()
+                return
+              }
             }
           }
         }
@@ -811,7 +822,7 @@ export function AuthProvider({ children }) {
     )
 
     return () => unsubscribe()
-  }, [currentUser, currentDeviceFingerprint]) 
+  }, [currentUser, currentDeviceFingerprint, loginFlowComplete]) 
   // useEffect for deviceWarning (unchanged)
   useEffect(() => {
     const storedWarning = localStorage.getItem('deviceWarning')
@@ -907,6 +918,7 @@ export function AuthProvider({ children }) {
             }
             await ensureAdminRole(user.uid, user.email)
             await fetchUserProfile(user.uid)
+            setLoginFlowComplete(true)
           } else {
             setUserProfile(null)
             localStorage.removeItem('currentDeviceFingerprint')
