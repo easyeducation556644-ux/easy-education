@@ -189,17 +189,14 @@ export function AuthProvider({ children }) {
           console.log('📱 Old devices:', devices.length, '→ Replacing with current device')
 
           const oldDeviceFingerprints = devices.map(d => d.fingerprint).filter(Boolean)
-          const forceLogoutTimestamp = Timestamp.now()
-
-          localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
 
           await updateDoc(userRef, {
             devices: [deviceInfo],
             kickedDevices: oldDeviceFingerprints,
             online: true,
             lastActive: serverTimestamp(),
-            forceLogoutAt: forceLogoutTimestamp,
-            forceLogoutReason: 'অন্য ডিভাইস থেকে লগইন হয়েছে'
+            forceLogoutAt: deleteField(),
+            forceLogoutReason: deleteField()
           })
 
           console.log('✅ Old device(s) will be kicked out, new device is now active')
@@ -305,6 +302,7 @@ export function AuthProvider({ children }) {
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
       localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
+      localStorage.setItem('lastAckedLogoutAt', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
 
@@ -404,6 +402,7 @@ export function AuthProvider({ children }) {
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
       localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
+      localStorage.setItem('lastAckedLogoutAt', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
 
