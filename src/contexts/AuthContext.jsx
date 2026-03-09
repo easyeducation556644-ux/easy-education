@@ -169,11 +169,21 @@ export function AuthProvider({ children }) {
       const now = new Date()
       const existingDevice = devices.find(d => d.fingerprint === deviceInfo.fingerprint)
 
-      // 🚫 SECURITY: Removed sensitive device logging
+      const storedDeviceID = localStorage.getItem('deviceID')
+      const matchByDeviceID = storedDeviceID ? devices.find(d => d.id === storedDeviceID) : null
 
-      // NEW DEVICE DETECTED - This is where ban happens
+      if (!existingDevice && matchByDeviceID) {
+        console.log('✅ Same device detected by ID but fingerprint changed (likely browser update) - updating fingerprint')
+        const updatedDevices = devices.map(d =>
+          d.id === storedDeviceID
+            ? { ...d, fingerprint: deviceInfo.fingerprint, lastSeen: deviceInfo.timestamp, ipAddress: deviceInfo.ipAddress, userAgent: deviceInfo.userAgent }
+            : d
+        )
+        await updateDoc(userRef, { devices: updatedDevices })
+        return deviceInfo
+      }
+
       if (!existingDevice) {
-        // Check if this is a violation: multiple devices or repeated violations
         if (devices.length > 0) {
           console.log('🚨 Multiple device login detected - devices count:', devices.length, 'cumulative ban count:', banCount)
           
@@ -321,6 +331,10 @@ export function AuthProvider({ children }) {
 
       await setDoc(doc(db, "users", user.uid), newUserData)
 
+      const loginTimestamp = Date.now()
+      setLastLoginTimestamp(loginTimestamp)
+      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
+
       const profile = await fetchUserProfile(user.uid)
       return { userCredential, profile }
     } catch (error) {
@@ -347,6 +361,7 @@ export function AuthProvider({ children }) {
 
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
+      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       try {
         const userDoc = await getDoc(userRef)
@@ -449,6 +464,7 @@ export function AuthProvider({ children }) {
 
       const loginTimestamp = Date.now()
       setLastLoginTimestamp(loginTimestamp)
+      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       try {
         const userRef = doc(db, "users", user.uid)
@@ -597,6 +613,7 @@ export function AuthProvider({ children }) {
 
         localStorage.removeItem('currentDeviceFingerprint')
         localStorage.removeItem('deviceID')
+        localStorage.removeItem('lastLoginTimestamp')
         setCurrentDeviceFingerprint(null)
       }
       await firebaseSignOut(auth)
@@ -713,6 +730,7 @@ export function AuthProvider({ children }) {
             localStorage.removeItem('banInfo')
             localStorage.removeItem('lastAckedLogoutAt')
             localStorage.removeItem('currentDeviceFingerprint')
+            localStorage.removeItem('lastLoginTimestamp')
 
             const updatedKickedDevices = kickedDevices.filter(fp => fp !== storedFingerprint)
             await updateDoc(userRef, {
@@ -776,6 +794,7 @@ export function AuthProvider({ children }) {
             localStorage.removeItem('banInfo')
             localStorage.removeItem('currentDeviceFingerprint')
             localStorage.removeItem('deviceID')
+            localStorage.removeItem('lastLoginTimestamp')
             await firebaseSignOut(auth)
             window.location.reload()
             return
@@ -867,6 +886,7 @@ export function AuthProvider({ children }) {
               console.log(`✅ Force logout triggered: ${reason}`)
               localStorage.removeItem('deviceWarning')
               localStorage.removeItem('banInfo')
+              localStorage.removeItem('lastLoginTimestamp')
               localStorage.setItem('lastAckedLogoutAt', forceLogoutTimestamp.toString())
               await firebaseSignOut(auth)
               window.location.reload()
@@ -886,16 +906,20 @@ export function AuthProvider({ children }) {
             const deviceFingerprint = storedFingerprint
             const deviceExists = deviceFingerprint ? devices.some(d => d.fingerprint === deviceFingerprint) : false
 
+            const savedDeviceID = localStorage.getItem('deviceID')
+            const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
+
             const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
             const isRecentLogin = timeSinceLogin < 300000 // 5 minutes grace period (extended to prevent false positives during video seeking/interaction)
 
-            if (!deviceExists && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
+            if (!deviceExists && !deviceExistsByID && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
               console.log('⚠️ Device removed from allowed devices - logging out')
               console.log('Device fingerprint:', deviceFingerprint)
               console.log('Devices in profile:', devices.length)
               localStorage.removeItem('deviceWarning')
               localStorage.removeItem('banInfo')
               localStorage.removeItem('lastAckedLogoutAt')
+              localStorage.removeItem('lastLoginTimestamp')
               await firebaseSignOut(auth)
               window.location.reload()
               return
@@ -984,24 +1008,33 @@ export function AuthProvider({ children }) {
           clearTimeout(loadingTimeout)
           setCurrentUser(user)
           if (user) {
-            try {
-              const deviceInfo = await getDeviceInfo()
-              if (deviceInfo && deviceInfo.fingerprint) {
-                const storedFingerprint = localStorage.getItem('currentDeviceFingerprint')
-                if (storedFingerprint !== deviceInfo.fingerprint || !currentDeviceFingerprint) {
+            const existingFingerprint = localStorage.getItem('currentDeviceFingerprint')
+            if (existingFingerprint) {
+              if (!currentDeviceFingerprint) {
+                setCurrentDeviceFingerprint(existingFingerprint)
+              }
+            } else {
+              try {
+                const deviceInfo = await getDeviceInfo()
+                if (deviceInfo && deviceInfo.fingerprint) {
                   setCurrentDeviceFingerprint(deviceInfo.fingerprint)
                   localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
-                  console.log('✅ Device fingerprint captured/updated on auth state change')
                 }
+              } catch (e) {
+                console.warn('Could not capture device fingerprint on auth state change:', e)
               }
-            } catch (e) {
-              console.warn('Could not capture device fingerprint on auth state change:', e)
+            }
+
+            const savedLoginTimestamp = localStorage.getItem('lastLoginTimestamp')
+            if (savedLoginTimestamp && !lastLoginTimestamp) {
+              setLastLoginTimestamp(parseInt(savedLoginTimestamp))
             }
             await ensureAdminRole(user.uid, user.email)
             await fetchUserProfile(user.uid)
           } else {
             setUserProfile(null)
             localStorage.removeItem('currentDeviceFingerprint')
+            localStorage.removeItem('lastLoginTimestamp')
             setCurrentDeviceFingerprint(null)
           }
           setLoading(false)
