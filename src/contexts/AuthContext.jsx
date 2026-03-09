@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from "react"
+import { createContext, useContext, useState, useEffect, useRef } from "react"
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -34,6 +34,7 @@ export function AuthProvider({ children }) {
   const [lastLoginTimestamp, setLastLoginTimestamp] = useState(null)
   const [currentDeviceFingerprint, setCurrentDeviceFingerprint] = useState(null)
   const [loginFlowComplete, setLoginFlowComplete] = useState(false)
+  const loginFlowInProgressRef = useRef(false)
 
   usePresence(currentUser)
 
@@ -232,6 +233,8 @@ export function AuthProvider({ children }) {
 
   const signUp = async (email, password, userData) => {
     try {
+      loginFlowInProgressRef.current = true
+      setLoginFlowComplete(false)
       const userCredential = await createUserWithEmailAndPassword(auth, email, password)
       const user = userCredential.user
 
@@ -273,10 +276,12 @@ export function AuthProvider({ children }) {
       localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       const profile = await fetchUserProfile(user.uid)
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
       return { userCredential, profile }
     } catch (error) {
       console.error("Sign up error:", error)
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
       throw error
     }
@@ -284,8 +289,9 @@ export function AuthProvider({ children }) {
 
   const signIn = async (email, password) => {
     try {
+      loginFlowInProgressRef.current = true
       setLoginFlowComplete(false)
-      toast({ title: "DEBUG 1", description: "Login started - loginFlowComplete=false" })
+      toast({ title: "DEBUG 1", description: "Login started - ref=true, loginFlowComplete=false" })
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       toast({ title: "DEBUG 1.1", description: "Firebase auth success" })
       const userRef = doc(db, "users", userCredential.user.uid)
@@ -381,11 +387,13 @@ export function AuthProvider({ children }) {
         }
       }
 
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
-      toast({ title: "DEBUG 7", description: "Login flow COMPLETE - loginFlowComplete=true" })
+      toast({ title: "DEBUG 7", description: "Login flow COMPLETE - ref=false, loginFlowComplete=true" })
       return { userCredential, profile }
     } catch (error) {
       console.error("Sign in error:", error)
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
       throw error
     }
@@ -393,8 +401,9 @@ export function AuthProvider({ children }) {
 
   const signInWithGoogle = async () => {
     try {
+      loginFlowInProgressRef.current = true
       setLoginFlowComplete(false)
-      toast({ title: "DEBUG G1", description: "Google login started - loginFlowComplete=false" })
+      toast({ title: "DEBUG G1", description: "Google login started - ref=true" })
       const userCredential = await signInWithPopup(auth, googleProvider)
       toast({ title: "DEBUG G1.1", description: "Google auth success" })
       const user = userCredential.user
@@ -492,11 +501,13 @@ export function AuthProvider({ children }) {
         }
       }
 
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
-      toast({ title: "DEBUG G7", description: "Google login flow COMPLETE - loginFlowComplete=true" })
+      toast({ title: "DEBUG G7", description: "Google login COMPLETE - ref=false" })
       return { userCredential, profile }
     } catch (error) {
       console.error("Google sign in error:", error)
+      loginFlowInProgressRef.current = false
       setLoginFlowComplete(true)
       throw error
     }
@@ -814,9 +825,10 @@ export function AuthProvider({ children }) {
           const devices = updatedProfile.devices || []
           const deviceFingerprint = storedFingerprint
           const savedDeviceID = localStorage.getItem('deviceID')
-          toast({ title: "SNAPSHOT", description: `loginFlowComplete=${loginFlowComplete}, devices=${devices.length}, myFP=${deviceFingerprint?.substring(0,8) || 'null'}, devicesInDB=${devices.map(d=>d.fingerprint?.substring(0,8)).join(',')}` })
+          const isLoginInProgress = loginFlowInProgressRef.current
+          toast({ title: "SNAPSHOT", description: `refInProgress=${isLoginInProgress}, loginFlowComplete=${loginFlowComplete}, devices=${devices.length}, myFP=${deviceFingerprint?.substring(0,8) || 'null'}` })
 
-          if (loginFlowComplete) {
+          if (!isLoginInProgress && loginFlowComplete) {
             if (deviceFingerprint && devices.length > 0) {
               const deviceExists = devices.some(d => d.fingerprint === deviceFingerprint)
               const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
@@ -834,7 +846,7 @@ export function AuthProvider({ children }) {
               }
             }
           } else {
-            toast({ title: "SNAPSHOT SKIP", description: "Skipping device check - login flow not complete" })
+            toast({ title: "SNAPSHOT SKIP", description: `Skipping device check - refInProgress=${isLoginInProgress}, loginFlowComplete=${loginFlowComplete}` })
           }
         }
       },
@@ -940,8 +952,12 @@ export function AuthProvider({ children }) {
             }
             await ensureAdminRole(user.uid, user.email)
             await fetchUserProfile(user.uid)
-            toast({ title: "AUTH STATE", description: `Returning user detected, setting loginFlowComplete=true, fp=${localStorage.getItem('currentDeviceFingerprint')?.substring(0,8) || 'null'}` })
-            setLoginFlowComplete(true)
+            if (loginFlowInProgressRef.current) {
+              toast({ title: "AUTH STATE", description: `Login flow in progress (ref=true) - NOT setting loginFlowComplete yet` })
+            } else {
+              toast({ title: "AUTH STATE", description: `Returning user, setting loginFlowComplete=true, fp=${localStorage.getItem('currentDeviceFingerprint')?.substring(0,8) || 'null'}` })
+              setLoginFlowComplete(true)
+            }
           } else {
             setUserProfile(null)
             localStorage.removeItem('currentDeviceFingerprint')
