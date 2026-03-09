@@ -185,72 +185,26 @@ export function AuthProvider({ children }) {
 
       if (!existingDevice) {
         if (devices.length > 0) {
-          console.log('🚨 Multiple device login detected - devices count:', devices.length, 'cumulative ban count:', banCount)
-          
-          const newBanCount = banCount + 1
-          const banExpires = new Date(now.getTime() + 30 * 60 * 1000)
-          const isPermanentBan = newBanCount >= 3
+          console.log('🔄 New device login detected - replacing old device(s) with new device')
+          console.log('📱 Old devices:', devices.length, '→ Replacing with current device')
 
-          const banRecord = {
-            timestamp: now.toISOString(),
-            reason: isPermanentBan 
-              ? `স্থায়ী নিষেধাজ্ঞা - ${newBanCount} বার নীতি লঙ্ঘনের কারণে`
-              : `একাধিক ডিভাইস থেকে একই সময়ে লগইন সনাক্ত করা হয়েছে। মোট ডিভাইস: ${devices.length + 1}টি`,
-            deviceCount: devices.length + 1,
-            bannedUntil: isPermanentBan ? null : banExpires.toISOString(),
-            banCount: newBanCount
-          }
+          const oldDeviceFingerprints = devices.map(d => d.fingerprint).filter(Boolean)
+          const forceLogoutTimestamp = Timestamp.now()
 
-          const updateData = {
-            devices: [...devices, deviceInfo],
-            banCount: newBanCount,
-            banHistory: [...banHistory, banRecord],
-            banned: true,
+          localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
+
+          await updateDoc(userRef, {
+            devices: [deviceInfo],
+            kickedDevices: oldDeviceFingerprints,
             online: true,
-            lastActive: serverTimestamp()
-          }
-
-          if (isPermanentBan) {
-            const currentPermanentBanCount = (userData.permanentBanCount || 0) + 1
-            updateData.permanentBan = true
-            updateData.autoPermanentBan = true
-            updateData.permanentBanCount = currentPermanentBanCount
-            updateData.banExpiresAt = null
-            console.log(`🔒 PERMANENT BAN triggered - Ban count: ${newBanCount}, Permanent ban #${currentPermanentBanCount}`)
-          } else {
-            updateData.banExpiresAt = banExpires
-            console.log(`⏱️ TEMPORARY BAN triggered - Ban count: ${newBanCount}, Expires in 30 minutes`)
-          }
-
-          await updateDoc(userRef, updateData)
-
-          await addDoc(collection(db, "banNotifications"), {
-            userId,
-            userEmail,
-            userName,
-            type: isPermanentBan ? 'permanent' : 'temporary',
-            reason: banRecord.reason,
-            deviceCount: devices.length + 1,
-            banCount: newBanCount,
-            bannedUntil: isPermanentBan ? null : banExpires.toISOString(),
-            createdAt: serverTimestamp(),
-            isRead: false
+            lastActive: serverTimestamp(),
+            forceLogoutAt: forceLogoutTimestamp,
+            forceLogoutReason: 'অন্য ডিভাইস থেকে লগইন হয়েছে'
           })
 
-          const banData = {
-            isBanned: true,
-            type: isPermanentBan ? 'permanent' : 'temporary',
-            reason: banRecord.reason,
-            bannedUntil: isPermanentBan ? null : banExpires,
-            banCount: newBanCount
-          }
-          localStorage.setItem('banInfo', JSON.stringify(banData))
-          setBanInfo(banData)
-
-          console.log('✅ Ban set successfully - User will stay logged in to see ban overlay')
+          console.log('✅ Old device(s) will be kicked out, new device is now active')
           return deviceInfo
         } else {
-          // First device - just add it
           await updateDoc(userRef, {
             devices: [deviceInfo]
           })

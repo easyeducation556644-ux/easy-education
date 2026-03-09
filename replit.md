@@ -31,7 +31,7 @@ Preferred communication style: Simple, everyday language.
 
 **Authentication Provider:** Firebase Authentication with Google OAuth.
 **Authorization Model:** Role-based access control (RBAC) using `isAdmin` and `role` fields, enforced by Firebase Security Rules.
-**Ban System:** Device-based ban system with automatic temporary bans for new device logins, escalating to permanent bans. Features a full-screen ban overlay, auto-logout, device cleanup, and an admin panel for management (manual ban/unban, device kicking, ban countdowns, audit trails). Includes advanced device fingerprinting and IP address tracking for multi-device login detection, and pre-login ban checks.
+**Device Management:** Single-device-at-a-time policy. When a user logs in from a new device, the old device is automatically kicked out (via `kickedDevices` fingerprint array and `forceLogoutAt` timestamp) and the new device becomes active — no automatic bans. Manual admin bans (temporary/permanent) are still available via the admin panel. Features a full-screen ban overlay, device cleanup, and admin panel for management (manual ban/unban, device kicking, audit trails). Includes advanced device fingerprinting with persistent `deviceID` fallback and IP address tracking.
 
 ## Technical Implementations
 
