@@ -301,10 +301,10 @@ export function AuthProvider({ children }) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password)
       const userRef = doc(db, "users", userCredential.user.uid)
-      
-      // Note: We no longer block login for banned users here
-      // Instead, we let them login and the snapshot listener will show the ban overlay
-      // This prevents the login-logout loop and allows users to see their ban status
+
+      const loginTimestamp = Date.now()
+      setLastLoginTimestamp(loginTimestamp)
+      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
 
@@ -312,10 +312,6 @@ export function AuthProvider({ children }) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
         localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
       }
-
-      const loginTimestamp = Date.now()
-      setLastLoginTimestamp(loginTimestamp)
-      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       try {
         const userDoc = await getDoc(userRef)
@@ -404,10 +400,10 @@ export function AuthProvider({ children }) {
       const userCredential = await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const userRef = doc(db, "users", user.uid)
-      
-      // Note: We no longer block login for banned users here
-      // Instead, we let them login and the snapshot listener will show the ban overlay
-      // This prevents the login-logout loop and allows users to see their ban status
+
+      const loginTimestamp = Date.now()
+      setLastLoginTimestamp(loginTimestamp)
+      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
       
       const deviceInfo = await getDeviceInfo()
 
@@ -415,10 +411,6 @@ export function AuthProvider({ children }) {
         setCurrentDeviceFingerprint(deviceInfo.fingerprint)
         localStorage.setItem('currentDeviceFingerprint', deviceInfo.fingerprint)
       }
-
-      const loginTimestamp = Date.now()
-      setLastLoginTimestamp(loginTimestamp)
-      localStorage.setItem('lastLoginTimestamp', loginTimestamp.toString())
 
       try {
         const userRef = doc(db, "users", user.uid)
@@ -863,8 +855,10 @@ export function AuthProvider({ children }) {
             const savedDeviceID = localStorage.getItem('deviceID')
             const deviceExistsByID = savedDeviceID ? devices.some(d => d.id === savedDeviceID) : false
 
-            const timeSinceLogin = lastLoginTimestamp ? Date.now() - lastLoginTimestamp : Infinity
-            const isRecentLogin = timeSinceLogin < 300000 // 5 minutes grace period (extended to prevent false positives during video seeking/interaction)
+            const storedLoginTimestamp = localStorage.getItem('lastLoginTimestamp')
+            const effectiveLoginTimestamp = lastLoginTimestamp || (storedLoginTimestamp ? parseInt(storedLoginTimestamp) : null)
+            const timeSinceLogin = effectiveLoginTimestamp ? Date.now() - effectiveLoginTimestamp : Infinity
+            const isRecentLogin = timeSinceLogin < 300000
 
             if (!deviceExists && !deviceExistsByID && devices.length > 0 && !isRecentLogin && deviceFingerprint) {
               console.log('⚠️ Device removed from allowed devices - logging out')
