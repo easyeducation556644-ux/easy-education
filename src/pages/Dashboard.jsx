@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react"
 import { Link, Navigate } from "react-router-dom"
-import { motion } from "framer-motion"
 import {
   ThumbsUp,
   TrendingUp,
@@ -104,16 +103,12 @@ export default function Dashboard() {
     <DashboardLayout>
       <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-accent/5 py-8 px-4">
         <div className="max-w-7xl mx-auto">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-8"
-          >
+          <div className="mb-8">
             <h1 className="text-4xl md:text-5xl font-bold mb-3 bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
               Welcome back, {userProfile?.name || "Student"}!
             </h1>
             <p className="text-muted-foreground text-lg">Here's your learning journey at a glance</p>
-          </motion.div>
+          </div>
 
           {loading ? (
             <div className="flex items-center justify-center py-20">
@@ -122,12 +117,7 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.1 }}
-                  className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group"
-                >
+                <div className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
                   <div className="flex items-center justify-between mb-4">
                     <div className="p-3 bg-blue-500/10 rounded-xl group-hover:bg-blue-500/20 transition-colors">
                       <BookOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -136,14 +126,9 @@ export default function Dashboard() {
                   </div>
                   <p className="text-3xl font-bold mb-1 text-blue-700 dark:text-blue-400">{stats.coursesEnrolled}</p>
                   <p className="text-sm text-muted-foreground font-medium">Courses Enrolled</p>
-                </motion.div>
+                </div>
 
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.2 }}
-                  className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border border-purple-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group"
-                >
+                <div className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border border-purple-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
                   <div className="flex items-center justify-between mb-4">
                     <div className="p-3 bg-purple-500/10 rounded-xl group-hover:bg-purple-500/20 transition-colors">
                       <ThumbsUp className="w-6 h-6 text-purple-600 dark:text-purple-400" />
@@ -152,14 +137,9 @@ export default function Dashboard() {
                   </div>
                   <p className="text-3xl font-bold mb-1 text-purple-700 dark:text-purple-400">{stats.votesGiven}</p>
                   <p className="text-sm text-muted-foreground font-medium">Votes Given</p>
-                </motion.div>
+                </div>
 
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.3 }}
-                  className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group"
-                >
+                <div className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
                   <div className="flex items-center justify-between mb-4">
                     <div className="p-3 bg-amber-500/10 rounded-xl group-hover:bg-amber-500/20 transition-colors">
                       <Clock className="w-6 h-6 text-amber-600 dark:text-amber-400" />
@@ -168,14 +148,9 @@ export default function Dashboard() {
                   </div>
                   <p className="text-3xl font-bold mb-1 text-amber-700 dark:text-amber-400">{stats.pendingPayments}</p>
                   <p className="text-sm text-muted-foreground font-medium">Pending Payments</p>
-                </motion.div>
+                </div>
 
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.4 }}
-                  className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group"
-                >
+                <div className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
                   <div className="flex items-center justify-between mb-4">
                     <div className="p-3 bg-emerald-500/10 rounded-xl group-hover:bg-emerald-500/20 transition-colors">
                       <CheckCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
@@ -184,16 +159,11 @@ export default function Dashboard() {
                   </div>
                   <p className="text-3xl font-bold mb-1 text-emerald-700 dark:text-emerald-400">{stats.approvedPayments}</p>
                   <p className="text-sm text-muted-foreground font-medium">Approved Payments</p>
-                </motion.div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow"
-                >
+                <div className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow">
                   <div className="flex items-center justify-between mb-6">
                     <h2 className="text-xl font-bold">Quick Actions</h2>
                     <Target className="w-5 h-5 text-primary" />
@@ -228,14 +198,9 @@ export default function Dashboard() {
                       </button>
                     </Link>
                   </div>
-                </motion.div>
+                </div>
 
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.6 }}
-                  className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow"
-                >
+                <div className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow">
                   <div className="flex items-center justify-between mb-6">
                     <h2 className="text-xl font-bold">Recent Payments</h2>
                     <CreditCard className="w-5 h-5 text-primary" />
@@ -266,7 +231,7 @@ export default function Dashboard() {
                       <p className="text-muted-foreground">No payments yet</p>
                     </div>
                   )}
-                </motion.div>
+                </div>
               </div>
             </>
           )}
