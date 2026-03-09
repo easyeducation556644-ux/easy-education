@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle } from "lucide-react"
-import { collection, getDocs, doc, updateDoc, deleteDoc, query, where, addDoc, serverTimestamp } from "firebase/firestore"
+import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle, Wrench } from "lucide-react"
+import { collection, getDocs, doc, updateDoc, deleteDoc, query, where, addDoc, serverTimestamp, deleteField } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
@@ -29,6 +29,7 @@ export default function ManageUsers() {
   const [cleaningOrphans, setCleaningOrphans] = useState(false)
   const [orphanedRecords, setOrphanedRecords] = useState([])
   const [showOrphanedRecordsModal, setShowOrphanedRecordsModal] = useState(false)
+  const [fixingAccounts, setFixingAccounts] = useState(false)
 
   useEffect(() => {
     fetchUsers()
@@ -634,6 +635,90 @@ export default function ManageUsers() {
     }
   }
 
+  const fixOrphanedAccounts = async () => {
+    setFixingAccounts(true)
+    try {
+      const usersSnapshot = await getDocs(collection(db, "users"))
+      let fixedCount = 0
+      let totalUsers = 0
+
+      for (const userDoc of usersSnapshot.docs) {
+        const userData = userDoc.data()
+        const userId = userDoc.id
+        totalUsers++
+        const updateData = {}
+
+        if (userData.kickedDevices && Array.isArray(userData.kickedDevices)) {
+          updateData.kickedDevices = deleteField()
+        }
+
+        if (userData.forceLogoutAt) {
+          const forceLogoutTimestamp = userData.forceLogoutAt.toMillis
+            ? userData.forceLogoutAt.toMillis()
+            : new Date(userData.forceLogoutAt).getTime()
+          const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
+          if (timeSinceForceLogout > 5 * 60 * 1000) {
+            updateData.forceLogoutAt = deleteField()
+            if (userData.forceLogoutReason) updateData.forceLogoutReason = deleteField()
+            if (userData.forcedBy) updateData.forcedBy = deleteField()
+          }
+        }
+
+        if (userData.clearBanCacheAt) {
+          updateData.clearBanCacheAt = deleteField()
+        }
+
+        if (userData.banExpiresAt) {
+          const banEndTime = userData.banExpiresAt.toDate
+            ? userData.banExpiresAt.toDate()
+            : new Date(userData.banExpiresAt)
+          if (banEndTime <= new Date()) {
+            updateData.banned = false
+            updateData.banExpiresAt = deleteField()
+          }
+        }
+
+        if (userData.devices && Array.isArray(userData.devices)) {
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          const validDevices = userData.devices.filter(d => {
+            if (!d.fingerprint) return false
+            const lastActive = d.lastSeen || d.timestamp
+            if (!lastActive) return true
+            try {
+              const activeDate = new Date(lastActive)
+              return !isNaN(activeDate.getTime()) && activeDate >= thirtyDaysAgo
+            } catch {
+              return false
+            }
+          })
+          if (validDevices.length !== userData.devices.length) {
+            updateData.devices = validDevices.length > 0 ? validDevices : []
+          }
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          await updateDoc(doc(db, "users", userId), updateData)
+          fixedCount++
+        }
+      }
+
+      toast({
+        title: "Accounts Fixed",
+        description: `Cleaned up ${fixedCount} out of ${totalUsers} user accounts`,
+      })
+      await fetchUsers()
+    } catch (error) {
+      console.error("Error fixing accounts:", error)
+      toast({
+        variant: "error",
+        title: "Fix Failed",
+        description: error.message || "Failed to fix orphaned accounts",
+      })
+    } finally {
+      setFixingAccounts(false)
+    }
+  }
+
   return (
     <div>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
@@ -642,14 +727,34 @@ export default function ManageUsers() {
             <h1 className="text-3xl font-bold mb-2">Manage Users</h1>
             <p className="text-muted-foreground">View and manage all platform users</p>
           </div>
-          <button
-            onClick={scanForOrphanedRecords}
-            disabled={cleaningOrphans}
-            className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <AlertTriangle className="w-4 h-4" />
-            {cleaningOrphans ? "Scanning..." : "Scan for Orphaned Courses"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setConfirmDialog({
+                  isOpen: true,
+                  title: "Fix Orphaned Accounts",
+                  message: "This will clean up all user accounts by removing stale device entries (30+ days old), expired bans, old force-logout flags, and leftover kicked-device data. This is safe and won't affect active users. Continue?",
+                  onConfirm: () => {
+                    setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+                    fixOrphanedAccounts()
+                  }
+                })
+              }}
+              disabled={fixingAccounts}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Wrench className="w-4 h-4" />
+              {fixingAccounts ? "Fixing..." : "Fix Accounts"}
+            </button>
+            <button
+              onClick={scanForOrphanedRecords}
+              disabled={cleaningOrphans}
+              className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <AlertTriangle className="w-4 h-4" />
+              {cleaningOrphans ? "Scanning..." : "Scan for Orphaned Courses"}
+            </button>
+          </div>
         </div>
       </motion.div>
 

@@ -1,7 +1,7 @@
 import * as React from "react"
 
-const TOAST_LIMIT = 10
-const TOAST_REMOVE_DELAY = 15000
+const TOAST_LIMIT = 3
+const TOAST_REMOVE_DELAY = 5000
 
 let count = 0
 

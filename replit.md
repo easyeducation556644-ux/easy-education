@@ -31,7 +31,7 @@ Preferred communication style: Simple, everyday language.
 
 **Authentication Provider:** Firebase Authentication with Google OAuth.
 **Authorization Model:** Role-based access control (RBAC) using `isAdmin` and `role` fields, enforced by Firebase Security Rules.
-**Device Management:** Single-device-at-a-time policy. When a user logs in from a new device, the old device is automatically kicked out (via `kickedDevices` fingerprint array and `forceLogoutAt` timestamp) and the new device becomes active — no automatic bans. Manual admin bans (temporary/permanent) are still available via the admin panel. Features a full-screen ban overlay, device cleanup, and admin panel for management (manual ban/unban, device kicking, audit trails). Includes advanced device fingerprinting with persistent `deviceID` fallback and IP address tracking.
+**Device Management:** Single-device-at-a-time policy. When a user logs in from a new device, the old device's entry is replaced in the `devices` array, and the old device auto-logs out on next snapshot check. A `loginFlowInProgressRef` (useRef) prevents race conditions where `onAuthStateChanged` could prematurely set `loginFlowComplete=true` before device info is written to Firestore. Manual admin bans (temporary/permanent) are still available via the admin panel. Features a full-screen ban overlay, device cleanup, and admin panel for management (manual ban/unban, device kicking, audit trails). Includes advanced device fingerprinting with persistent `deviceID` fallback and IP address tracking. Admin "Fix Accounts" button in Manage Users cleans up stale `forceLogoutAt`, `kickedDevices`, `clearBanCacheAt`, expired bans, and old device entries across all accounts.
 
 ## Technical Implementations
 
