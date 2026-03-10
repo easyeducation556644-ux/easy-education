@@ -68,6 +68,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsYouTube(isYT)
     setIsDrive(isDR)
     setIsDailymotion(isDM)
+    setError(null)
+    setLoading(true)
+    if (isDR || isDM) {
+      setLoading(false)
+    }
   }, [url])
 
   const getYouTubeId = (url) => {
@@ -304,7 +309,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }, [isYouTube, playing, isSeeking])
 
   useEffect(() => {
-    if (isYouTube || !url || !videoRef.current) return
+    if (isYouTube || isDrive || isDailymotion || !url || !videoRef.current) return
 
     const video = videoRef.current
 
@@ -385,11 +390,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         hlsRef.current.destroy()
       }
     }
-  }, [url, isYouTube])
+  }, [url, isYouTube, isDrive, isDailymotion])
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || isYouTube) return
+    if (!video || isYouTube || isDrive || isDailymotion) return
 
     const handleLoadedMetadata = () => {
       setDuration(video.duration)
@@ -449,7 +454,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       video.removeEventListener("canplay", handleCanPlay)
       video.removeEventListener("error", handleError)
     }
-  }, [isYouTube])
+  }, [isYouTube, isDrive, isDailymotion])
 
   const skipForward = () => {
     const newTime = Math.min(currentTime + 10, duration)
@@ -1158,7 +1163,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           />
         ) : isDailymotion ? (
           <iframe
-            src={`https://www.dailymotion.com/embed/video/${getDailymotionId(url)}?autoplay=1&quality=1080`}
+            src={`https://geo.dailymotion.com/player.html?video=${getDailymotionId(url)}`}
             className="absolute inset-0 w-full h-full border-0"
             allow="autoplay; fullscreen; picture-in-picture; web-share"
             allowFullScreen
