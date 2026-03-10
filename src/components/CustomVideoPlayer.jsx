@@ -1148,6 +1148,22 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             <div className="absolute inset-0 pointer-events-none z-[40] bg-transparent" />
             <div className="absolute inset-0 pointer-events-none z-[45] bg-transparent" />
           </>
+        ) : isDrive ? (
+          <iframe
+            src={`https://drive.google.com/file/d/${getDriveId(url)}/preview`}
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; encrypted-media; fullscreen"
+            allowFullScreen
+            onLoad={() => { setLoading(false); setPlaying(true); }}
+          />
+        ) : isDailymotion ? (
+          <iframe
+            src={`https://www.dailymotion.com/embed/video/${getDailymotionId(url)}?autoplay=1&quality=1080`}
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; fullscreen; picture-in-picture; web-share"
+            allowFullScreen
+            onLoad={() => { setLoading(false); setPlaying(true); }}
+          />
         ) : (
           <video
             ref={videoRef}
@@ -1159,6 +1175,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           />
         )}
 
+        {!isDrive && !isDailymotion && (
         <div className="absolute inset-0 flex z-30 pointer-events-none">
           <div 
             className="w-1/4 h-full pointer-events-auto cursor-pointer" 
@@ -1193,7 +1210,10 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             }}
           />
         </div>
+        )}
 
+        {!isDrive && !isDailymotion && (
+        <>
         {/* Volume Indicator - Right side of center */}
         <AnimatePresence>
           {showVolumeIndicator && (
@@ -1568,6 +1588,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             </div>
           </div>
         </div>
+        </>
+        )}
       </div>
     </>
   )
