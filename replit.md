@@ -16,7 +16,7 @@ Preferred communication style: Simple, everyday language.
 **Internationalization:** Google Fonts (Hind Siliguri) for Bangla language support.
 **Progressive Web App:** Service workers for offline functionality (cache-first for static assets, Bangla offline page), web manifest for installability, and an auto-update system.
 **UI/UX Decisions:** Custom design system inspired by Vercel, mobile-responsive UI, 98% width course add/edit modal, mobile-first optimized course details with YouTube iframe embeds.
-**Video Sources:** Classes support 3 video source types: YouTube (custom player with full controls), Google Drive (iframe embed), and Dailymotion (iframe embed). YouTube logic is kept completely separate and untouched.
+**Video Sources:** Classes support 3 video source types: YouTube (custom player with full controls), Google Drive (iframe embed with native controls - no API available), and Dailymotion (custom player with full controls via Dailymotion Player API). YouTube and Dailymotion logic is kept completely separate and untouched from each other. Dailymotion uses `dailymotion.createPlayer()` with SDK loaded from `geo.dailymotion.com/player.js`, supporting play/pause, seek, volume, mute, playback speed, fullscreen, double-tap skip, swipe gestures, and all the same custom control overlay as YouTube.
 **Course Search:** All admin pages with course selection (Grant Access, Subjects, Chapters, Classes, Exams) include search inputs to filter courses by title.
 **Payment Export:** Payments page supports date range filtering (from/to dates) for CSV export of approved payments.
 
