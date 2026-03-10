@@ -16,6 +16,9 @@ Preferred communication style: Simple, everyday language.
 **Internationalization:** Google Fonts (Hind Siliguri) for Bangla language support.
 **Progressive Web App:** Service workers for offline functionality (cache-first for static assets, Bangla offline page), web manifest for installability, and an auto-update system.
 **UI/UX Decisions:** Custom design system inspired by Vercel, mobile-responsive UI, 98% width course add/edit modal, mobile-first optimized course details with YouTube iframe embeds.
+**Video Sources:** Classes support 3 video source types: YouTube (custom player with full controls), Google Drive (iframe embed), and Dailymotion (iframe embed). YouTube logic is kept completely separate and untouched.
+**Course Search:** All admin pages with course selection (Grant Access, Subjects, Chapters, Classes, Exams) include search inputs to filter courses by title.
+**Payment Export:** Payments page supports date range filtering (from/to dates) for CSV export of approved payments.
 
 ## Backend Architecture
 

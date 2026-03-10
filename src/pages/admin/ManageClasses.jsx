@@ -21,6 +21,7 @@ export default function ManageClasses() {
   const [showArchiveModal, setShowArchiveModal] = useState(false)
   const [editingClass, setEditingClass] = useState(null)
   const [videoType, setVideoType] = useState("youtube")
+  const [courseSearchQuery, setCourseSearchQuery] = useState("")
   const [formData, setFormData] = useState({
     title: "",
     topic: "",
@@ -30,6 +31,8 @@ export default function ManageClasses() {
     duration: "",
     youtubeLink: "",
     hlsLink: "",
+    driveLink: "",
+    dailymotionLink: "",
     teacherName: "",
     imageType: "upload",
     imageLink: "",
@@ -201,6 +204,8 @@ export default function ManageClasses() {
         duration: classItem.duration || "",
         youtubeLink: classItem.youtubeLink || "",
         hlsLink: classItem.hlsLink || "",
+        driveLink: classItem.driveLink || "",
+        dailymotionLink: classItem.dailymotionLink || "",
         teacherName: Array.isArray(classItem.teacherName)
           ? classItem.teacherName
           : classItem.teacherName
@@ -212,7 +217,7 @@ export default function ManageClasses() {
         teacherImageLink: classItem.teacherImageURL || "",
         resourceLinks: Array.isArray(classItem.resourceLinks) ? classItem.resourceLinks : [],
       })
-      setVideoType(classItem.youtubeLink ? "youtube" : "hls")
+      setVideoType(classItem.youtubeLink ? "youtube" : classItem.driveLink ? "drive" : classItem.dailymotionLink ? "dailymotion" : "hls")
     } else {
       setEditingClass(null)
       const nextOrder = await getNextActiveClassOrder()
@@ -225,6 +230,8 @@ export default function ManageClasses() {
         duration: "",
         youtubeLink: "",
         hlsLink: "",
+        driveLink: "",
+        dailymotionLink: "",
         teacherName: [],
         imageType: "upload",
         imageLink: "",
@@ -266,6 +273,16 @@ export default function ManageClasses() {
         teacherImageURL = formData.teacherImageLink
       }
 
+      const getVideoURL = () => {
+        switch (videoType) {
+          case "youtube": return formData.youtubeLink
+          case "drive": return formData.driveLink
+          case "dailymotion": return formData.dailymotionLink
+          case "hls": return formData.hlsLink
+          default: return ""
+        }
+      }
+
       const classData = {
         courseId: selectedCourse,
         title: formData.title,
@@ -276,7 +293,9 @@ export default function ManageClasses() {
         duration: formData.duration,
         youtubeLink: videoType === "youtube" ? formData.youtubeLink : "",
         hlsLink: videoType === "hls" ? formData.hlsLink : "",
-        videoURL: videoType === "youtube" ? formData.youtubeLink : formData.hlsLink,
+        driveLink: videoType === "drive" ? formData.driveLink : "",
+        dailymotionLink: videoType === "dailymotion" ? formData.dailymotionLink : "",
+        videoURL: getVideoURL(),
         imageURL,
         teacherName: Array.isArray(formData.teacherName)
           ? formData.teacherName
@@ -544,8 +563,8 @@ export default function ManageClasses() {
       let updatedCount = 0
 
       for (const classItem of classes) {
-        if (!classItem.videoURL && (classItem.youtubeLink || classItem.hlsLink)) {
-          const videoURL = classItem.youtubeLink || classItem.hlsLink
+        if (!classItem.videoURL && (classItem.youtubeLink || classItem.hlsLink || classItem.driveLink || classItem.dailymotionLink)) {
+          const videoURL = classItem.youtubeLink || classItem.driveLink || classItem.dailymotionLink || classItem.hlsLink
           await updateDoc(doc(db, "classes", classItem.id), { videoURL })
           updatedCount++
         }
@@ -610,17 +629,26 @@ export default function ManageClasses() {
       {/* Course Selection */}
       <div className="mb-6">
         <label className="block text-xs font-medium mb-1.5">Select Course</label>
+        <input
+          type="text"
+          placeholder="Search courses..."
+          value={courseSearchQuery}
+          onChange={(e) => setCourseSearchQuery(e.target.value)}
+          className="w-full px-3 py-1.5 text-sm bg-card border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary mb-1.5"
+        />
         <select
           value={selectedCourse}
           onChange={(e) => setSelectedCourse(e.target.value)}
           className="w-full px-3 py-1.5 text-sm bg-card border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
         >
           <option value="">Choose a course...</option>
-          {courses.map((course) => (
-            <option key={course.id} value={course.id}>
-              {course.title} ({course.type})
-            </option>
-          ))}
+          {courses
+            .filter((course) => !courseSearchQuery || course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase()))
+            .map((course) => (
+              <option key={course.id} value={course.id}>
+                {course.title} ({course.type})
+              </option>
+            ))}
         </select>
       </div>
 
@@ -965,11 +993,33 @@ export default function ManageClasses() {
                         : "border-border hover:border-primary/50"
                     }`}
                   >
-                    YouTube Link
+                    YouTube
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoType("drive")}
+                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
+                      videoType === "drive"
+                        ? "border-primary bg-primary/10 text-primary font-medium"
+                        : "border-border hover:border-primary/50"
+                    }`}
+                  >
+                    Google Drive
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoType("dailymotion")}
+                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
+                      videoType === "dailymotion"
+                        ? "border-primary bg-primary/10 text-primary font-medium"
+                        : "border-border hover:border-primary/50"
+                    }`}
+                  >
+                    Dailymotion
                   </button>
                 </div>
 
-                {videoType === "youtube" ? (
+                {videoType === "youtube" && (
                   <div>
                     <input
                       type="url"
@@ -983,7 +1033,39 @@ export default function ManageClasses() {
                       Paste a YouTube video URL (supports youtube.com and youtu.be links)
                     </p>
                   </div>
-                ) : null}
+                )}
+
+                {videoType === "drive" && (
+                  <div>
+                    <input
+                      type="url"
+                      value={formData.driveLink}
+                      onChange={(e) => setFormData({ ...formData, driveLink: e.target.value })}
+                      placeholder="https://drive.google.com/file/d/FILE_ID/view"
+                      required={videoType === "drive"}
+                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Paste a Google Drive video share link
+                    </p>
+                  </div>
+                )}
+
+                {videoType === "dailymotion" && (
+                  <div>
+                    <input
+                      type="url"
+                      value={formData.dailymotionLink}
+                      onChange={(e) => setFormData({ ...formData, dailymotionLink: e.target.value })}
+                      placeholder="https://www.dailymotion.com/video/... or https://dai.ly/..."
+                      required={videoType === "dailymotion"}
+                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Paste a Dailymotion video URL (supports dailymotion.com and dai.ly links)
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Class Image Upload/Link */}

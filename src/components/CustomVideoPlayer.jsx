@@ -27,6 +27,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [isYouTube, setIsYouTube] = useState(false)
+  const [isDrive, setIsDrive] = useState(false)
+  const [isDailymotion, setIsDailymotion] = useState(false)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false)
   const [isSeeking, setIsSeeking] = useState(false)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
@@ -58,12 +60,30 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   useEffect(() => {
     if (!url) return
     const youtubeRegex = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
+    const driveRegex = /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
+    const dailymotionRegex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
     const isYT = youtubeRegex.test(url)
+    const isDR = driveRegex.test(url)
+    const isDM = dailymotionRegex.test(url)
     setIsYouTube(isYT)
+    setIsDrive(isDR)
+    setIsDailymotion(isDM)
   }, [url])
 
   const getYouTubeId = (url) => {
     const regex = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
+    const match = url.match(regex)
+    return match ? match[1] : null
+  }
+
+  const getDriveId = (url) => {
+    const regex = /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
+    const match = url.match(regex)
+    return match ? match[1] : null
+  }
+
+  const getDailymotionId = (url) => {
+    const regex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
     const match = url.match(regex)
     return match ? match[1] : null
   }
@@ -732,6 +752,54 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           <p className="text-lg font-semibold">{error}</p>
           <p className="text-sm text-gray-400 mt-2">Please check the video URL</p>
         </div>
+      </div>
+    )
+  }
+
+  if (isDrive) {
+    const driveId = getDriveId(url)
+    if (!driveId) {
+      return (
+        <div className="w-full aspect-video bg-gradient-to-br from-gray-900 to-black flex items-center justify-center text-white rounded-xl">
+          <div className="text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+            <p className="text-lg font-semibold">Invalid Google Drive URL</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+        <iframe
+          src={`https://drive.google.com/file/d/${driveId}/preview`}
+          className="w-full h-full border-0"
+          allow="autoplay; encrypted-media"
+          allowFullScreen
+        />
+      </div>
+    )
+  }
+
+  if (isDailymotion) {
+    const dailymotionId = getDailymotionId(url)
+    if (!dailymotionId) {
+      return (
+        <div className="w-full aspect-video bg-gradient-to-br from-gray-900 to-black flex items-center justify-center text-white rounded-xl">
+          <div className="text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+            <p className="text-lg font-semibold">Invalid Dailymotion URL</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+        <iframe
+          src={`https://geo.dailymotion.com/player.html?video=${dailymotionId}`}
+          className="w-full h-full border-0"
+          allow="autoplay; fullscreen; picture-in-picture; web-share"
+          allowFullScreen
+        />
       </div>
     )
   }

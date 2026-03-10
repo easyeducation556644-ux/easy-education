@@ -30,6 +30,7 @@ export default function ManageUsers() {
   const [orphanedRecords, setOrphanedRecords] = useState([])
   const [showOrphanedRecordsModal, setShowOrphanedRecordsModal] = useState(false)
   const [fixingAccounts, setFixingAccounts] = useState(false)
+  const [courseSearchQuery, setCourseSearchQuery] = useState("")
 
   useEffect(() => {
     fetchUsers()
@@ -972,6 +973,7 @@ export default function ManageUsers() {
                   setShowGrantAccessModal(false)
                   setSelectedUser(null)
                   setSelectedCoursesForGrant([])
+                  setCourseSearchQuery("")
                 }}
                 className="p-2 hover:bg-muted rounded-lg transition-colors"
               >
@@ -1007,8 +1009,18 @@ export default function ManageUsers() {
                   <p className="text-sm text-muted-foreground mb-3">
                     Select courses to grant access ({getAvailableCoursesForUser(selectedUser.id).length} available)
                   </p>
+                  <div className="relative mb-3">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Search courses..."
+                      value={courseSearchQuery}
+                      onChange={(e) => setCourseSearchQuery(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    />
+                  </div>
                   <div className="max-h-[400px] overflow-y-auto space-y-2">
-                    {getAvailableCoursesForUser(selectedUser.id).map((course) => (
+                    {getAvailableCoursesForUser(selectedUser.id).filter(course => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase())).map((course) => (
                       <div
                         key={course.id}
                         onClick={() => toggleCourseSelection(course.id)}
@@ -1045,6 +1057,7 @@ export default function ManageUsers() {
                       setShowGrantAccessModal(false)
                       setSelectedUser(null)
                       setSelectedCoursesForGrant([])
+                      setCourseSearchQuery("")
                     }}
                     className="flex-1 py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
                   >

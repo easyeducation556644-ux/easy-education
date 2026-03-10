@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Plus, Edit, Trash2, FileQuestion, BookOpen, GraduationCap, Upload, Download, Archive } from "lucide-react"
+import { Plus, Edit, Trash2, FileQuestion, BookOpen, GraduationCap, Upload, Download, Archive, Search } from "lucide-react"
 import { collection, getDocs, query, orderBy, doc, getDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { useExam } from "../../contexts/ExamContext"
@@ -18,6 +18,7 @@ export default function ManageExams() {
   const [bulkCourseId, setBulkCourseId] = useState("")
   const [examNames, setExamNames] = useState("")
   const [bulkProcessing, setBulkProcessing] = useState(false)
+  const [courseSearchQuery, setCourseSearchQuery] = useState("")
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
   const [formData, setFormData] = useState({
     title: "",
@@ -408,6 +409,16 @@ export default function ManageExams() {
 
               <div>
                 <label className="block text-sm font-medium mb-2">Course *</label>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={courseSearchQuery}
+                    onChange={(e) => setCourseSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                    placeholder="Search courses..."
+                  />
+                </div>
                 <select
                   value={formData.courseId}
                   onChange={(e) => setFormData({ ...formData, courseId: e.target.value })}
@@ -415,11 +426,13 @@ export default function ManageExams() {
                   required
                 >
                   <option value="">Select a course</option>
-                  {courses.map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.title}
-                    </option>
-                  ))}
+                  {courses
+                    .filter((course) => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase()))
+                    .map((course) => (
+                      <option key={course.id} value={course.id}>
+                        {course.title}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -468,6 +481,7 @@ export default function ManageExams() {
                   onClick={() => {
                     setShowModal(false)
                     setEditingExam(null)
+                    setCourseSearchQuery("")
                   }}
                   className="flex-1 px-4 py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors"
                 >
@@ -500,6 +514,17 @@ export default function ManageExams() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-2">Select Course *</label>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={courseSearchQuery}
+                    onChange={(e) => setCourseSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                    placeholder="Search courses..."
+                    disabled={bulkProcessing}
+                  />
+                </div>
                 <select
                   value={bulkCourseId}
                   onChange={(e) => setBulkCourseId(e.target.value)}
@@ -507,11 +532,13 @@ export default function ManageExams() {
                   disabled={bulkProcessing}
                 >
                   <option value="">Choose a course</option>
-                  {courses.map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.title}
-                    </option>
-                  ))}
+                  {courses
+                    .filter((course) => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase()))
+                    .map((course) => (
+                      <option key={course.id} value={course.id}>
+                        {course.title}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -543,6 +570,7 @@ export default function ManageExams() {
                   setShowBulkModal(false)
                   setBulkCourseId("")
                   setExamNames("")
+                  setCourseSearchQuery("")
                 }}
                 className="flex-1 px-4 py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors"
                 disabled={bulkProcessing}

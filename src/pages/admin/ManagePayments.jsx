@@ -3,7 +3,7 @@ import { toast } from "../../hooks/use-toast"
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { CreditCard, Check, X, Clock, Download, Trash2, Search } from "lucide-react"
+import { CreditCard, Check, X, Clock, Download, Trash2, Search, Calendar } from "lucide-react"
 import { collection, getDocs, updateDoc, doc, setDoc, serverTimestamp, query, orderBy, deleteDoc, where, addDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { sendPaymentConfirmationEmail } from "../../lib/email"
@@ -17,6 +17,8 @@ export default function ManagePayments() {
   const [filter, setFilter] = useState("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+  const [exportStartDate, setExportStartDate] = useState("")
+  const [exportEndDate, setExportEndDate] = useState("")
 
   useEffect(() => {
     fetchPayments()
@@ -213,13 +215,31 @@ export default function ManagePayments() {
   }
 
   const exportToCSV = () => {
-    const approvedPayments = payments.filter(p => p.status === "approved")
-    
+    let approvedPayments = payments.filter(p => p.status === "approved")
+
+    if (exportStartDate) {
+      const startDate = new Date(exportStartDate)
+      startDate.setHours(0, 0, 0, 0)
+      approvedPayments = approvedPayments.filter(p => {
+        const approvedAt = p.approvedAt?.toDate?.()
+        return approvedAt && approvedAt >= startDate
+      })
+    }
+
+    if (exportEndDate) {
+      const endDate = new Date(exportEndDate)
+      endDate.setHours(23, 59, 59, 999)
+      approvedPayments = approvedPayments.filter(p => {
+        const approvedAt = p.approvedAt?.toDate?.()
+        return approvedAt && approvedAt <= endDate
+      })
+    }
+
     if (approvedPayments.length === 0) {
       toast({
         variant: "error",
         title: "No Data",
-        description: "No completed payments to export",
+        description: "No completed payments to export for the selected date range",
       })
       return
     }
@@ -334,6 +354,41 @@ export default function ManagePayments() {
             <Download className="w-4 h-4" />
             Export Completed
           </button>
+        </div>
+      </div>
+
+      <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-card border border-border rounded-xl">
+        <div className="flex items-center gap-2 mb-3">
+          <Calendar className="w-4 h-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Export Date Range</span>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 items-start sm:items-center">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <label className="text-xs sm:text-sm text-muted-foreground whitespace-nowrap">From:</label>
+            <input
+              type="date"
+              value={exportStartDate}
+              onChange={(e) => setExportStartDate(e.target.value)}
+              className="w-full sm:w-auto px-3 py-2 bg-background border border-border rounded-lg text-xs sm:text-sm focus:ring-2 focus:ring-primary focus:border-transparent"
+            />
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <label className="text-xs sm:text-sm text-muted-foreground whitespace-nowrap">To:</label>
+            <input
+              type="date"
+              value={exportEndDate}
+              onChange={(e) => setExportEndDate(e.target.value)}
+              className="w-full sm:w-auto px-3 py-2 bg-background border border-border rounded-lg text-xs sm:text-sm focus:ring-2 focus:ring-primary focus:border-transparent"
+            />
+          </div>
+          {(exportStartDate || exportEndDate) && (
+            <button
+              onClick={() => { setExportStartDate(""); setExportEndDate(""); }}
+              className="px-3 py-2 text-xs sm:text-sm text-muted-foreground hover:text-foreground border border-border rounded-lg transition-colors"
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
 

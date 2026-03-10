@@ -22,6 +22,8 @@ export default function ManageChapters() {
   const [submitting, setSubmitting] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+  const [courseSearchQuery, setCourseSearchQuery] = useState("")
+  const [filterCourseSearchQuery, setFilterCourseSearchQuery] = useState("")
   const [formData, setFormData] = useState({
     title: "",
     imageUrl: "",
@@ -407,6 +409,13 @@ export default function ManageChapters() {
           <form onSubmit={handleBulkSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-2">Select Course *</label>
+              <input
+                type="text"
+                placeholder="Search courses..."
+                value={courseSearchQuery}
+                onChange={(e) => setCourseSearchQuery(e.target.value)}
+                className="w-full px-3 py-2 mb-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+              />
               <select
                 value={selectedCourse}
                 onChange={(e) => {
@@ -417,7 +426,9 @@ export default function ManageChapters() {
                 className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
               >
                 <option value="">Choose a course...</option>
-                {courses.map((course) => (
+                {courses
+                  .filter((course) => course.title.toLowerCase().includes(courseSearchQuery.toLowerCase()))
+                  .map((course) => (
                   <option key={course.id} value={course.id}>
                     {course.title} ({course.type})
                   </option>
@@ -507,13 +518,22 @@ export default function ManageChapters() {
 
       <div className="mb-6">
         <label className="block text-sm font-medium mb-2">Filter by Course (optional)</label>
+        <input
+          type="text"
+          placeholder="Search courses..."
+          value={filterCourseSearchQuery}
+          onChange={(e) => setFilterCourseSearchQuery(e.target.value)}
+          className="w-full max-w-md px-3 py-2 mb-2 bg-card border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+        />
         <select
           value={selectedCourse}
           onChange={(e) => setSelectedCourse(e.target.value)}
           className="w-full max-w-md px-3 py-2 bg-card border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
         >
           <option value="">All Chapters</option>
-          {courses.map((course) => (
+          {courses
+            .filter((course) => course.title.toLowerCase().includes(filterCourseSearchQuery.toLowerCase()))
+            .map((course) => (
             <option key={course.id} value={course.id}>
               {course.title} ({course.type})
             </option>
