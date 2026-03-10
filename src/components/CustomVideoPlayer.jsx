@@ -56,7 +56,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const volumeSliderRef = useRef(null)
   const loadTimeoutRef = useRef(null)
   const hlsTimeoutRef = useRef(null)
-  const dmPlayerRef = useRef(null)
 
   useEffect(() => {
     if (!url) return
@@ -71,7 +70,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsDailymotion(isDM)
     setError(null)
     setLoading(true)
-    if (isDR) {
+    if (isDR || isDM) {
       setLoading(false)
     }
   }, [url])
@@ -99,13 +98,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setVolume(roundedVolume)
     if (isYouTube && playerRef.current) {
       playerRef.current.setVolume(roundedVolume)
-    } else if (isDailymotion && dmPlayerRef.current) {
-      if (roundedVolume === 0) {
-        dmPlayerRef.current.mute()
-      } else {
-        dmPlayerRef.current.unmute()
-        dmPlayerRef.current.setVolume(roundedVolume / 100)
-      }
     } else if (videoRef.current) {
       videoRef.current.volume = roundedVolume / 100
     }
@@ -317,145 +309,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }, [isYouTube, playing, isSeeking])
 
   useEffect(() => {
-    if (!isDailymotion || !url) return
-
-    const videoId = getDailymotionId(url)
-    if (!videoId) {
-      setError("Invalid Dailymotion URL")
-      return
-    }
-
-    setLoading(true)
-
-    const initPlayer = () => {
-      if (!window.dailymotion || !window.dailymotion.createPlayer) {
-        setLoading(false)
-        return
-      }
-
-      if (dmPlayerRef.current && dmPlayerRef.current.destroy) {
-        dmPlayerRef.current.destroy()
-        dmPlayerRef.current = null
-      }
-
-      window.dailymotion.createPlayer('dm-player', {
-        video: videoId,
-        params: {
-          autoplay: true,
-          mute: false,
-          controls: false,
-          'queue-enable': false,
-          'sharing-enable': false,
-          'ui-logo': false,
-        }
-      }).then((player) => {
-        dmPlayerRef.current = player
-        setLoading(false)
-
-        player.getState().then(state => {
-          if (state.videoDuration) setDuration(state.videoDuration)
-        }).catch(() => {})
-
-        player.on(window.dailymotion.events.VIDEO_DURATIONCHANGE, (state) => {
-          setDuration(state.videoDuration)
-        })
-
-        player.on(window.dailymotion.events.PLAYER_PLAYING, () => {
-          setPlaying(true)
-          setHasStartedPlaying(true)
-          setIsBuffering(false)
-          setIsSeekingLoading(false)
-        })
-
-        player.on(window.dailymotion.events.PLAYER_PAUSE, () => {
-          setPlaying(false)
-        })
-
-        player.on(window.dailymotion.events.VIDEO_END, () => {
-          setPlaying(false)
-          if (onNext) onNext()
-        })
-
-        player.on(window.dailymotion.events.PLAYER_BUFFERING, () => {
-          setIsBuffering(true)
-        })
-
-        player.on(window.dailymotion.events.PLAYER_PLAYBACKSPEEDCHANGE, (state) => {
-          if (state.playerPlaybackSpeed) setPlaybackRate(state.playerPlaybackSpeed)
-        })
-
-        player.on(window.dailymotion.events.PLAYER_ERROR, () => {
-          setError("Failed to load video")
-          setLoading(false)
-        })
-      }).catch((e) => {
-        console.error("Dailymotion player error:", e)
-        setError("Failed to load Dailymotion player")
-        setLoading(false)
-      })
-    }
-
-    const existingScript = document.querySelector('script[src*="geo.dailymotion.com/player"]')
-    if (window.dailymotion && window.dailymotion.createPlayer) {
-      initPlayer()
-    } else if (!existingScript) {
-      const script = document.createElement("script")
-      script.src = "https://geo.dailymotion.com/player.js"
-      script.async = true
-      script.onload = () => {
-        setTimeout(initPlayer, 200)
-      }
-      script.onerror = () => {
-        setError("Failed to load Dailymotion player. Please check your connection.")
-        setLoading(false)
-      }
-      document.head.appendChild(script)
-    } else {
-      const checkReady = setInterval(() => {
-        if (window.dailymotion && window.dailymotion.createPlayer) {
-          clearInterval(checkReady)
-          initPlayer()
-        }
-      }, 100)
-      setTimeout(() => {
-        clearInterval(checkReady)
-        if (!dmPlayerRef.current) {
-          setError("Failed to load Dailymotion player.")
-          setLoading(false)
-        }
-      }, 10000)
-    }
-
-    return () => {
-      if (dmPlayerRef.current && dmPlayerRef.current.destroy) {
-        dmPlayerRef.current.destroy()
-        dmPlayerRef.current = null
-      }
-    }
-  }, [isDailymotion, url])
-
-  useEffect(() => {
-    if (!isDailymotion || !dmPlayerRef.current) return
-
-    let dmInterval = null
-    if (playing) {
-      dmInterval = setInterval(() => {
-        if (dmPlayerRef.current && !isSeeking) {
-          dmPlayerRef.current.getState().then(state => {
-            if (state.videoTime !== undefined && !isNaN(state.videoTime)) {
-              setCurrentTime(state.videoTime)
-            }
-          }).catch(() => {})
-        }
-      }, 250)
-    }
-
-    return () => {
-      if (dmInterval) clearInterval(dmInterval)
-    }
-  }, [isDailymotion, playing, isSeeking])
-
-  useEffect(() => {
     if (isYouTube || isDrive || isDailymotion || !url || !videoRef.current) return
 
     const video = videoRef.current
@@ -608,8 +461,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsSeekingLoading(true)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
-    } else if (isDailymotion && dmPlayerRef.current) {
-      dmPlayerRef.current.seek(newTime)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
@@ -622,8 +473,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsSeekingLoading(true)
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
-    } else if (isDailymotion && dmPlayerRef.current) {
-      dmPlayerRef.current.seek(newTime)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
@@ -687,8 +536,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       
       if (isYouTube && playerRef.current) {
         playerRef.current.seekTo(newTime, true)
-      } else if (isDailymotion && dmPlayerRef.current) {
-        dmPlayerRef.current.seek(newTime)
       } else if (videoRef.current) {
         videoRef.current.currentTime = newTime
       }
@@ -799,12 +646,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       } else {
         playerRef.current.playVideo()
       }
-    } else if (isDailymotion && dmPlayerRef.current) {
-      if (playing) {
-        dmPlayerRef.current.pause()
-      } else {
-        dmPlayerRef.current.play()
-      }
     } else if (videoRef.current) {
       if (playing) {
         videoRef.current.pause()
@@ -820,8 +661,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
-    } else if (isDailymotion && dmPlayerRef.current) {
-      dmPlayerRef.current.seek(newTime)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
@@ -842,15 +681,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         setVolume(0)
       } else {
         playerRef.current.setVolume(100)
-        setVolume(100)
-      }
-    } else if (isDailymotion && dmPlayerRef.current) {
-      if (volume > 0) {
-        dmPlayerRef.current.mute()
-        setVolume(0)
-      } else {
-        dmPlayerRef.current.unmute()
-        dmPlayerRef.current.setVolume(1)
         setVolume(100)
       }
     } else if (videoRef.current) {
@@ -955,6 +785,30 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     )
   }
 
+  if (isDailymotion) {
+    const dailymotionId = getDailymotionId(url)
+    if (!dailymotionId) {
+      return (
+        <div className="w-full aspect-video bg-gradient-to-br from-gray-900 to-black flex items-center justify-center text-white rounded-xl">
+          <div className="text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+            <p className="text-lg font-semibold">Invalid Dailymotion URL</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+        <iframe
+          src={`https://geo.dailymotion.com/player.html?video=${dailymotionId}`}
+          className="w-full h-full border-0"
+          allow="autoplay; fullscreen; picture-in-picture; web-share"
+          allowFullScreen
+        />
+      </div>
+    )
+  }
+
   return (
     <>
       <style jsx>{`
@@ -963,14 +817,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           pointer-events: none !important;
         }
         #yt-player {
-          pointer-events: auto;
-        }
-        
-        /* Dailymotion iframe pointer events blocking */
-        #dm-player iframe {
-          pointer-events: none !important;
-        }
-        #dm-player {
           pointer-events: auto;
         }
         
@@ -1316,13 +1162,13 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             onLoad={() => { setLoading(false); setPlaying(true); }}
           />
         ) : isDailymotion ? (
-          <>
-            <div id="dm-player" className="absolute inset-0 w-full h-full" />
-            <div className="absolute inset-0 pointer-events-none z-[10] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[20] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[40] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[45] bg-transparent" />
-          </>
+          <iframe
+            src={`https://geo.dailymotion.com/player.html?video=${getDailymotionId(url)}`}
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; fullscreen; picture-in-picture; web-share"
+            allowFullScreen
+            onLoad={() => { setLoading(false); setPlaying(true); }}
+          />
         ) : (
           <video
             ref={videoRef}
@@ -1334,7 +1180,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           />
         )}
 
-        {!isDrive && (
+        {!isDrive && !isDailymotion && (
         <div className="absolute inset-0 flex z-30 pointer-events-none">
           <div 
             className="w-1/4 h-full pointer-events-auto cursor-pointer" 
@@ -1371,7 +1217,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         </div>
         )}
 
-        {!isDrive && (
+        {!isDrive && !isDailymotion && (
         <>
         {/* Volume Indicator - Right side of center */}
         <AnimatePresence>
@@ -1715,8 +1561,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                               setPlaybackRate(rate)
                               if (isYouTube && playerRef.current) {
                                 playerRef.current.setPlaybackRate(rate)
-                              } else if (isDailymotion && dmPlayerRef.current) {
-                                dmPlayerRef.current.setPlaybackSpeed(rate)
                               } else if (videoRef.current) {
                                 videoRef.current.playbackRate = rate
                               }
