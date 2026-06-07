@@ -29,6 +29,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [isYouTube, setIsYouTube] = useState(false)
   const [isDrive, setIsDrive] = useState(false)
   const [isDailymotion, setIsDailymotion] = useState(false)
+  const [isRumble, setIsRumble] = useState(false)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false)
   const [isSeeking, setIsSeeking] = useState(false)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
@@ -62,15 +63,18 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     const youtubeRegex = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
     const driveRegex = /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
     const dailymotionRegex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
+    const rumbleRegex = /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
     const isYT = youtubeRegex.test(url)
     const isDR = driveRegex.test(url)
     const isDM = dailymotionRegex.test(url)
+    const isRB = rumbleRegex.test(url)
     setIsYouTube(isYT)
     setIsDrive(isDR)
     setIsDailymotion(isDM)
+    setIsRumble(isRB)
     setError(null)
     setLoading(true)
-    if (isDR || isDM) {
+    if (isDR || isDM || isRB) {
       setLoading(false)
     }
   }, [url])
@@ -89,6 +93,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
   const getDailymotionId = (url) => {
     const regex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
+    const match = url.match(regex)
+    return match ? match[1] : null
+  }
+
+  const getRumbleId = (url) => {
+    const regex = /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
     const match = url.match(regex)
     return match ? match[1] : null
   }
@@ -309,7 +319,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }, [isYouTube, playing, isSeeking])
 
   useEffect(() => {
-    if (isYouTube || isDrive || isDailymotion || !url || !videoRef.current) return
+    if (isYouTube || isDrive || isDailymotion || isRumble || !url || !videoRef.current) return
 
     const video = videoRef.current
 
@@ -390,11 +400,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         hlsRef.current.destroy()
       }
     }
-  }, [url, isYouTube, isDrive, isDailymotion])
+  }, [url, isYouTube, isDrive, isDailymotion, isRumble])
 
   useEffect(() => {
     const video = videoRef.current
-    if (!video || isYouTube || isDrive || isDailymotion) return
+    if (!video || isYouTube || isDrive || isDailymotion || isRumble) return
 
     const handleLoadedMetadata = () => {
       setDuration(video.duration)
@@ -454,7 +464,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       video.removeEventListener("canplay", handleCanPlay)
       video.removeEventListener("error", handleError)
     }
-  }, [isYouTube, isDrive, isDailymotion])
+  }, [isYouTube, isDrive, isDailymotion, isRumble])
 
   const skipForward = () => {
     const newTime = Math.min(currentTime + 10, duration)
@@ -803,6 +813,30 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           src={`https://geo.dailymotion.com/player.html?video=${dailymotionId}`}
           className="w-full h-full border-0"
           allow="autoplay; fullscreen; picture-in-picture; web-share"
+          allowFullScreen
+        />
+      </div>
+    )
+  }
+
+  if (isRumble) {
+    const rumbleId = getRumbleId(url)
+    if (!rumbleId) {
+      return (
+        <div className="w-full aspect-video bg-gradient-to-br from-gray-900 to-black flex items-center justify-center text-white rounded-xl">
+          <div className="text-center">
+            <AlertCircle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+            <p className="text-lg font-semibold">Invalid Rumble URL</p>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+        <iframe
+          src={`https://rumble.com/embed/${rumbleId}/`}
+          className="w-full h-full border-0"
+          allow="autoplay; fullscreen; picture-in-picture"
           allowFullScreen
         />
       </div>
@@ -1169,6 +1203,14 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             allowFullScreen
             onLoad={() => { setLoading(false); setPlaying(true); }}
           />
+        ) : isRumble ? (
+          <iframe
+            src={`https://rumble.com/embed/${getRumbleId(url)}/`}
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; fullscreen; picture-in-picture"
+            allowFullScreen
+            onLoad={() => { setLoading(false); setPlaying(true); }}
+          />
         ) : (
           <video
             ref={videoRef}
@@ -1180,7 +1222,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           />
         )}
 
-        {!isDrive && !isDailymotion && (
+        {!isDrive && !isDailymotion && !isRumble && (
         <div className="absolute inset-0 flex z-30 pointer-events-none">
           <div 
             className="w-1/4 h-full pointer-events-auto cursor-pointer" 
@@ -1217,7 +1259,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         </div>
         )}
 
-        {!isDrive && !isDailymotion && (
+        {!isDrive && !isDailymotion && !isRumble && (
         <>
         {/* Volume Indicator - Right side of center */}
         <AnimatePresence>

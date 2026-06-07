@@ -33,6 +33,7 @@ export default function ManageClasses() {
     hlsLink: "",
     driveLink: "",
     dailymotionLink: "",
+    rumbleLink: "",
     teacherName: "",
     imageType: "upload",
     imageLink: "",
@@ -206,6 +207,7 @@ export default function ManageClasses() {
         hlsLink: classItem.hlsLink || "",
         driveLink: classItem.driveLink || "",
         dailymotionLink: classItem.dailymotionLink || "",
+        rumbleLink: classItem.rumbleLink || "",
         teacherName: Array.isArray(classItem.teacherName)
           ? classItem.teacherName
           : classItem.teacherName
@@ -217,7 +219,7 @@ export default function ManageClasses() {
         teacherImageLink: classItem.teacherImageURL || "",
         resourceLinks: Array.isArray(classItem.resourceLinks) ? classItem.resourceLinks : [],
       })
-      setVideoType(classItem.youtubeLink ? "youtube" : classItem.driveLink ? "drive" : classItem.dailymotionLink ? "dailymotion" : "hls")
+      setVideoType(classItem.youtubeLink ? "youtube" : classItem.driveLink ? "drive" : classItem.dailymotionLink ? "dailymotion" : classItem.rumbleLink ? "rumble" : "hls")
     } else {
       setEditingClass(null)
       const nextOrder = await getNextActiveClassOrder()
@@ -232,6 +234,7 @@ export default function ManageClasses() {
         hlsLink: "",
         driveLink: "",
         dailymotionLink: "",
+        rumbleLink: "",
         teacherName: [],
         imageType: "upload",
         imageLink: "",
@@ -278,6 +281,7 @@ export default function ManageClasses() {
           case "youtube": return formData.youtubeLink
           case "drive": return formData.driveLink
           case "dailymotion": return formData.dailymotionLink
+          case "rumble": return formData.rumbleLink
           case "hls": return formData.hlsLink
           default: return ""
         }
@@ -295,6 +299,7 @@ export default function ManageClasses() {
         hlsLink: videoType === "hls" ? formData.hlsLink : "",
         driveLink: videoType === "drive" ? formData.driveLink : "",
         dailymotionLink: videoType === "dailymotion" ? formData.dailymotionLink : "",
+        rumbleLink: videoType === "rumble" ? formData.rumbleLink : "",
         videoURL: getVideoURL(),
         imageURL,
         teacherName: Array.isArray(formData.teacherName)
@@ -563,8 +568,8 @@ export default function ManageClasses() {
       let updatedCount = 0
 
       for (const classItem of classes) {
-        if (!classItem.videoURL && (classItem.youtubeLink || classItem.hlsLink || classItem.driveLink || classItem.dailymotionLink)) {
-          const videoURL = classItem.youtubeLink || classItem.driveLink || classItem.dailymotionLink || classItem.hlsLink
+        if (!classItem.videoURL && (classItem.youtubeLink || classItem.hlsLink || classItem.driveLink || classItem.dailymotionLink || classItem.rumbleLink)) {
+          const videoURL = classItem.youtubeLink || classItem.driveLink || classItem.dailymotionLink || classItem.rumbleLink || classItem.hlsLink
           await updateDoc(doc(db, "classes", classItem.id), { videoURL })
           updatedCount++
         }
@@ -1017,6 +1022,17 @@ export default function ManageClasses() {
                   >
                     Dailymotion
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setVideoType("rumble")}
+                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
+                      videoType === "rumble"
+                        ? "border-primary bg-primary/10 text-primary font-medium"
+                        : "border-border hover:border-primary/50"
+                    }`}
+                  >
+                    Rumble
+                  </button>
                 </div>
 
                 {videoType === "youtube" && (
@@ -1063,6 +1079,22 @@ export default function ManageClasses() {
                     />
                     <p className="text-xs text-muted-foreground mt-1">
                       Paste a Dailymotion video URL (supports dailymotion.com and dai.ly links)
+                    </p>
+                  </div>
+                )}
+
+                {videoType === "rumble" && (
+                  <div>
+                    <input
+                      type="url"
+                      value={formData.rumbleLink}
+                      onChange={(e) => setFormData({ ...formData, rumbleLink: e.target.value })}
+                      placeholder="https://rumble.com/v...-video-title.html or https://rumble.com/embed/v.../"
+                      required={videoType === "rumble"}
+                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Paste a Rumble video URL (supports rumble.com watch and embed links)
                     </p>
                   </div>
                 )}
