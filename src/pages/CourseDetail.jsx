@@ -454,6 +454,12 @@ export default function CourseDetail() {
                       Your payment has been approved. Start learning now!
                     </p>
                   </div>
+                  <div className="flex items-center justify-center gap-2 rounded-lg bg-muted/50 py-3">
+                    <Users className="h-5 w-5 text-primary" />
+                    <span className="text-sm font-medium">
+                      {enrolledCount} {enrolledCount === 1 ? "student" : "students"} enrolled
+                    </span>
+                  </div>
                   <button
                     onClick={handleWatchNow}
                     className="w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
