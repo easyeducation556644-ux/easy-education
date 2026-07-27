@@ -1,6 +1,6 @@
 "use client"
 
-import { Routes, Route, Link, useLocation } from "react-router-dom"
+import { Routes, Route, Link, Navigate, useLocation } from "react-router-dom"
 import { useState, useEffect } from "react"
 import {
   Users,
@@ -23,6 +23,7 @@ import {
   Ban,
   AlertTriangle,
   MessageSquare,
+  ShieldCheck,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -49,15 +50,33 @@ import Notifications from "./Notifications"
 import BannedNotifications from "./BannedNotifications"
 import BanManagement from "./BanManagement"
 import ClassComments from "./ClassComments"
+import ManageAdministration from "./ManageAdministration"
+import { useAuth } from "../../contexts/AuthContext"
+import {
+  ADMIN_PERMISSION_KEYS,
+  getDefaultAdminPath,
+  hasAdminPermission,
+  isFullAdmin,
+} from "../../lib/adminPermissions"
+
+function AdminRoute({ children, permission, fullOnly = false }) {
+  const { userProfile } = useAuth()
+  const allowed = fullOnly ? isFullAdmin(userProfile) : hasAdminPermission(userProfile, permission)
+
+  return allowed ? children : <Navigate to={getDefaultAdminPath(userProfile)} replace />
+}
 
 export default function AdminDashboard() {
   const location = useLocation()
+  const { userProfile } = useAuth()
+  const fullAdmin = isFullAdmin(userProfile)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
   const [unreadBanCount, setUnreadBanCount] = useState(0)
 
   useEffect(() => {
+    if (!fullAdmin) return
     const notificationsQuery = query(
       collection(db, "notifications"),
       where("isRead", "==", false)
@@ -68,9 +87,10 @@ export default function AdminDashboard() {
     })
 
     return () => unsubscribe()
-  }, [])
+  }, [fullAdmin])
 
   useEffect(() => {
+    if (!fullAdmin) return
     const banNotificationsQuery = query(
       collection(db, "banNotifications"),
       where("isRead", "==", false)
@@ -81,33 +101,37 @@ export default function AdminDashboard() {
     })
 
     return () => unsubscribe()
-  }, [])
+  }, [fullAdmin])
 
   const navItems = [
-    { name: "Overview", path: "/admin", icon: LayoutDashboard },
-    { name: "Notifications", path: "/admin/notifications", icon: Bell },
-    { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle },
-    { name: "Ban Info", path: "/admin/ban-management", icon: Ban },
-    { name: "Users", path: "/admin/users", icon: Users },
-    { name: "Categories", path: "/admin/categories", icon: Grid },
-    { name: "Courses", path: "/admin/courses", icon: BookOpen },
-    { name: "Subjects", path: "/admin/subjects", icon: BookMarked },
-    { name: "Chapters", path: "/admin/chapters", icon: BookMarked },
-    { name: "Classes", path: "/admin/classes", icon: Video },
-    { name: "Class Comments", path: "/admin/class-comments", icon: MessageSquare },
-    { name: "Exams", path: "/admin/exams", icon: FileQuestion },
-    { name: "Exam Results", path: "/admin/exam-results", icon: BarChart3 },
-    { name: "CQ Submissions", path: "/admin/exam-submissions", icon: FileQuestion },
-    { name: "Teachers", path: "/admin/teachers", icon: GraduationCap },
-    { name: "Announcements", path: "/admin/announcements", icon: Megaphone },
-    { name: "Coupons", path: "/admin/coupons", icon: Tag },
-    { name: "Payments", path: "/admin/payments", icon: CreditCard },
-    { name: "Telegram Subs", path: "/admin/telegram", icon: Send },
-    { name: "Settings", path: "/admin/settings", icon: Settings },
-    { name: "Rankings", path: "/admin/rankings", icon: BarChart3 },
+    { name: "Overview", path: "/admin", icon: LayoutDashboard, fullOnly: true },
+    { name: "Administration", path: "/admin/administration", icon: ShieldCheck, fullOnly: true },
+    { name: "Notifications", path: "/admin/notifications", icon: Bell, fullOnly: true },
+    { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle, fullOnly: true },
+    { name: "Ban Info", path: "/admin/ban-management", icon: Ban, fullOnly: true },
+    { name: "Users", path: "/admin/users", icon: Users, fullOnly: true },
+    { name: "Categories", path: "/admin/categories", icon: Grid, fullOnly: true },
+    { name: "Courses", path: "/admin/courses", icon: BookOpen, fullOnly: true },
+    { name: "Subjects", path: "/admin/subjects", icon: BookMarked, fullOnly: true },
+    { name: "Chapters", path: "/admin/chapters", icon: BookMarked, fullOnly: true },
+    { name: "Classes & PDF", path: "/admin/classes", icon: Video, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
+    { name: "Class Comments", path: "/admin/class-comments", icon: MessageSquare, fullOnly: true },
+    { name: "Exam Create", path: "/admin/exams", icon: FileQuestion, permission: ADMIN_PERMISSION_KEYS.EXAM_CREATE },
+    { name: "Exam Results", path: "/admin/exam-results", icon: BarChart3, fullOnly: true },
+    { name: "CQ Submissions", path: "/admin/exam-submissions", icon: FileQuestion, fullOnly: true },
+    { name: "Teachers", path: "/admin/teachers", icon: GraduationCap, fullOnly: true },
+    { name: "Announcements", path: "/admin/announcements", icon: Megaphone, fullOnly: true },
+    { name: "Coupons", path: "/admin/coupons", icon: Tag, fullOnly: true },
+    { name: "Payments", path: "/admin/payments", icon: CreditCard, fullOnly: true },
+    { name: "Telegram Subs", path: "/admin/telegram", icon: Send, fullOnly: true },
+    { name: "Settings", path: "/admin/settings", icon: Settings, fullOnly: true },
+    { name: "Rankings", path: "/admin/rankings", icon: BarChart3, fullOnly: true },
   ]
 
-  const currentPage = navItems.find((item) => item.path === location.pathname)?.name || "Admin Panel"
+  const visibleNavItems = navItems.filter(
+    (item) => (item.fullOnly && fullAdmin) || (item.permission && hasAdminPermission(userProfile, item.permission)),
+  )
+  const currentPage = visibleNavItems.find((item) => item.path === location.pathname)?.name || "Admin Panel"
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -142,7 +166,7 @@ export default function AdminDashboard() {
         <div className="hidden lg:flex flex-col w-56 bg-card border-r border-border overflow-y-auto">
           <div className="p-3">
             <nav className="space-y-0.5">
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const isActive = location.pathname === item.path
                 return (
                   <Link
@@ -177,28 +201,30 @@ export default function AdminDashboard() {
         <div className="flex-1 overflow-y-auto pb-20 lg:pb-0">
           <div className="p-3 sm:p-4 lg:p-4">
             <Routes>
-              <Route index element={<AdminOverview />} />
-              <Route path="notifications" element={<Notifications />} />
-              <Route path="ban-notifications" element={<BannedNotifications />} />
-              <Route path="ban-management" element={<BanManagement />} />
-              <Route path="users" element={<ManageUsers />} />
-              <Route path="courses" element={<ManageCourses />} />
-              <Route path="classes" element={<ManageClasses />} />
-              <Route path="class-comments" element={<ClassComments />} />
-              <Route path="exams" element={<ManageExams />} />
-              <Route path="exams/:examId/questions" element={<ManageExamQuestions />} />
-              <Route path="exam-results" element={<ViewExamResults />} />
-              <Route path="exam-submissions" element={<ViewExamSubmissions />} />
-              <Route path="subjects" element={<ManageSubjects />} />
-              <Route path="chapters" element={<ManageChapters />} />
-              <Route path="categories" element={<ManageCategories />} />
-              <Route path="teachers" element={<ManageTeachers />} />
-              <Route path="announcements" element={<ManageAnnouncements />} />
-              <Route path="coupons" element={<ManageCoupons />} />
-              <Route path="payments" element={<ManagePayments />} />
-              <Route path="telegram" element={<ManageTelegramSubmissions />} />
-              <Route path="settings" element={<WebsiteSettings />} />
-              <Route path="rankings" element={<Rankings />} />
+              <Route index element={fullAdmin ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
+              <Route path="administration" element={<AdminRoute fullOnly><ManageAdministration /></AdminRoute>} />
+              <Route path="notifications" element={<AdminRoute fullOnly><Notifications /></AdminRoute>} />
+              <Route path="ban-notifications" element={<AdminRoute fullOnly><BannedNotifications /></AdminRoute>} />
+              <Route path="ban-management" element={<AdminRoute fullOnly><BanManagement /></AdminRoute>} />
+              <Route path="users" element={<AdminRoute fullOnly><ManageUsers /></AdminRoute>} />
+              <Route path="courses" element={<AdminRoute fullOnly><ManageCourses /></AdminRoute>} />
+              <Route path="classes" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageClasses /></AdminRoute>} />
+              <Route path="class-comments" element={<AdminRoute fullOnly><ClassComments /></AdminRoute>} />
+              <Route path="exams" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_CREATE}><ManageExams /></AdminRoute>} />
+              <Route path="exams/:examId/questions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_CREATE}><ManageExamQuestions /></AdminRoute>} />
+              <Route path="exam-results" element={<AdminRoute fullOnly><ViewExamResults /></AdminRoute>} />
+              <Route path="exam-submissions" element={<AdminRoute fullOnly><ViewExamSubmissions /></AdminRoute>} />
+              <Route path="subjects" element={<AdminRoute fullOnly><ManageSubjects /></AdminRoute>} />
+              <Route path="chapters" element={<AdminRoute fullOnly><ManageChapters /></AdminRoute>} />
+              <Route path="categories" element={<AdminRoute fullOnly><ManageCategories /></AdminRoute>} />
+              <Route path="teachers" element={<AdminRoute fullOnly><ManageTeachers /></AdminRoute>} />
+              <Route path="announcements" element={<AdminRoute fullOnly><ManageAnnouncements /></AdminRoute>} />
+              <Route path="coupons" element={<AdminRoute fullOnly><ManageCoupons /></AdminRoute>} />
+              <Route path="payments" element={<AdminRoute fullOnly><ManagePayments /></AdminRoute>} />
+              <Route path="telegram" element={<AdminRoute fullOnly><ManageTelegramSubmissions /></AdminRoute>} />
+              <Route path="settings" element={<AdminRoute fullOnly><WebsiteSettings /></AdminRoute>} />
+              <Route path="rankings" element={<AdminRoute fullOnly><Rankings /></AdminRoute>} />
+              <Route path="*" element={<Navigate to={getDefaultAdminPath(userProfile)} replace />} />
             </Routes>
           </div>
         </div>
@@ -228,7 +254,7 @@ export default function AdminDashboard() {
               <div className="px-4 pb-6">
                 <h2 className="text-lg font-bold mb-4">Admin Menu</h2>
                 <nav className="space-y-2">
-                  {navItems.map((item) => {
+                  {visibleNavItems.map((item) => {
                     const isActive = location.pathname === item.path
                     return (
                       <Link
