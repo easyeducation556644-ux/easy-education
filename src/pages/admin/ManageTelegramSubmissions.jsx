@@ -3,8 +3,8 @@ import { toast } from "../../hooks/use-toast"
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Send, Search, Download, Mail, Phone } from "lucide-react"
-import { collection, getDocs, query, orderBy } from "firebase/firestore"
+import { Send, Search, Download, Mail, Phone, CheckCircle2, Clock3 } from "lucide-react"
+import { collection, doc, getDocs, query, orderBy, serverTimestamp, updateDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 
 export default function ManageTelegramSubmissions() {
@@ -12,6 +12,7 @@ export default function ManageTelegramSubmissions() {
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedCourse, setSelectedCourse] = useState("all")
+  const [joiningId, setJoiningId] = useState(null)
 
   useEffect(() => {
     fetchSubmissions()
@@ -50,15 +51,50 @@ export default function ManageTelegramSubmissions() {
     return matchesSearch && matchesCourse
   })
 
+  const markAsJoined = async (submissionId) => {
+    setJoiningId(submissionId)
+
+    try {
+      await updateDoc(doc(db, "telegramSubmissions", submissionId), {
+        status: "joined",
+        joinedAt: serverTimestamp(),
+      })
+
+      setSubmissions((current) =>
+        current.map((submission) =>
+          submission.id === submissionId
+            ? { ...submission, status: "joined", joinedAt: { toDate: () => new Date() } }
+            : submission,
+        ),
+      )
+
+      toast({
+        title: "Student marked as joined",
+        description: "The Telegram join button is now hidden for this student.",
+      })
+    } catch (error) {
+      console.error("Error marking telegram submission as joined:", error)
+      toast({
+        variant: "destructive",
+        title: "Update failed",
+        description: "Could not mark this student as joined. Please try again.",
+      })
+    } finally {
+      setJoiningId(null)
+    }
+  }
+
   const exportToCSV = () => {
-    const headers = ["Name", "Email", "Telegram ID", "Mobile Number", "Course", "Submitted At"]
+    const headers = ["Name", "Email", "Telegram ID", "Mobile Number", "Course", "Submitted At", "Status", "Joined At"]
     const rows = filteredSubmissions.map(s => [
       s.userName || "",
       s.userEmail || "",
       s.telegramId || "",
       s.telegramMobile || "",
       s.courseName || "",
-      s.submittedAt?.toDate?.()?.toLocaleString() || ""
+      s.submittedAt?.toDate?.()?.toLocaleString() || "",
+      s.status === "joined" ? "Joined" : "Requested",
+      s.joinedAt?.toDate?.()?.toLocaleString() || "",
     ])
 
     const csv = [headers, ...rows]
@@ -147,7 +183,10 @@ export default function ManageTelegramSubmissions() {
                     Course
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Submitted
+                    Submitted Date & Time
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Status
                   </th>
                 </tr>
               </thead>
@@ -193,6 +232,40 @@ export default function ManageTelegramSubmissions() {
                       <p className="text-xs text-muted-foreground">
                         {submission.submittedAt?.toDate?.()?.toLocaleTimeString() || ""}
                       </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      {submission.status === "joined" ? (
+                        <div className="space-y-1.5">
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-semibold text-green-600 dark:text-green-400">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Joined
+                          </span>
+                          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <Clock3 className="h-3 w-3" />
+                            <span>
+                              {submission.joinedAt?.toDate?.()?.toLocaleDateString() || "Just now"}
+                              {submission.joinedAt?.toDate?.()
+                                ? ` ${submission.joinedAt.toDate().toLocaleTimeString()}`
+                                : ""}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-start gap-2">
+                          <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                            Requested
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => markAsJoined(submission.id)}
+                            disabled={joiningId === submission.id}
+                            className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            {joiningId === submission.id ? "Updating..." : "Joined"}
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </motion.tr>
                 ))}
