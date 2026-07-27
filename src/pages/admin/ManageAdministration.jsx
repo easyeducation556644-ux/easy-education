@@ -20,7 +20,7 @@ import {
 import { Search, ShieldCheck, X } from "lucide-react"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
-import { getRoleLabel, getStaffRole, isFullAdmin, STAFF_ROLES } from "../../lib/adminPermissions"
+import { getRoleLabel, getStaffRole, STAFF_ROLES } from "../../lib/adminPermissions"
 
 const PAGE_SIZE = 10
 const TABS = [
@@ -51,6 +51,7 @@ export default function ManageAdministration() {
   const [lastVisible, setLastVisible] = useState(null)
   const [hasNextPage, setHasNextPage] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
+  const [selectedRole, setSelectedRole] = useState("user")
   const [classPdfEnabled, setClassPdfEnabled] = useState(false)
   const [examEnabled, setExamEnabled] = useState(false)
   const [classPdfCourseIds, setClassPdfCourseIds] = useState([])
@@ -176,9 +177,14 @@ export default function ManageAdministration() {
     const access = user.adminAccess || {}
     const classIds = access.classPdfCourseIds || []
     const examIds = access.examCourseIds || []
+    const currentRole =
+      user.role === "admin" && access.mode === "limited"
+        ? getStaffRole({ classPdfCourseIds: classIds, examCourseIds: examIds })
+        : user.role || "user"
     setSelectedUser(user)
-    setClassPdfEnabled(classIds.length > 0)
-    setExamEnabled(examIds.length > 0)
+    setSelectedRole(currentRole)
+    setClassPdfEnabled(currentRole === "class_pdf_admin" || currentRole === "class_exam_admin")
+    setExamEnabled(currentRole === "exam_create_admin" || currentRole === "class_exam_admin")
     setClassPdfCourseIds(classIds)
     setExamCourseIds(examIds)
     setCourseSearchQuery("")
@@ -194,27 +200,32 @@ export default function ManageAdministration() {
     if (!selectedUser) return
     const nextClassIds = classPdfEnabled ? classPdfCourseIds : []
     const nextExamIds = examEnabled ? examCourseIds : []
-    const role = getStaffRole({ classPdfCourseIds: nextClassIds, examCourseIds: nextExamIds })
 
-    if (classPdfEnabled && nextClassIds.length === 0) {
+    if ((selectedRole === "class_pdf_admin" || selectedRole === "class_exam_admin") && nextClassIds.length === 0) {
       toast({ variant: "error", title: "Course Required", description: "Select a course for Class & PDF Admin." })
       return
     }
-    if (examEnabled && nextExamIds.length === 0) {
+    if ((selectedRole === "exam_create_admin" || selectedRole === "class_exam_admin") && nextExamIds.length === 0) {
       toast({ variant: "error", title: "Course Required", description: "Select a course for Exam Create Admin." })
-      return
-    }
-    if (role === "user") {
-      toast({ variant: "error", title: "Permission Required", description: "Enable at least one staff permission." })
       return
     }
 
     setSaving(true)
     try {
+      if (selectedRole === "admin" || selectedRole === "user") {
+        await updateDoc(doc(db, "users", selectedUser.id), {
+          role: selectedRole,
+          adminAccess: deleteField(),
+        })
+        setSelectedUser(null)
+        toast({ title: "Role Updated", description: `${getRoleLabel(selectedRole)} role saved successfully.` })
+        return
+      }
+
       const adminAccess = { classPdfCourseIds: nextClassIds, examCourseIds: nextExamIds }
-      await updateDoc(doc(db, "users", selectedUser.id), { role, adminAccess })
+      await updateDoc(doc(db, "users", selectedUser.id), { role: selectedRole, adminAccess })
       setSelectedUser(null)
-      toast({ title: "Access Updated", description: `${getRoleLabel(role)} access saved successfully.` })
+      toast({ title: "Access Updated", description: `${getRoleLabel(selectedRole)} access saved successfully.` })
     } catch (error) {
       console.error("Error saving staff access:", error)
       toast({ variant: "error", title: "Save Failed", description: error.message || "Failed to save permissions." })
@@ -283,24 +294,22 @@ export default function ManageAdministration() {
                 <p className="text-sm text-muted-foreground truncate">{user.email}</p>
                 <p className="text-xs mt-1 capitalize">{getRoleLabel(user.role, user.adminAccess)}</p>
               </div>
-              {!isFullAdmin(user) && (
-                <div className="flex gap-2">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => openAccessEditor(user)}
+                  className="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90"
+                >
+                  {!user.role || user.role === "user" ? "Assign Role" : "Change Role"}
+                </button>
+                {user.role && user.role !== "user" && (
                   <button
-                    onClick={() => openAccessEditor(user)}
-                    className="px-3 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:bg-primary/90"
+                    onClick={() => handleDowngrade(user)}
+                    className="px-3 py-2 text-sm border border-red-500/30 text-red-500 rounded-lg hover:bg-red-500/10"
                   >
-                    {STAFF_ROLES.includes(user.role) ? "Edit Role Access" : "Assign Staff Role"}
+                    Downgrade to User
                   </button>
-                  {(STAFF_ROLES.includes(user.role) || user.adminAccess?.mode === "limited") && (
-                    <button
-                      onClick={() => handleDowngrade(user)}
-                      className="px-3 py-2 text-sm border border-red-500/30 text-red-500 rounded-lg hover:bg-red-500/10"
-                    >
-                      Downgrade to User
-                    </button>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
             </div>
           ))
         )}
@@ -331,7 +340,7 @@ export default function ManageAdministration() {
           <div className="bg-card border border-border rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
-                <h2 className="text-xl font-bold">Assign Staff Role</h2>
+                <h2 className="text-xl font-bold">Assign or Change Role</h2>
                 <p className="text-sm text-muted-foreground">{selectedUser.name} · {selectedUser.email}</p>
               </div>
               <button onClick={() => setSelectedUser(null)} className="p-2 hover:bg-muted rounded-lg">
@@ -339,6 +348,27 @@ export default function ManageAdministration() {
               </button>
             </div>
 
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">Role</label>
+              <select
+                value={selectedRole}
+                onChange={(event) => {
+                  const role = event.target.value
+                  setSelectedRole(role)
+                  setClassPdfEnabled(role === "class_pdf_admin" || role === "class_exam_admin")
+                  setExamEnabled(role === "exam_create_admin" || role === "class_exam_admin")
+                }}
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value="admin">Full Admin</option>
+                <option value="class_pdf_admin">Class & PDF Admin</option>
+                <option value="exam_create_admin">Exam Create Admin</option>
+                <option value="class_exam_admin">Class, PDF & Exam Admin</option>
+                <option value="user">Normal User</option>
+              </select>
+            </div>
+
+            {(classPdfEnabled || examEnabled) && (
             <div className="relative mb-4">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
@@ -348,25 +378,28 @@ export default function ManageAdministration() {
                 className="w-full pl-9 pr-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
+            )}
 
-            <PermissionSection
+            {classPdfEnabled && <PermissionSection
               title="Class & PDF Admin"
               description="Can manage classes/PDF resources only in selected courses."
               enabled={classPdfEnabled}
               setEnabled={setClassPdfEnabled}
+              locked
               courses={filteredCourses}
               selectedIds={classPdfCourseIds}
               toggleCourse={(courseId) => toggleCourse(courseId, classPdfCourseIds, setClassPdfCourseIds)}
-            />
-            <PermissionSection
+            />}
+            {examEnabled && <PermissionSection
               title="Exam Create Admin"
               description="Can create exams and questions only in selected courses."
               enabled={examEnabled}
               setEnabled={setExamEnabled}
+              locked
               courses={filteredCourses}
               selectedIds={examCourseIds}
               toggleCourse={(courseId) => toggleCourse(courseId, examCourseIds, setExamCourseIds)}
-            />
+            />}
 
             <div className="flex gap-2 mt-5">
               <button onClick={() => setSelectedUser(null)} className="flex-1 px-4 py-2 bg-muted rounded-lg">Cancel</button>
@@ -385,11 +418,17 @@ export default function ManageAdministration() {
   )
 }
 
-function PermissionSection({ title, description, enabled, setEnabled, courses, selectedIds, toggleCourse }) {
+function PermissionSection({ title, description, enabled, setEnabled, locked = false, courses, selectedIds, toggleCourse }) {
   return (
     <section className="border border-border rounded-xl p-4 mb-4">
       <label className="flex items-start gap-3 cursor-pointer">
-        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="mt-1 w-4 h-4" />
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={locked}
+          onChange={(event) => setEnabled(event.target.checked)}
+          className="mt-1 w-4 h-4"
+        />
         <span>
           <span className="font-semibold flex items-center gap-2"><ShieldCheck className="w-4 h-4" />{title}</span>
           <span className="block text-sm text-muted-foreground">{description}</span>
