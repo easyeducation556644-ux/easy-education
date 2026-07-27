@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { motion, AnimatePresence } from "framer-motion"
 import { BookOpen, ArrowLeft, Lock, Archive, FileQuestion, Send, CheckCircle2, X, ArrowRight } from "lucide-react"
-import { doc, getDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from "firebase/firestore"
+import { doc, getDoc, collection, query, where, getDocs, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { useExam } from "../contexts/ExamContext"
@@ -28,6 +28,7 @@ export default function CourseSubjects() {
   const [telegramId, setTelegramId] = useState("")
   const [telegramMobile, setTelegramMobile] = useState("")
   const [telegramSubmitted, setTelegramSubmitted] = useState(false)
+  const [telegramJoined, setTelegramJoined] = useState(false)
   const [submittingTelegram, setSubmittingTelegram] = useState(false)
   const [showTelegramModal, setShowTelegramModal] = useState(false)
   const [telegramStep, setTelegramStep] = useState(1)
@@ -38,24 +39,29 @@ export default function CourseSubjects() {
 
   useEffect(() => {
     if (currentUser && actualCourseId) {
-      checkTelegramSubmission()
+      return checkTelegramSubmission()
     }
   }, [currentUser, actualCourseId])
 
-  const checkTelegramSubmission = async () => {
+  const checkTelegramSubmission = () => {
     if (!currentUser || !actualCourseId) return
     
-    try {
-      const submissionQuery = query(
-        collection(db, "telegramSubmissions"),
-        where("userId", "==", currentUser.uid),
-        where("courseId", "==", actualCourseId)
-      )
-      const submissionSnapshot = await getDocs(submissionQuery)
-      setTelegramSubmitted(!submissionSnapshot.empty)
-    } catch (error) {
-      console.error("Error checking telegram submission:", error)
-    }
+    const submissionQuery = query(
+      collection(db, "telegramSubmissions"),
+      where("userId", "==", currentUser.uid),
+      where("courseId", "==", actualCourseId)
+    )
+
+    return onSnapshot(
+      submissionQuery,
+      (submissionSnapshot) => {
+        setTelegramSubmitted(!submissionSnapshot.empty)
+        setTelegramJoined(
+          submissionSnapshot.docs.some((submissionDoc) => submissionDoc.data().status === "joined"),
+        )
+      },
+      (error) => console.error("Error checking telegram submission:", error),
+    )
   }
 
   const handleTelegramSubmit = async (e) => {
@@ -73,6 +79,7 @@ export default function CourseSubjects() {
         telegramMobile: telegramMobile.trim(),
         courseId: actualCourseId,
         courseName: course?.title || "",
+        status: "requested",
         submittedAt: serverTimestamp()
       })
 
@@ -279,7 +286,7 @@ export default function CourseSubjects() {
           <p className="text-muted-foreground">Select a subject to view chapters</p>
         </div>
 
-        {course?.telegramLink && currentUser && hasAccess && (
+        {course?.telegramLink && currentUser && hasAccess && !telegramJoined && (
           <div className="mb-6">
             <button
               onClick={() => setShowTelegramModal(true)}
