@@ -3,12 +3,14 @@ import { toast } from "../../hooks/use-toast"
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { CreditCard, Check, X, Clock, Download, Trash2, Search, Calendar } from "lucide-react"
+import { CreditCard, Check, X, Clock, Download, Trash2, Search, Calendar, ChevronLeft, ChevronRight } from "lucide-react"
 import { collection, getDocs, updateDoc, doc, setDoc, serverTimestamp, query, orderBy, deleteDoc, where, addDoc } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { sendPaymentConfirmationEmail } from "../../lib/email"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
+
+const PAYMENTS_PER_PAGE = 10
 
 export default function ManagePayments() {
   const { userProfile } = useAuth()
@@ -19,6 +21,7 @@ export default function ManagePayments() {
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
   const [exportStartDate, setExportStartDate] = useState("")
   const [exportEndDate, setExportEndDate] = useState("")
+  const [currentPage, setCurrentPage] = useState(1)
 
   useEffect(() => {
     fetchPayments()
@@ -294,6 +297,21 @@ export default function ManagePayments() {
     
     return matchesFilter && matchesSearch
   })
+  const totalPages = Math.max(1, Math.ceil(filteredPayments.length / PAYMENTS_PER_PAGE))
+  const paginatedPayments = filteredPayments.slice(
+    (currentPage - 1) * PAYMENTS_PER_PAGE,
+    currentPage * PAYMENTS_PER_PAGE,
+  )
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [filter, searchQuery])
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages)
+    }
+  }, [currentPage, totalPages])
 
   const getStatusBadge = (status) => {
     const styles = {
@@ -411,7 +429,7 @@ export default function ManagePayments() {
       </div>
 
       <div className="space-y-4">
-        {filteredPayments.map((payment) => (
+        {paginatedPayments.map((payment) => (
           <motion.div
             key={payment.id}
             initial={{ opacity: 0, y: 20 }}
@@ -535,6 +553,38 @@ export default function ManagePayments() {
           </motion.div>
         ))}
       </div>
+
+      {filteredPayments.length > 0 && (
+        <div className="mt-6 flex flex-col items-center justify-between gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row">
+          <p className="text-xs text-muted-foreground sm:text-sm">
+            Showing {(currentPage - 1) * PAYMENTS_PER_PAGE + 1}–
+            {Math.min(currentPage * PAYMENTS_PER_PAGE, filteredPayments.length)} of {filteredPayments.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+              disabled={currentPage === 1}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </button>
+            <span className="min-w-20 text-center text-xs font-medium sm:text-sm">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+              disabled={currentPage === totalPages}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {filteredPayments.length === 0 && (
         <div className="text-center py-12">
