@@ -169,13 +169,26 @@ export default function Checkout() {
 
   const calculateDiscount = useMemo(() => {
     if (!appliedCoupon) return 0
-    const subtotal = getTotal()
+
+    const hasCourseRestriction =
+      Array.isArray(appliedCoupon.applicableCourses) && appliedCoupon.applicableCourses.length > 0
+    const eligibleSubtotal = hasCourseRestriction
+      ? cartItems
+          .filter((item) => appliedCoupon.applicableCourses.includes(item.id))
+          .reduce((total, item) => total + (Number(item.price) || 0), 0)
+      : getTotal()
+
+    if (eligibleSubtotal <= 0) return 0
+
     if (appliedCoupon.discountType === "percentage") {
-      return (subtotal * appliedCoupon.discountPercent) / 100
+      return Math.min(
+        eligibleSubtotal,
+        (eligibleSubtotal * (Number(appliedCoupon.discountPercent) || 0)) / 100,
+      )
     } else {
-      return appliedCoupon.discountAmount
+      return Math.min(eligibleSubtotal, Number(appliedCoupon.discountAmount) || 0)
     }
-  }, [appliedCoupon, getTotal])
+  }, [appliedCoupon, cartItems, getTotal])
 
   const calculateTotal = useMemo(() => {
     const subtotal = getTotal()
@@ -391,7 +404,8 @@ export default function Checkout() {
                     <div className="flex justify-between text-xs sm:text-sm text-green-600 dark:text-green-400">
                       <span>
                         Discount
-                        {appliedCoupon.discountType === "percentage" ? ` (${appliedCoupon.discountPercent}%)` : ""}:
+                        {appliedCoupon.discountType === "percentage" ? ` (${appliedCoupon.discountPercent}%)` : ""}
+                        {appliedCoupon.applicableCourses?.length > 0 ? " on eligible courses" : ""}:
                       </span>
                       <span>-৳{discount.toFixed(2)}</span>
                     </div>
