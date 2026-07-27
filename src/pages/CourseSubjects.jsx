@@ -141,18 +141,25 @@ export default function CourseSubjects() {
         if (isAdmin) {
           setHasAccess(true)
         } else if (currentUser) {
-          const paymentsQuery = query(
-            collection(db, "payments"),
-            where("userId", "==", currentUser.uid),
-            where("status", "==", "approved"),
+          const enrollmentDoc = await getDoc(
+            doc(db, "userCourses", `${currentUser.uid}_${resolvedCourseId}`),
           )
-          const paymentsSnapshot = await getDocs(paymentsQuery)
 
-          const hasApprovedCourse = paymentsSnapshot.docs.some((doc) => {
-            const payment = doc.data()
-            return payment.courses?.some((c) => c.id === resolvedCourseId)
-          })
-          setHasAccess(hasApprovedCourse)
+          if (enrollmentDoc.exists()) {
+            setHasAccess(true)
+          } else {
+            const paymentsQuery = query(
+              collection(db, "payments"),
+              where("userId", "==", currentUser.uid),
+              where("status", "==", "approved"),
+            )
+            const paymentsSnapshot = await getDocs(paymentsQuery)
+            const hasApprovedCourse = paymentsSnapshot.docs.some((paymentDoc) => {
+              const payment = paymentDoc.data()
+              return payment.courses?.some((c) => c.id === resolvedCourseId)
+            })
+            setHasAccess(hasApprovedCourse)
+          }
         }
 
         const classesQuery = query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))
