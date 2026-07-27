@@ -986,6 +986,7 @@ export function AuthProvider({ children }) {
     signOut,
     loading,
     isAdmin: userProfile?.role === "admin",
+    isAdminPanelUser: userProfile?.role === "admin" || ["class_pdf_admin", "exam_create_admin", "class_exam_admin"].includes(userProfile?.role),
     isBanned: banInfo?.isBanned || false,
     banInfo,
     refreshUserProfile,
