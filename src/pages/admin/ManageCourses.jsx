@@ -21,6 +21,8 @@ const initialForm = () => ({
   courseFormat: "single",
   bundledCourses: [],
   price: "",
+  youtubeSheetPrice: "",
+  officialAccessPrice: "",
   status: "running",
   publishStatus: "published",
   imageType: "upload",
@@ -137,6 +139,8 @@ export default function ManageCourses() {
       courseFormat: course.courseFormat || "single",
       bundledCourses: course.bundledCourses || [],
       price: course.price || "",
+      youtubeSheetPrice: course.purchaseOptions?.find((option) => option.id === "youtube-sheet")?.price || "",
+      officialAccessPrice: course.purchaseOptions?.find((option) => option.id === "official-access")?.price || "",
       status: course.status || "running",
       publishStatus: course.publishStatus || "published",
       imageType: course.thumbnailURL ? "link" : "upload",
@@ -200,6 +204,14 @@ export default function ManageCourses() {
         courseFormat: formData.courseFormat || "single",
         bundledCourses: formData.courseFormat === "bundle" ? formData.bundledCourses : [],
         price: Number(formData.price) || 0,
+        purchaseOptions: [
+          formData.youtubeSheetPrice !== ""
+            ? { id: "youtube-sheet", label: "YouTube Sheet সহ", price: Number(formData.youtubeSheetPrice) }
+            : null,
+          formData.officialAccessPrice !== ""
+            ? { id: "official-access", label: "Official Access (FB+Web)", price: Number(formData.officialAccessPrice) }
+            : null,
+        ].filter((option) => option && Number.isFinite(option.price) && option.price >= 0),
         status: formData.status,
         publishStatus: formData.publishStatus,
         thumbnailURL: thumbnailURL || "",
@@ -755,6 +767,39 @@ export default function ManageCourses() {
                         <option value="published">Published</option>
                         <option value="draft">Draft</option>
                       </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-muted/20 p-4">
+                    <div className="mb-3">
+                      <h3 className="text-sm font-semibold">Optional Purchase Packages</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Leave both empty to use the normal course price without showing package options.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <label className="block text-sm font-medium mb-1.5">YouTube Sheet সহ — Price (৳)</label>
+                        <input
+                          type="number"
+                          value={formData.youtubeSheetPrice}
+                          onChange={(e) => setFormData({ ...formData, youtubeSheetPrice: e.target.value })}
+                          className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                          placeholder="Optional"
+                          min="0"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-1.5">Official Access (FB+Web) — Price (৳)</label>
+                        <input
+                          type="number"
+                          value={formData.officialAccessPrice}
+                          onChange={(e) => setFormData({ ...formData, officialAccessPrice: e.target.value })}
+                          className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                          placeholder="Optional"
+                          min="0"
+                        />
+                      </div>
                     </div>
                   </div>
 
