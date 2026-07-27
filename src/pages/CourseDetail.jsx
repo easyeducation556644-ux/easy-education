@@ -23,6 +23,7 @@ export default function CourseDetail() {
   const [selectedDemoVideo, setSelectedDemoVideo] = useState(null)
   const [enrolledCount, setEnrolledCount] = useState(0)
   const [selectedPurchaseOption, setSelectedPurchaseOption] = useState("")
+  const [enrollingFree, setEnrollingFree] = useState(false)
 
   const purchaseOptions = (course?.purchaseOptions || []).filter(
     (option) => option?.id && option?.label && Number.isFinite(Number(option.price)),
@@ -158,32 +159,53 @@ export default function CourseDetail() {
       return
     }
 
-    try {
-      const { addDoc, serverTimestamp } = await import("firebase/firestore")
+    if (enrollingFree) return
+    setEnrollingFree(true)
 
-      await addDoc(collection(db, "payments"), {
-        userId: currentUser.uid,
-        userName: currentUser.displayName || "User",
-        userEmail: currentUser.email,
-        courses: [
-          {
-            id: course.id,
-            title: course.title,
-            price: 0,
-          },
-        ],
-        subtotal: 0,
-        discount: 0,
-        finalAmount: 0,
-        status: "approved",
-        submittedAt: serverTimestamp(),
-        isFreeEnrollment: true,
+    try {
+      const transactionId = `FREE_${Date.now()}_${currentUser.uid}`
+      const response = await fetch("/api/process-enrollment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transaction_id: transactionId,
+          skipPaymentVerification: true,
+          userId: currentUser.uid,
+          userName: currentUser.displayName || "User",
+          userEmail: currentUser.email || "",
+          mobileNumber: "",
+          courses: [
+            {
+              id: course.id,
+              title: course.title,
+              price: 0,
+              courseFormat: course.courseFormat || "single",
+              bundledCourses: course.bundledCourses || [],
+            },
+          ],
+          subtotal: 0,
+          discount: 0,
+          couponCode: "",
+          finalAmount: 0,
+          paymentMethod: "Free Enrollment",
+        }),
       })
 
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Failed to enroll")
+      }
+
+      setHasAccess(true)
+      setEnrolledCount((count) => count + (result.alreadyProcessed ? 0 : 1))
       await fetchCourseData()
     } catch (error) {
       console.error("Error enrolling in free course:", error)
       alert("Failed to enroll. Please try again.")
+    } finally {
+      setEnrollingFree(false)
     }
   }
 
@@ -503,10 +525,11 @@ export default function CourseDetail() {
                     {displayedPrice === 0 ? (
                       <button
                         onClick={handleEnrollFree}
-                        className="w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                        disabled={enrollingFree}
+                        className="w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <Check className="w-5 h-5" />
-                        Enroll Free
+                        {enrollingFree ? "Enrolling..." : "Enroll Free"}
                       </button>
                     ) : (
                       <>
