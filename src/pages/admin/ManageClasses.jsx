@@ -9,8 +9,11 @@ import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import { useExam } from "../../contexts/ExamContext"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+import { ADMIN_PERMISSION_KEYS, getAllowedCourseIds } from "../../lib/adminPermissions"
 
 export default function ManageClasses() {
+  const { userProfile } = useAuth()
   const [courses, setCourses] = useState([])
   const [classes, setClasses] = useState([])
   const [subjects, setSubjects] = useState([])
@@ -99,7 +102,8 @@ export default function ManageClasses() {
         id: doc.id,
         ...doc.data(),
       }))
-      setCourses(coursesData)
+      const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.CLASS_PDF)
+      setCourses(allowedCourseIds === null ? coursesData : coursesData.filter((course) => allowedCourseIds.includes(course.id)))
     } catch (error) {
       console.error("Error fetching courses:", error)
     } finally {
