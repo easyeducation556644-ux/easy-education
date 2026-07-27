@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Play,
@@ -14,6 +14,105 @@ import {
   RotateCcw,
 } from "lucide-react"
 
+const YOUTUBE_REGEX =
+  /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
+const DRIVE_REGEX =
+  /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
+const DAILYMOTION_REGEX =
+  /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
+const RUMBLE_REGEX =
+  /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
+const DEFAULT_PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+
+let youtubeApiPromise
+
+function loadYouTubeIframeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT)
+  if (youtubeApiPromise) return youtubeApiPromise
+
+  youtubeApiPromise = new Promise((resolve, reject) => {
+    const previousReadyHandler = window.onYouTubeIframeAPIReady
+    const handleReady = () => {
+      try {
+        previousReadyHandler?.()
+      } catch {
+        // Another player callback must not block this player.
+      }
+      resolve(window.YT)
+    }
+
+    window.onYouTubeIframeAPIReady = handleReady
+
+    let script = document.querySelector(
+      'script[src="https://www.youtube.com/iframe_api"]',
+    )
+    let shouldAppend = false
+
+    if (!script) {
+      script = document.createElement("script")
+      script.src = "https://www.youtube.com/iframe_api"
+      script.async = true
+      shouldAppend = true
+    }
+
+    script.addEventListener(
+      "error",
+      () => {
+        youtubeApiPromise = null
+        reject(new Error("Unable to load YouTube player API"))
+      },
+      { once: true },
+    )
+
+    if (shouldAppend) {
+      document.head.appendChild(script)
+    }
+  })
+
+  return youtubeApiPromise
+}
+
+let hlsApiPromise
+
+function loadHlsApi() {
+  if (window.Hls) return Promise.resolve(window.Hls)
+  if (hlsApiPromise) return hlsApiPromise
+
+  hlsApiPromise = new Promise((resolve, reject) => {
+    let script = document.querySelector('script[src*="hls.js"]')
+    let shouldAppend = false
+
+    const handleLoad = () => {
+      if (window.Hls) {
+        resolve(window.Hls)
+      } else {
+        hlsApiPromise = null
+        reject(new Error("HLS library did not initialize"))
+      }
+    }
+    const handleError = () => {
+      hlsApiPromise = null
+      reject(new Error("Unable to load HLS library"))
+    }
+
+    if (!script) {
+      script = document.createElement("script")
+      script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest"
+      script.async = true
+      shouldAppend = true
+    }
+
+    script.addEventListener("load", handleLoad, { once: true })
+    script.addEventListener("error", handleError, { once: true })
+
+    if (shouldAppend) {
+      document.head.appendChild(script)
+    }
+  })
+
+  return hlsApiPromise
+}
+
 export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [playing, setPlaying] = useState(false)
   const [volume, setVolume] = useState(100)
@@ -26,10 +125,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [showSettings, setShowSettings] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [isYouTube, setIsYouTube] = useState(false)
-  const [isDrive, setIsDrive] = useState(false)
-  const [isDailymotion, setIsDailymotion] = useState(false)
-  const [isRumble, setIsRumble] = useState(false)
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false)
   const [isSeeking, setIsSeeking] = useState(false)
   const [showVolumeSlider, setShowVolumeSlider] = useState(false)
@@ -45,9 +140,24 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const [showDoubleTapLeft, setShowDoubleTapLeft] = useState(false)
   const [showDoubleTapRight, setShowDoubleTapRight] = useState(false)
   const [doubleTapCount, setDoubleTapCount] = useState({ left: 0, right: 0 })
+  const [playbackRates, setPlaybackRates] = useState(DEFAULT_PLAYBACK_RATES)
+
+  const provider = useMemo(() => {
+    if (!url) return "none"
+    if (YOUTUBE_REGEX.test(url)) return "youtube"
+    if (DRIVE_REGEX.test(url)) return "drive"
+    if (DAILYMOTION_REGEX.test(url)) return "dailymotion"
+    if (RUMBLE_REGEX.test(url)) return "rumble"
+    return "native"
+  }, [url])
+  const isYouTube = provider === "youtube"
+  const isDrive = provider === "drive"
+  const isDailymotion = provider === "dailymotion"
+  const isRumble = provider === "rumble"
 
   const videoRef = useRef(null)
   const containerRef = useRef(null)
+  const youtubeContainerRef = useRef(null)
   const playerRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const hlsRef = useRef(null)
@@ -57,49 +167,56 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const volumeSliderRef = useRef(null)
   const loadTimeoutRef = useRef(null)
   const hlsTimeoutRef = useRef(null)
+  const pendingSeekRef = useRef(0)
+  const onNextRef = useRef(onNext)
+  const volumeRef = useRef(volume)
+  const playbackRateRef = useRef(playbackRate)
 
   useEffect(() => {
-    if (!url) return
-    const youtubeRegex = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
-    const driveRegex = /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
-    const dailymotionRegex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
-    const rumbleRegex = /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
-    const isYT = youtubeRegex.test(url)
-    const isDR = driveRegex.test(url)
-    const isDM = dailymotionRegex.test(url)
-    const isRB = rumbleRegex.test(url)
-    setIsYouTube(isYT)
-    setIsDrive(isDR)
-    setIsDailymotion(isDM)
-    setIsRumble(isRB)
+    onNextRef.current = onNext
+  }, [onNext])
+
+  useEffect(() => {
+    volumeRef.current = volume
+  }, [volume])
+
+  useEffect(() => {
+    playbackRateRef.current = playbackRate
+  }, [playbackRate])
+
+  useEffect(() => {
+    setPlaying(false)
+    setCurrentTime(0)
+    setDuration(0)
+    setBuffered(0)
+    setHasStartedPlaying(false)
+    setIsBuffering(false)
+    setIsSeekingLoading(false)
+    setIsSeeking(false)
+    setShowSettings(false)
+    setPlaybackRates(DEFAULT_PLAYBACK_RATES)
+    pendingSeekRef.current = 0
     setError(null)
-    setLoading(true)
-    if (isDR || isDM || isRB) {
-      setLoading(false)
-    }
-  }, [url])
+    setLoading(Boolean(url) && !isDrive && !isDailymotion && !isRumble)
+  }, [url, isDrive, isDailymotion, isRumble])
 
   const getYouTubeId = (url) => {
-    const regex = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/
-    const match = url.match(regex)
+    const match = url.match(YOUTUBE_REGEX)
     return match ? match[1] : null
   }
 
   const getDriveId = (url) => {
-    const regex = /drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/
-    const match = url.match(regex)
+    const match = url.match(DRIVE_REGEX)
     return match ? match[1] : null
   }
 
   const getDailymotionId = (url) => {
-    const regex = /(?:dailymotion\.com\/video\/|dai\.ly\/)([a-zA-Z0-9]+)/
-    const match = url.match(regex)
+    const match = url.match(DAILYMOTION_REGEX)
     return match ? match[1] : null
   }
 
   const getRumbleId = (url) => {
-    const regex = /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
-    const match = url.match(regex)
+    const match = url.match(RUMBLE_REGEX)
     return match ? match[1] : null
   }
 
@@ -137,153 +254,160 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     const videoId = getYouTubeId(url)
     if (!videoId) {
       setError("Invalid YouTube URL")
+      setLoading(false)
       return
     }
 
-    const loadYouTubePlayer = () => {
-      if (playerRef.current) {
-        playerRef.current.destroy()
-        playerRef.current = null
+    let cancelled = false
+    let youtubePlayer = null
+
+    const clearReadyTimeout = () => {
+      if (loadTimeoutRef.current) {
+        clearTimeout(loadTimeoutRef.current)
+        loadTimeoutRef.current = null
       }
+    }
 
-      const player = new window.YT.Player("yt-player", {
-        videoId,
-        playerVars: {
-          autoplay: 1,
-          controls: 0,
-          modestbranding: 1,
-          rel: 0,
-          showinfo: 0,
-          fs: 0,
-          iv_load_policy: 3,
-          disablekb: 1,
-          playsinline: 1,
-          origin: window.location.origin,
-          widget_referrer: window.location.origin,
-          enablejsapi: 1,
-          cc_load_policy: 0,
-          autohide: 1,
-          color: "white",
-          branding: 0,
-          mute: 0,
-        },
-        events: {
-          onReady: (event) => {
-            playerRef.current = event.target
-            setDuration(event.target.getDuration())
-            event.target.setVolume(volume)
-            event.target.setPlaybackRate(playbackRate)
-            
-            // Set highest quality available (4K if available)
-            const availableQualities = event.target.getAvailableQualityLevels()
-            if (availableQualities && availableQualities.length > 0) {
-              // Try to set 4K (hd2160), otherwise use the highest available
-              if (availableQualities.includes('hd2160')) {
-                event.target.setPlaybackQuality('hd2160')
-              } else {
-                event.target.setPlaybackQuality(availableQualities[0])
-              }
-            }
-            
-            setLoading(false)
+    const syncPlayerMetrics = (target) => {
+      try {
+        const nextDuration = target.getDuration?.()
+        const nextTime = target.getCurrentTime?.()
+        const loadedFraction = target.getVideoLoadedFraction?.()
 
-            const playPromise = event.target.playVideo()
-            if (playPromise !== undefined) {
-              playPromise.catch(() => {
-                // If autoplay fails, try muting and playing
-                event.target.mute()
-                event.target.playVideo()
-                setVolume(0)
-              })
-            }
-          },
-          onStateChange: (event) => {
-            const state = event.data
-            const isPlaying = state === window.YT.PlayerState.PLAYING
-            const isBufferingState = state === window.YT.PlayerState.BUFFERING
-            
-            setPlaying(isPlaying)
-            setIsBuffering(isBufferingState)
-            
-            // Clear seeking loading for non-buffering states
-            if (!isBufferingState) {
-              setIsSeekingLoading(false)
-            }
-            
-            if (isPlaying) {
-              setHasStartedPlaying(true)
-            }
-            
-            if (state === window.YT.PlayerState.ENDED) {
-              setPlaying(false)
-              if (onNext) {
-                onNext()
-              }
-            }
-          },
-          onError: (event) => {
-            console.error(" YouTube player error:", event.data)
-            setError("Failed to load video")
-            setLoading(false)
-          },
-        },
-      })
+        if (Number.isFinite(nextDuration) && nextDuration > 0) {
+          setDuration(nextDuration)
+        }
+        if (!isSeeking && Number.isFinite(nextTime) && nextTime >= 0) {
+          setCurrentTime(nextTime)
+        }
+        if (Number.isFinite(loadedFraction)) {
+          setBuffered(Math.min(100, Math.max(0, loadedFraction * 100)))
+        }
+      } catch {
+        // The iframe may be between states while switching videos.
+      }
     }
 
     loadTimeoutRef.current = setTimeout(() => {
-      if (!playerRef.current) {
+      if (!cancelled && !playerRef.current) {
         setError("Failed to load video player. Please refresh the page.")
         setLoading(false)
       }
-    }, 10000)
+    }, 12000)
 
-    if (window.YT && window.YT.Player) {
-      loadYouTubePlayer()
-      if (loadTimeoutRef.current) {
-        clearTimeout(loadTimeoutRef.current)
-        loadTimeoutRef.current = null
-      }
-    } else {
-      try {
-        const tag = document.createElement("script")
-        tag.src = "https://www.youtube.com/iframe_api"
-        tag.onerror = () => {
-          setError("Failed to load YouTube player. Please check your connection.")
-          setLoading(false)
-          if (loadTimeoutRef.current) {
-            clearTimeout(loadTimeoutRef.current)
-            loadTimeoutRef.current = null
-          }
-        }
-        tag.onload = () => {
-          if (loadTimeoutRef.current) {
-            clearTimeout(loadTimeoutRef.current)
-            loadTimeoutRef.current = null
-          }
-        }
-        const firstScriptTag = document.getElementsByTagName("script")[0]
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
-        window.onYouTubeIframeAPIReady = loadYouTubePlayer
-      } catch (err) {
-        setError("Failed to initialize video player")
+    loadYouTubeIframeApi()
+      .then((YT) => {
+        if (cancelled || !youtubeContainerRef.current) return
+
+        youtubePlayer = new YT.Player(youtubeContainerRef.current, {
+          videoId,
+          playerVars: {
+            autoplay: 1,
+            controls: 0,
+            modestbranding: 1,
+            rel: 0,
+            showinfo: 0,
+            fs: 0,
+            iv_load_policy: 3,
+            disablekb: 1,
+            playsinline: 1,
+            origin: window.location.origin,
+            widget_referrer: window.location.origin,
+            enablejsapi: 1,
+            cc_load_policy: 0,
+            autohide: 1,
+            color: "white",
+            branding: 0,
+          },
+          events: {
+            onReady: (event) => {
+              if (cancelled) {
+                event.target.destroy?.()
+                return
+              }
+
+              clearReadyTimeout()
+              playerRef.current = event.target
+              event.target.setVolume(volumeRef.current)
+
+              const availableRates =
+                event.target.getAvailablePlaybackRates?.() || []
+              if (availableRates.length > 0) {
+                setPlaybackRates(availableRates)
+              }
+              if (availableRates.includes(playbackRateRef.current)) {
+                event.target.setPlaybackRate(playbackRateRef.current)
+              } else {
+                setPlaybackRate(1)
+              }
+
+              syncPlayerMetrics(event.target)
+              setLoading(false)
+              event.target.playVideo()
+            },
+            onStateChange: (event) => {
+              if (cancelled) return
+
+              const state = event.data
+              const isPlaying = state === YT.PlayerState.PLAYING
+              const isBufferingState = state === YT.PlayerState.BUFFERING
+
+              setPlaying(isPlaying)
+              setIsBuffering(isBufferingState)
+              syncPlayerMetrics(event.target)
+
+              if (!isBufferingState) {
+                setIsSeekingLoading(false)
+              }
+              if (isPlaying) {
+                setHasStartedPlaying(true)
+                setLoading(false)
+              }
+              if (state === YT.PlayerState.ENDED) {
+                setPlaying(false)
+                onNextRef.current?.()
+              }
+            },
+            onPlaybackRateChange: (event) => {
+              if (!cancelled && Number.isFinite(event.data)) {
+                setPlaybackRate(event.data)
+              }
+            },
+            onAutoplayBlocked: () => {
+              if (cancelled) return
+              setPlaying(false)
+              setIsBuffering(false)
+              setLoading(false)
+              setShowControls(true)
+            },
+            onError: (event) => {
+              if (cancelled) return
+              console.error("YouTube player error:", event.data)
+              clearReadyTimeout()
+              setError("Failed to load video")
+              setLoading(false)
+            },
+          },
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+        clearReadyTimeout()
+        setError("Failed to load YouTube player. Please check your connection.")
         setLoading(false)
-        if (loadTimeoutRef.current) {
-          clearTimeout(loadTimeoutRef.current)
-          loadTimeoutRef.current = null
-        }
-      }
-    }
+      })
 
     return () => {
-      if (loadTimeoutRef.current) {
-        clearTimeout(loadTimeoutRef.current)
-        loadTimeoutRef.current = null
-      }
+      cancelled = true
+      clearReadyTimeout()
       if (updateIntervalRef.current) {
         clearInterval(updateIntervalRef.current)
+        updateIntervalRef.current = null
       }
-      if (playerRef.current && playerRef.current.destroy) {
-        playerRef.current.destroy()
+      if (youtubePlayer?.destroy) {
+        youtubePlayer.destroy()
+      }
+      if (playerRef.current === youtubePlayer) {
         playerRef.current = null
       }
     }
@@ -292,28 +416,47 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   useEffect(() => {
     if (!isYouTube || !playerRef.current) return
 
-    if (playing) {
-      updateIntervalRef.current = setInterval(() => {
-        if (playerRef.current && playerRef.current.getCurrentTime && !isSeeking) {
-          try {
-            const time = playerRef.current.getCurrentTime()
-            if (!isNaN(time) && time >= 0) {
-              setCurrentTime(time)
-            }
-          } catch (error) {
-            console.error(" Error getting current time:", error)
+    const syncPlayerMetrics = () => {
+      const player = playerRef.current
+      if (!player) return
+
+      try {
+        if (!isSeeking) {
+          const time = player.getCurrentTime?.()
+          if (Number.isFinite(time) && time >= 0) {
+            setCurrentTime(time)
           }
         }
-      }, 250)
+
+        const nextDuration = player.getDuration?.()
+        if (Number.isFinite(nextDuration) && nextDuration > 0) {
+          setDuration(nextDuration)
+        }
+
+        const loadedFraction = player.getVideoLoadedFraction?.()
+        if (Number.isFinite(loadedFraction)) {
+          setBuffered(Math.min(100, Math.max(0, loadedFraction * 100)))
+        }
+      } catch {
+        // Player can briefly be unavailable during navigation.
+      }
+    }
+
+    syncPlayerMetrics()
+
+    if (playing) {
+      updateIntervalRef.current = setInterval(syncPlayerMetrics, 200)
     } else {
       if (updateIntervalRef.current) {
         clearInterval(updateIntervalRef.current)
+        updateIntervalRef.current = null
       }
     }
 
     return () => {
       if (updateIntervalRef.current) {
         clearInterval(updateIntervalRef.current)
+        updateIntervalRef.current = null
       }
     }
   }, [isYouTube, playing, isSeeking])
@@ -322,6 +465,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     if (isYouTube || isDrive || isDailymotion || isRumble || !url || !videoRef.current) return
 
     const video = videoRef.current
+    let cancelled = false
 
     if (url.includes(".m3u8")) {
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -331,57 +475,82 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         })
         setLoading(false)
       } else {
-        const script = document.createElement("script")
-        script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest"
-        
         hlsTimeoutRef.current = setTimeout(() => {
-          setError("Failed to load HLS player. Please refresh the page.")
-          setLoading(false)
+          if (!cancelled) {
+            setError("Failed to load HLS player. Please refresh the page.")
+            setLoading(false)
+          }
         }, 10000)
 
-        script.onload = () => {
+        loadHlsApi()
+          .then((Hls) => {
+            if (cancelled) return
+
           if (hlsTimeoutRef.current) {
             clearTimeout(hlsTimeoutRef.current)
             hlsTimeoutRef.current = null
           }
+
           try {
-            if (window.Hls && window.Hls.isSupported()) {
-              const hls = new window.Hls()
+            if (Hls.isSupported()) {
+              const hls = new Hls({
+                startFragPrefetch: true,
+                maxBufferLength: 30,
+                backBufferLength: 30,
+              })
+              let recoveryAttempts = 0
               hlsRef.current = hls
               hls.loadSource(url)
               hls.attachMedia(video)
-              hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+              hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                recoveryAttempts = 0
                 setLoading(false)
                 video.play().catch(() => {
                   // Autoplay failed
                 })
               })
-              hls.on(window.Hls.Events.ERROR, (event, data) => {
-                if (data.fatal) {
-                  setError("Failed to load video")
-                  setLoading(false)
+              hls.on(Hls.Events.ERROR, (_event, data) => {
+                if (!data.fatal || cancelled) return
+
+                if (
+                  data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+                  recoveryAttempts < 2
+                ) {
+                  recoveryAttempts += 1
+                  hls.startLoad()
+                  return
                 }
+
+                if (
+                  data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+                  recoveryAttempts < 2
+                ) {
+                  recoveryAttempts += 1
+                  hls.recoverMediaError()
+                  return
+                }
+
+                setError("Failed to load video")
+                setLoading(false)
               })
             } else {
               setError("HLS not supported in this browser")
               setLoading(false)
             }
-          } catch (err) {
+          } catch {
             setError("Failed to initialize HLS player")
             setLoading(false)
           }
-        }
-        
-        script.onerror = () => {
-          if (hlsTimeoutRef.current) {
-            clearTimeout(hlsTimeoutRef.current)
-            hlsTimeoutRef.current = null
-          }
-          setError("Failed to load HLS library. Please check your connection.")
-          setLoading(false)
-        }
-        
-        document.body.appendChild(script)
+          })
+          .catch(() => {
+            if (cancelled) return
+            if (hlsTimeoutRef.current) {
+              clearTimeout(hlsTimeoutRef.current)
+              hlsTimeoutRef.current = null
+            }
+            setError("Failed to load HLS library. Please check your connection.")
+            setLoading(false)
+          })
       }
     } else {
       video.src = url
@@ -392,13 +561,17 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     }
 
     return () => {
+      cancelled = true
       if (hlsTimeoutRef.current) {
         clearTimeout(hlsTimeoutRef.current)
         hlsTimeoutRef.current = null
       }
       if (hlsRef.current) {
         hlsRef.current.destroy()
+        hlsRef.current = null
       }
+      video.removeAttribute("src")
+      video.load()
     }
   }, [url, isYouTube, isDrive, isDailymotion, isRumble])
 
@@ -407,18 +580,22 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     if (!video || isYouTube || isDrive || isDailymotion || isRumble) return
 
     const handleLoadedMetadata = () => {
-      setDuration(video.duration)
+      if (Number.isFinite(video.duration)) {
+        setDuration(video.duration)
+      }
       setLoading(false)
     }
 
     const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime)
+      if (!isSeeking) {
+        setCurrentTime(video.currentTime)
+      }
     }
 
     const handleProgress = () => {
-      if (video.buffered.length > 0) {
+      if (video.buffered.length > 0 && Number.isFinite(video.duration) && video.duration > 0) {
         const bufferedEnd = video.buffered.end(video.buffered.length - 1)
-        setBuffered((bufferedEnd / video.duration) * 100)
+        setBuffered(Math.min(100, Math.max(0, (bufferedEnd / video.duration) * 100)))
       }
     }
 
@@ -427,7 +604,10 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       setIsSeekingLoading(false)
     }
     const handlePause = () => setPlaying(false)
-    const handleEnded = () => setPlaying(false)
+    const handleEnded = () => {
+      setPlaying(false)
+      onNextRef.current?.()
+    }
     
     const handleWaiting = () => {
       setIsBuffering(true)
@@ -438,7 +618,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       setIsSeekingLoading(false)
     }
 
-    const handleError = (e) => {
+    const handleError = () => {
       setError("Failed to load video")
       setLoading(false)
     }
@@ -464,30 +644,30 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       video.removeEventListener("canplay", handleCanPlay)
       video.removeEventListener("error", handleError)
     }
-  }, [isYouTube, isDrive, isDailymotion, isRumble])
+  }, [isYouTube, isDrive, isDailymotion, isRumble, isSeeking])
 
-  const skipForward = () => {
-    const newTime = Math.min(currentTime + 10, duration)
+  const commitSeek = (requestedTime) => {
+    const maxTime = Number.isFinite(duration) && duration > 0 ? duration : 0
+    const newTime = Math.min(maxTime, Math.max(0, requestedTime))
     setIsSeekingLoading(true)
+
     if (isYouTube && playerRef.current) {
       playerRef.current.seekTo(newTime, true)
     } else if (videoRef.current) {
       videoRef.current.currentTime = newTime
     }
+
     setCurrentTime(newTime)
-    setTimeout(() => setIsSeekingLoading(false), 500)
+    pendingSeekRef.current = newTime
+    setTimeout(() => setIsSeekingLoading(false), 800)
+  }
+
+  const skipForward = () => {
+    commitSeek(currentTime + 10)
   }
 
   const skipBackward = () => {
-    const newTime = Math.max(currentTime - 10, 0)
-    setIsSeekingLoading(true)
-    if (isYouTube && playerRef.current) {
-      playerRef.current.seekTo(newTime, true)
-    } else if (videoRef.current) {
-      videoRef.current.currentTime = newTime
-    }
-    setCurrentTime(newTime)
-    setTimeout(() => setIsSeekingLoading(false), 500)
+    commitSeek(currentTime - 10)
   }
 
   const handleTouchStart = (e) => {
@@ -542,13 +722,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     
     if (showSeekIndicator && seekDelta !== 0) {
       const newTime = Math.min(duration, Math.max(0, currentTime + seekDelta))
-      setCurrentTime(newTime)
-      
-      if (isYouTube && playerRef.current) {
-        playerRef.current.seekTo(newTime, true)
-      } else if (videoRef.current) {
-        videoRef.current.currentTime = newTime
-      }
+      commitSeek(newTime)
       
       setTimeout(() => {
         setShowSeekIndicator(false)
@@ -660,28 +834,36 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       if (playing) {
         videoRef.current.pause()
       } else {
-        videoRef.current.play()
+        videoRef.current.play().catch(() => {
+          setPlaying(false)
+          setShowControls(true)
+        })
       }
     }
   }
 
   const handleSeekChange = (e) => {
     const newTime = Number.parseFloat(e.target.value)
-    setCurrentTime(newTime)
+    if (!Number.isFinite(newTime)) return
 
-    if (isYouTube && playerRef.current) {
-      playerRef.current.seekTo(newTime, true)
-    } else if (videoRef.current) {
-      videoRef.current.currentTime = newTime
+    setCurrentTime(newTime)
+    pendingSeekRef.current = newTime
+
+    if (!isSeeking) {
+      commitSeek(newTime)
     }
   }
 
-  const handleSeekMouseDown = () => {
+  const handleSeekMouseDown = (event) => {
+    event?.stopPropagation()
+    pendingSeekRef.current = currentTime
     setIsSeeking(true)
   }
 
-  const handleSeekMouseUp = () => {
-    setTimeout(() => setIsSeeking(false), 200)
+  const handleSeekMouseUp = (event) => {
+    event?.stopPropagation()
+    commitSeek(pendingSeekRef.current)
+    setIsSeeking(false)
   }
 
   const handleToggleMute = () => {
@@ -746,7 +928,10 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     return `${m}:${s.toString().padStart(2, "0")}`
   }
 
-  const playbackRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+  const playedPercentage =
+    duration > 0
+      ? Math.min(100, Math.max(0, (currentTime / duration) * 100))
+      : 0
 
   if (!url) {
     return (
@@ -784,7 +969,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       )
     }
     return (
-      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+      <div
+        className="w-full aspect-video bg-black rounded-xl overflow-hidden"
+        data-security-zone="video-player"
+        onContextMenu={(event) => event.preventDefault()}
+      >
         <iframe
           src={`https://drive.google.com/file/d/${driveId}/preview`}
           className="w-full h-full border-0"
@@ -808,7 +997,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       )
     }
     return (
-      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+      <div
+        className="w-full aspect-video bg-black rounded-xl overflow-hidden"
+        data-security-zone="video-player"
+        onContextMenu={(event) => event.preventDefault()}
+      >
         <iframe
           src={`https://geo.dailymotion.com/player.html?video=${dailymotionId}`}
           className="w-full h-full border-0"
@@ -832,7 +1025,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       )
     }
     return (
-      <div className="w-full aspect-video bg-black rounded-xl overflow-hidden">
+      <div
+        className="w-full aspect-video bg-black rounded-xl overflow-hidden"
+        data-security-zone="video-player"
+        onContextMenu={(event) => event.preventDefault()}
+      >
         <iframe
           src={`https://rumble.com/embed/${rumbleId}/`}
           className="w-full h-full border-0"
@@ -1159,6 +1356,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
       <div
         ref={containerRef}
+        data-security-zone="video-player"
         className={`relative w-full aspect-video bg-black group rounded-xl overflow-hidden ${
           fullscreen ? "flex items-center justify-center" : ""
         }`}
@@ -1171,8 +1369,10 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       >
         {isYouTube ? (
           <>
-            <div 
-              id="yt-player" 
+            <div
+              key={url}
+              ref={youtubeContainerRef}
+              id="yt-player"
               className="absolute inset-0 w-full h-full transition-all duration-100"
             />
             {!hasStartedPlaying && <div className="absolute inset-0 bg-black z-10 pointer-events-none" />}
@@ -1216,7 +1416,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-contain transition-all duration-100"
             playsInline
-            preload="metadata"
+            preload="auto"
             autoPlay
             onContextMenu={(e) => e.preventDefault()}
           />
@@ -1432,11 +1632,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               onMouseDown={handleSeekMouseDown}
               onMouseUp={handleSeekMouseUp}
               onTouchStart={handleSeekMouseDown}
+              onTouchMove={(event) => event.stopPropagation()}
               onTouchEnd={handleSeekMouseUp}
             >
               <div className="seek-bar-track">
                 <div className="seek-bar-buffered" style={{ width: `${buffered}%` }} />
-                <div className="seek-bar-progress" style={{ width: `${(currentTime / duration) * 100}%` }} />
+                <div className="seek-bar-progress" style={{ width: `${playedPercentage}%` }} />
               </div>
               <input
                 type="range"
@@ -1447,7 +1648,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 onChange={handleSeekChange}
                 className="seek-bar-input"
               />
-              <div className="seek-bar-thumb" style={{ left: `${(currentTime / duration) * 100}%` }} />
+              <div className="seek-bar-thumb" style={{ left: `${playedPercentage}%` }} />
             </div>
           </div>
 

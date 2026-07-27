@@ -55,7 +55,9 @@
     },
     "api/dynamic-manifest.js": {
       "maxDuration": 10
+    },
+    "api/security-events.js": {
+      "maxDuration": 10
     }
   }
 }
-    

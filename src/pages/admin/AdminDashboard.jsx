@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   MessageSquare,
   ShieldCheck,
+  ShieldAlert,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -51,6 +52,7 @@ import BannedNotifications from "./BannedNotifications"
 import BanManagement from "./BanManagement"
 import ClassComments from "./ClassComments"
 import ManageAdministration from "./ManageAdministration"
+import ManageSecurityEvents from "./ManageSecurityEvents"
 import { useAuth } from "../../contexts/AuthContext"
 import {
   ADMIN_PERMISSION_KEYS,
@@ -106,6 +108,7 @@ export default function AdminDashboard() {
   const navItems = [
     { name: "Overview", path: "/admin", icon: LayoutDashboard, fullOnly: true },
     { name: "Administration", path: "/admin/administration", icon: ShieldCheck, fullOnly: true },
+    { name: "Security Events", path: "/admin/security-events", icon: ShieldAlert, fullOnly: true },
     { name: "Notifications", path: "/admin/notifications", icon: Bell, fullOnly: true },
     { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle, fullOnly: true },
     { name: "Ban Info", path: "/admin/ban-management", icon: Ban, fullOnly: true },
@@ -203,6 +206,7 @@ export default function AdminDashboard() {
             <Routes>
               <Route index element={fullAdmin ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
               <Route path="administration" element={<AdminRoute fullOnly><ManageAdministration /></AdminRoute>} />
+              <Route path="security-events" element={<AdminRoute fullOnly><ManageSecurityEvents /></AdminRoute>} />
               <Route path="notifications" element={<AdminRoute fullOnly><Notifications /></AdminRoute>} />
               <Route path="ban-notifications" element={<AdminRoute fullOnly><BannedNotifications /></AdminRoute>} />
               <Route path="ban-management" element={<AdminRoute fullOnly><BanManagement /></AdminRoute>} />
