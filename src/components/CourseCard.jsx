@@ -274,9 +274,14 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
 
           {/* Price Display */}
           <div className={`${showMinimal ? 'mt-auto' : 'mb-3 mt-auto'}`}>
-            {course.price && course.price > 0 ? (
+            {(course.purchaseOptions?.length > 0 || (course.price && course.price > 0)) ? (
               <div className="flex items-center gap-2">
-                <span className="text-2xl font-bold text-primary">৳{course.price}</span>
+                <span className="text-2xl font-bold text-primary">
+                  {course.purchaseOptions?.length > 0 ? "From " : ""}
+                  ৳{course.purchaseOptions?.length > 0
+                    ? Math.min(...course.purchaseOptions.map((option) => Number(option.price)))
+                    : course.price}
+                </span>
                 {course.originalPrice && course.originalPrice > course.price && (
                   <span className="text-sm text-muted-foreground line-through">৳{course.originalPrice}</span>
                 )}
