@@ -19,6 +19,8 @@ export default function ManageClasses() {
   const [subjects, setSubjects] = useState([])
   const [chapters, setChapters] = useState([])
   const [selectedCourse, setSelectedCourse] = useState("")
+  const [classSubjectFilter, setClassSubjectFilter] = useState("")
+  const [classChapterFilter, setClassChapterFilter] = useState("")
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showArchiveModal, setShowArchiveModal] = useState(false)
@@ -73,6 +75,11 @@ export default function ManageClasses() {
     if (selectedCourse) {
       fetchClasses()
     }
+  }, [selectedCourse, showArchivedClasses])
+
+  useEffect(() => {
+    setClassSubjectFilter("")
+    setClassChapterFilter("")
   }, [selectedCourse, showArchivedClasses])
 
   useEffect(() => {
@@ -612,6 +619,36 @@ export default function ManageClasses() {
   }
 
   const selectedCourseData = courses.find((c) => c.id === selectedCourse)
+  const classHasValue = (value, selectedValue) =>
+    Array.isArray(value) ? value.includes(selectedValue) : value === selectedValue
+  const availableClassSubjects = [
+    ...new Set(
+      classes
+        .flatMap((classItem) => (Array.isArray(classItem.subject) ? classItem.subject : [classItem.subject]))
+        .filter((subject) => subject && subject !== "archive"),
+    ),
+  ].sort()
+  const availableClassChapters = [
+    ...new Set(
+      classes
+        .filter(
+          (classItem) =>
+            selectedCourseData?.type !== "batch" ||
+            !classSubjectFilter ||
+            classHasValue(classItem.subject, classSubjectFilter),
+        )
+        .flatMap((classItem) => (Array.isArray(classItem.chapter) ? classItem.chapter : [classItem.chapter]))
+        .filter((chapter) => chapter && chapter !== "archive"),
+    ),
+  ].sort()
+  const filteredClasses = classes.filter((classItem) => {
+    const matchesSubject =
+      selectedCourseData?.type !== "batch" ||
+      !classSubjectFilter ||
+      classHasValue(classItem.subject, classSubjectFilter)
+    const matchesChapter = !classChapterFilter || classHasValue(classItem.chapter, classChapterFilter)
+    return matchesSubject && matchesChapter
+  })
   const batchCourses = courses.filter((c) => c.type === "batch")
   const archiveSourceCourseData = courses.find((c) => c.id === archiveSourceCourse)
   const uniqueArchiveSubjects = [
@@ -703,6 +740,45 @@ export default function ManageClasses() {
             </button>
           </div>
 
+          <div className={`mb-4 grid gap-3 ${selectedCourseData?.type === "batch" ? "sm:grid-cols-2" : "sm:grid-cols-1"}`}>
+            {selectedCourseData?.type === "batch" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">Filter by Subject</label>
+                <select
+                  value={classSubjectFilter}
+                  onChange={(e) => {
+                    setClassSubjectFilter(e.target.value)
+                    setClassChapterFilter("")
+                  }}
+                  className="w-full rounded border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="">All Subjects</option>
+                  {availableClassSubjects.map((subject) => (
+                    <option key={subject} value={subject}>
+                      {subject}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium">Filter by Chapter</label>
+              <select
+                value={classChapterFilter}
+                onChange={(e) => setClassChapterFilter(e.target.value)}
+                className="w-full rounded border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value="">All Chapters</option>
+                {availableClassChapters.map((chapter) => (
+                  <option key={chapter} value={chapter}>
+                    {chapter}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px]">
@@ -719,7 +795,7 @@ export default function ManageClasses() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {classes.map((classItem) => (
+                  {filteredClasses.map((classItem) => (
                     <tr key={classItem.id} className="hover:bg-muted/50">
                       <td className="p-2 text-xs">
                         <div className="flex items-center gap-2">
@@ -732,9 +808,13 @@ export default function ManageClasses() {
                         </div>
                       </td>
                     {selectedCourseData?.type === "batch" && (
-                      <td className="p-2 text-xs text-muted-foreground">{classItem.subject || "N/A"}</td>
+                      <td className="p-2 text-xs text-muted-foreground">
+                        {Array.isArray(classItem.subject) ? classItem.subject.join(", ") : classItem.subject || "N/A"}
+                      </td>
                     )}
-                    <td className="p-2 text-xs text-muted-foreground">{classItem.chapter || "N/A"}</td>
+                    <td className="p-2 text-xs text-muted-foreground">
+                      {Array.isArray(classItem.chapter) ? classItem.chapter.join(", ") : classItem.chapter || "N/A"}
+                    </td>
                     <td className="p-2 text-xs">
                       {classItem.teacherImageURL && (
                         <img
