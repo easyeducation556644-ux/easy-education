@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { motion } from "framer-motion"
-import { ShoppingCart, Play, BookOpen, Clock, Users, Tag, Check, AlertCircle, Video } from "lucide-react"
+import { Play, BookOpen, Clock, Users, Tag, Check, AlertCircle, Video, MessageCircle } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -14,11 +14,10 @@ export default function CourseDetail() {
   const { courseId } = useParams()
   const navigate = useNavigate()
   const { currentUser } = useAuth()
-  const { addToCart, cartItems, removeFromCart } = useCart()
+  const { addToCart } = useCart()
   const [course, setCourse] = useState(null)
   const [loading, setLoading] = useState(true)
   const [hasAccess, setHasAccess] = useState(false)
-  const [isInCart, setIsInCart] = useState(false)
   const [hasPendingPayment, setHasPendingPayment] = useState(false)
   const [teachers, setTeachers] = useState([])
   const [selectedDemoVideo, setSelectedDemoVideo] = useState(null)
@@ -27,12 +26,6 @@ export default function CourseDetail() {
   useEffect(() => {
     fetchCourseData()
   }, [courseId, currentUser])
-
-  useEffect(() => {
-    if (course) {
-      setIsInCart(cartItems.some((item) => item.id === course.id))
-    }
-  }, [cartItems, course])
 
   const fetchCourseData = async () => {
     try {
@@ -114,23 +107,20 @@ export default function CourseDetail() {
     }
   }
 
-  const handleAddToCart = () => {
-    if (course) {
-      addToCart(course)
-    }
-  }
-
-  const handleRemoveFromCart = () => {
-    if (course) {
-      removeFromCart(course.id)
-    }
-  }
-
   const handleBuyNow = () => {
     if (course) {
       addToCart(course)
       navigate("/checkout")
     }
+  }
+
+  const handleWhatsAppOrder = () => {
+    if (!course) return
+
+    const courseLink = window.location.href
+    const message = `আমি ${course.title} কোর্সটি কিনতে চাই, মূল্য: ৳${course.price}। কোর্সের লিংক: ${courseLink}`
+    const whatsappUrl = `https://wa.me/8801881114519?text=${encodeURIComponent(message)}`
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer")
   }
 
   const handleWatchNow = () => {
@@ -464,15 +454,7 @@ export default function CourseDetail() {
                   </div>
 
                   <div className="space-y-3">
-                    {isInCart ? (
-                      <button
-                        onClick={() => navigate("/checkout")}
-                        className="w-full py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-                      >
-                        <Check className="w-5 h-5" />
-                        Go to Checkout
-                      </button>
-                    ) : course.price === 0 || course.price === undefined ? (
+                    {course.price === 0 || course.price === undefined ? (
                       <button
                         onClick={handleEnrollFree}
                         className="w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
@@ -489,11 +471,12 @@ export default function CourseDetail() {
                           Buy Now
                         </button>
                         <button
-                          onClick={handleAddToCart}
-                          className="w-full py-3 bg-muted hover:bg-muted/80 text-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+                          type="button"
+                          onClick={handleWhatsAppOrder}
+                          className="w-full py-3 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
                         >
-                          <ShoppingCart className="w-5 h-5" />
-                          Add to Cart
+                          <MessageCircle className="w-5 h-5" />
+                          WhatsApp-এ অর্ডার করুন
                         </button>
                       </>
                     )}
