@@ -14,7 +14,7 @@ export default function CourseDetail() {
   const { courseId } = useParams()
   const navigate = useNavigate()
   const { currentUser } = useAuth()
-  const { addToCart } = useCart()
+  const { setCartItem } = useCart()
   const [course, setCourse] = useState(null)
   const [loading, setLoading] = useState(true)
   const [hasAccess, setHasAccess] = useState(false)
@@ -22,6 +22,14 @@ export default function CourseDetail() {
   const [teachers, setTeachers] = useState([])
   const [selectedDemoVideo, setSelectedDemoVideo] = useState(null)
   const [enrolledCount, setEnrolledCount] = useState(0)
+  const [selectedPurchaseOption, setSelectedPurchaseOption] = useState("")
+
+  const purchaseOptions = (course?.purchaseOptions || []).filter(
+    (option) => option?.id && option?.label && Number.isFinite(Number(option.price)),
+  )
+  const activePurchaseOption =
+    purchaseOptions.find((option) => option.id === selectedPurchaseOption) || purchaseOptions[0] || null
+  const displayedPrice = activePurchaseOption ? Number(activePurchaseOption.price) : Number(course?.price || 0)
 
   useEffect(() => {
     fetchCourseData()
@@ -47,6 +55,7 @@ export default function CourseDetail() {
       
       if (courseData) {
         setCourse(courseData)
+        setSelectedPurchaseOption(courseData.purchaseOptions?.[0]?.id || "")
 
         const enrolledQuery = query(
           collection(db, "userCourses"),
@@ -109,7 +118,17 @@ export default function CourseDetail() {
 
   const handleBuyNow = () => {
     if (course) {
-      addToCart(course)
+      setCartItem({
+        ...course,
+        price: displayedPrice,
+        purchaseOption: activePurchaseOption
+          ? {
+              id: activePurchaseOption.id,
+              label: activePurchaseOption.label,
+              price: displayedPrice,
+            }
+          : null,
+      })
       navigate("/checkout")
     }
   }
@@ -118,7 +137,8 @@ export default function CourseDetail() {
     if (!course) return
 
     const courseLink = window.location.href
-    const message = `আমি ${course.title} কোর্সটি কিনতে চাই, মূল্য: ৳${course.price}। কোর্সের লিংক: ${courseLink}`
+    const packageText = activePurchaseOption ? ` (${activePurchaseOption.label})` : ""
+    const message = `আমি ${course.title}${packageText} কোর্সটি কিনতে চাই, মূল্য: ৳${displayedPrice}। কোর্সের লিংক: ${courseLink}`
     const whatsappUrl = `https://wa.me/8801881114519?text=${encodeURIComponent(message)}`
     window.open(whatsappUrl, "_blank", "noopener,noreferrer")
   }
@@ -435,9 +455,9 @@ export default function CourseDetail() {
                 <div className="space-y-4">
                   <div className="text-center pb-4 border-b border-border">
                     <div className="text-4xl font-bold mb-2">
-                      {course.price ? (
+                      {displayedPrice ? (
                         <>
-                          ৳{course.price}
+                          ৳{displayedPrice}
                         </>
                       ) : (
                         "Free"
@@ -453,8 +473,34 @@ export default function CourseDetail() {
                     </span>
                   </div>
 
+                  {purchaseOptions.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold">আপনার প্যাকেজ নির্বাচন করুন</p>
+                      {purchaseOptions.map((option) => {
+                        const isSelected = activePurchaseOption?.id === option.id
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setSelectedPurchaseOption(option.id)}
+                            className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                              isSelected
+                                ? "border-primary bg-primary/10"
+                                : "border-border bg-background hover:border-primary/50"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-medium">{option.label}</span>
+                              <span className="text-base font-bold text-primary">৳{Number(option.price)}</span>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+
                   <div className="space-y-3">
-                    {course.price === 0 || course.price === undefined ? (
+                    {displayedPrice === 0 ? (
                       <button
                         onClick={handleEnrollFree}
                         className="w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
