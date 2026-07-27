@@ -8,10 +8,13 @@ import { useExam } from "../../contexts/ExamContext"
 import { toast } from "../../hooks/use-toast"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+import { ADMIN_PERMISSION_KEYS, canManageCourse } from "../../lib/adminPermissions"
 
 export default function ManageExamQuestions() {
   const { examId } = useParams()
   const navigate = useNavigate()
+  const { userProfile } = useAuth()
   const [exam, setExam] = useState(null)
   const [questions, setQuestions] = useState([])
   const [loading, setLoading] = useState(true)
@@ -53,6 +56,16 @@ export default function ManageExamQuestions() {
           description: "Exam not found",
         })
         navigate("/admin/exams")
+        return
+      }
+
+      if (!canManageCourse(userProfile, ADMIN_PERMISSION_KEYS.EXAM_CREATE, examData.courseId)) {
+        toast({
+          variant: "error",
+          title: "Access Denied",
+          description: "You do not have permission to manage exams for this course.",
+        })
+        navigate("/admin/exams", { replace: true })
         return
       }
 
