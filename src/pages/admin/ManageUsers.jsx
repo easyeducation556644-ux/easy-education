@@ -2,18 +2,44 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Search, Shield, ShieldOff, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle, Wrench } from "lucide-react"
-import { collection, getDocs, doc, updateDoc, deleteDoc, query, where, addDoc, serverTimestamp, deleteField } from "firebase/firestore"
+import { Search, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle, Wrench } from "lucide-react"
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  deleteField,
+  doc,
+  documentId,
+  endAt,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  startAfter,
+  startAt,
+  updateDoc,
+  where,
+} from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
+import { getRoleLabel } from "../../lib/adminPermissions"
+
+const USERS_PAGE_SIZE = 10
 
 export default function ManageUsers() {
   const { userProfile } = useAuth()
   const [users, setUsers] = useState([])
-  const [filteredUsers, setFilteredUsers] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  const [page, setPage] = useState(1)
+  const [pageCursors, setPageCursors] = useState([])
+  const [lastVisible, setLastVisible] = useState(null)
+  const [hasNextPage, setHasNextPage] = useState(false)
+  const [usersRefresh, setUsersRefresh] = useState(0)
   const [loading, setLoading] = useState(true)
   const [successMessage, setSuccessMessage] = useState("")
   const [courses, setCourses] = useState([])
@@ -33,29 +59,91 @@ export default function ManageUsers() {
   const [courseSearchQuery, setCourseSearchQuery] = useState("")
 
   useEffect(() => {
-    fetchUsers()
     fetchCourses()
-    fetchUserEnrollments()
   }, [])
 
   useEffect(() => {
-    filterUsers()
-  }, [users, searchQuery])
-
-  const fetchUsers = async () => {
-    try {
-      const usersSnapshot = await getDocs(collection(db, "users"))
-      const usersData = usersSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
-      setUsers(usersData)
-    } catch (error) {
-      console.error("Error fetching users:", error)
-    } finally {
-      setLoading(false)
+    if (users.length > 0) {
+      fetchUserEnrollments(users.map((user) => user.id))
+    } else {
+      setUserEnrollments({})
     }
-  }
+  }, [users])
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 500)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  useEffect(() => {
+    setPage(1)
+    setPageCursors([])
+  }, [debouncedSearch])
+
+  useEffect(() => {
+    setLoading(true)
+    const usersRef = collection(db, "users")
+
+    if (debouncedSearch) {
+      const normalizedEmail = debouncedSearch.toLowerCase()
+      const normalizedName = debouncedSearch.charAt(0).toUpperCase() + debouncedSearch.slice(1)
+      const nameQuery = query(
+        usersRef,
+        orderBy("name"),
+        startAt(normalizedName),
+        endAt(`${normalizedName}\uf8ff`),
+        limit(USERS_PAGE_SIZE),
+      )
+      const emailQuery = query(
+        usersRef,
+        orderBy("email"),
+        startAt(normalizedEmail),
+        endAt(`${normalizedEmail}\uf8ff`),
+        limit(USERS_PAGE_SIZE),
+      )
+      const results = { name: [], email: [] }
+      const applyResults = () => {
+        const merged = new Map([...results.name, ...results.email].map((user) => [user.id, user]))
+        setUsers([...merged.values()].slice(0, USERS_PAGE_SIZE))
+        setHasNextPage(false)
+        setLoading(false)
+      }
+      const unsubscribeName = onSnapshot(nameQuery, (snapshot) => {
+        results.name = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        applyResults()
+      })
+      const unsubscribeEmail = onSnapshot(emailQuery, (snapshot) => {
+        results.email = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        applyResults()
+      })
+      return () => {
+        unsubscribeName()
+        unsubscribeEmail()
+      }
+    }
+
+    const constraints = [orderBy(documentId())]
+    const cursor = page > 1 ? pageCursors[page - 2] : null
+    if (cursor) constraints.push(startAfter(cursor))
+    constraints.push(limit(USERS_PAGE_SIZE + 1))
+
+    return onSnapshot(
+      query(usersRef, ...constraints),
+      (snapshot) => {
+        const pageDocs = snapshot.docs.slice(0, USERS_PAGE_SIZE)
+        setUsers(pageDocs.map((item) => ({ id: item.id, ...item.data() })))
+        setLastVisible(pageDocs.at(-1) || null)
+        setHasNextPage(snapshot.docs.length > USERS_PAGE_SIZE)
+        setLoading(false)
+      },
+      (error) => {
+        console.error("Error fetching users:", error)
+        setLoading(false)
+      },
+    )
+  }, [debouncedSearch, page, pageCursors, usersRefresh])
+
+  const fetchUsers = () => setUsersRefresh((current) => current + 1)
 
   const fetchCourses = async () => {
     try {
@@ -70,15 +158,23 @@ export default function ManageUsers() {
     }
   }
 
-  const fetchUserEnrollments = async () => {
+  const fetchUserEnrollments = async (userIds = users.map((user) => user.id)) => {
+    if (userIds.length === 0) {
+      setUserEnrollments({})
+      return
+    }
     try {
       const paymentsSnapshot = await getDocs(
-        query(collection(db, "payments"), where("status", "==", "approved"))
+        query(
+          collection(db, "payments"),
+          where("userId", "in", userIds.slice(0, USERS_PAGE_SIZE)),
+        ),
       )
       
       const enrollments = {}
       paymentsSnapshot.docs.forEach((doc) => {
         const payment = doc.data()
+        if (payment.status !== "approved") return
         const userId = payment.userId
         
         if (!enrollments[userId]) {
@@ -102,61 +198,9 @@ export default function ManageUsers() {
     }
   }
 
-  const filterUsers = () => {
-    if (!searchQuery) {
-      setFilteredUsers(users)
-    } else {
-      const filtered = users.filter(
-        (user) =>
-          user.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          user.email?.toLowerCase().includes(searchQuery.toLowerCase()),
-      )
-      setFilteredUsers(filtered)
-    }
-  }
-
   const showSuccess = (message) => {
     setSuccessMessage(message)
     setTimeout(() => setSuccessMessage(""), 3000)
-  }
-
-  const handlePromoteToAdmin = async (userId) => {
-    try {
-      console.log(" Promoting user to admin:", userId)
-      const adminAccess = {
-        mode: "limited",
-        classPdfCourseIds: [],
-        examCourseIds: [],
-      }
-      await updateDoc(doc(db, "users", userId), { role: "admin", adminAccess })
-      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "admin", adminAccess } : u)))
-      showSuccess("Limited admin created. Assign permissions from Administration.")
-      console.log(" User promoted successfully")
-    } catch (error) {
-      console.error(" Error promoting user:", error)
-      toast({
-        variant: "error",
-        title: "Promotion Failed",
-        description: error.message || "Failed to promote user",
-      })
-    }
-  }
-
-  const handleDemoteToUser = async (userId) => {
-    try {
-      console.log(" Demoting user to regular user:", userId)
-      await updateDoc(doc(db, "users", userId), { role: "user", adminAccess: deleteField() })
-      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "user", adminAccess: undefined } : u)))
-      showSuccess("User demoted to regular user successfully!")
-      console.log(" User demoted successfully")
-    } catch (error) {
-      console.error(" Error demoting user:", error)
-      toast({
-        variant: "error",
-        title: "Demotion Failed",
-        description: error.message || "Failed to demote user",
-      })
-    }
   }
 
   const handleBanUser = async (userId, currentBanStatus) => {
@@ -823,7 +867,7 @@ export default function ManageUsers() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filteredUsers.map((user) => (
+                {users.map((user) => (
                   <tr key={user.id} className="hover:bg-muted/50">
                     <td className="px-3 sm:px-6 py-3 sm:py-4">
                       <div className="flex items-center gap-2 sm:gap-3">
@@ -851,10 +895,12 @@ export default function ManageUsers() {
                     <td className="px-3 sm:px-6 py-3 sm:py-4">
                       <span
                         className={`px-2 sm:px-3 py-1 rounded-full text-[10px] sm:text-xs font-medium whitespace-nowrap ${
-                          user.role === "admin" ? "bg-primary/10 text-primary" : "bg-muted-foreground/10 text-muted-foreground"
+                          user.role && user.role !== "user"
+                            ? "bg-primary/10 text-primary"
+                            : "bg-muted-foreground/10 text-muted-foreground"
                         }`}
                       >
-                        {user.role === "admin" ? "admin" : "user"}
+                        {getRoleLabel(user.role, user.adminAccess)}
                       </span>
                     </td>
                     <td className="px-3 sm:px-6 py-3 sm:py-4">
@@ -877,23 +923,6 @@ export default function ManageUsers() {
                     </td>
                     <td className="px-3 sm:px-6 py-3 sm:py-4">
                       <div className="flex items-center justify-end gap-1 sm:gap-2 flex-wrap">
-                        {user.role === "admin" ? (
-                          <button
-                            onClick={() => handleDemoteToUser(user.id)}
-                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-orange-500 border border-orange-500/20 flex items-center gap-1"
-                          >
-                            <ShieldOff className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Demote</span>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handlePromoteToAdmin(user.id)}
-                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-primary border border-primary/20 flex items-center gap-1"
-                          >
-                            <Shield className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Promote</span>
-                          </button>
-                        )}
                         <button
                           onClick={() => {
                             setSelectedUser(user)
@@ -956,9 +985,33 @@ export default function ManageUsers() {
             </table>
           </div>
 
-          {filteredUsers.length === 0 && (
+          {users.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
               <p>No users found</p>
+            </div>
+          )}
+
+          {!debouncedSearch && (
+            <div className="flex items-center justify-between p-4 border-t border-border">
+              <button
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={page === 1}
+                className="px-4 py-2 bg-muted rounded-lg disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-muted-foreground">Page {page} · {USERS_PAGE_SIZE} per page</span>
+              <button
+                onClick={() => {
+                  if (!hasNextPage || !lastVisible) return
+                  setPageCursors((current) => [...current.slice(0, page - 1), lastVisible])
+                  setPage((current) => current + 1)
+                }}
+                disabled={!hasNextPage}
+                className="px-4 py-2 bg-muted rounded-lg disabled:opacity-40"
+              >
+                Next
+              </button>
             </div>
           )}
         </div>
