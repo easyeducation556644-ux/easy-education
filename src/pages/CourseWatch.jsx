@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useParams, useNavigate, Link } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Eye, Play, BookOpen, GraduationCap, User, Award, Clock, Lock, FileQuestion, FileText, ExternalLink } from "lucide-react"
@@ -48,6 +48,7 @@ export default function CourseWatch() {
   const [toast, setToast] = useState(null)
   const [exams, setExams] = useState([])
   const [showExams, setShowExams] = useState(false)
+  const trackedViewsRef = useRef(new Set())
   
   const { getExamsByCourse } = useExam()
 
@@ -177,18 +178,18 @@ export default function CourseWatch() {
   const trackClassView = async () => {
     if (!currentUser || !currentClass) return
 
+    const viewKey = `${currentUser.uid}_${currentClass.id}`
+    if (trackedViewsRef.current.has(viewKey)) return
+    trackedViewsRef.current.add(viewKey)
+
     try {
-      const viewRef = doc(db, "classViews", `${currentUser.uid}_${currentClass.id}`)
-      await setDoc(
-        viewRef,
-        {
-          userId: currentUser.uid,
-          classId: currentClass.id,
-          timestamp: serverTimestamp(),
-        },
-        { merge: true }
-      )
+      await addDoc(collection(db, "classViews"), {
+        userId: currentUser.uid,
+        classId: currentClass.id,
+        timestamp: serverTimestamp(),
+      })
     } catch (error) {
+      trackedViewsRef.current.delete(viewKey)
       console.error("Error tracking view:", error)
     }
   }
