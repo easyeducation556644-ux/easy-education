@@ -421,11 +421,24 @@ export default function ManageClasses() {
       return
     }
 
-    if (selectedCourseData?.type !== "batch") {
+    const destinationCourseType = selectedCourseData?.type || "subject"
+    const sourceCourseType = archiveSourceCourseData?.type || "subject"
+    const supportedArchiveTypes = ["batch", "subject"]
+
+    if (!supportedArchiveTypes.includes(destinationCourseType)) {
       toast({
         variant: "error",
         title: "Invalid Course Type",
-        description: "Archive feature is only available for batch type courses!",
+        description: "Archive feature is only available for batch and subject type courses!",
+      })
+      return
+    }
+
+    if (sourceCourseType !== destinationCourseType) {
+      toast({
+        variant: "error",
+        title: "Course Type Mismatch",
+        description: "Archive source and destination courses must have the same course type.",
       })
       return
     }
@@ -1282,10 +1295,14 @@ export default function ManageClasses() {
                 >
                   <option value="">Select source course...</option>
                   {courses
-                    .filter((c) => c.id !== selectedCourse)
+                    .filter(
+                      (c) =>
+                        c.id !== selectedCourse &&
+                        (c.type || "subject") === (selectedCourseData?.type || "subject"),
+                    )
                     .map((course) => (
                       <option key={course.id} value={course.id}>
-                        {course.title} ({course.type})
+                        {course.title} ({course.type || "subject"})
                       </option>
                     ))}
                 </select>
