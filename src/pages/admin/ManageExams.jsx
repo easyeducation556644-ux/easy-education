@@ -7,8 +7,11 @@ import { useExam } from "../../contexts/ExamContext"
 import { toast } from "../../hooks/use-toast"
 import { Link } from "react-router-dom"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+import { ADMIN_PERMISSION_KEYS, getAllowedCourseIds } from "../../lib/adminPermissions"
 
 export default function ManageExams() {
+  const { userProfile } = useAuth()
   const [exams, setExams] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -38,6 +41,7 @@ export default function ManageExams() {
   const fetchData = async () => {
     try {
       setLoading(true)
+      const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.EXAM_CREATE)
       const examsSnapshot = await getDocs(collection(db, "exams"))
       const examsData = await Promise.all(
         examsSnapshot.docs.map(async (examDoc) => {
@@ -67,11 +71,11 @@ export default function ManageExams() {
         // If neither has order, sort by createdAt descending
         return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
       })
-      setExams(examsData)
+      setExams(allowedCourseIds === null ? examsData : examsData.filter((exam) => allowedCourseIds.includes(exam.courseId)))
 
       const coursesSnapshot = await getDocs(collection(db, "courses"))
       const coursesData = coursesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-      setCourses(coursesData)
+      setCourses(allowedCourseIds === null ? coursesData : coursesData.filter((course) => allowedCourseIds.includes(course.id)))
     } catch (error) {
       console.error("Error fetching data:", error)
       toast({
