@@ -36,14 +36,6 @@ const REACTIONS = [
     bgColor: "rgba(250, 214, 100, 0.15)",
     hoverBgColor: "rgba(250, 214, 100, 0.25)"
   },
-  { 
-    type: "angry", 
-    emoji: "😡", 
-    label: "Angry", 
-    color: "#E9710F",
-    bgColor: "rgba(233, 113, 15, 0.15)",
-    hoverBgColor: "rgba(233, 113, 15, 0.25)"
-  },
 ]
 
 export default function ClassReactions({ classId, currentUser }) {
