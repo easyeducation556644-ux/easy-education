@@ -21,8 +21,7 @@ const initialForm = () => ({
   courseFormat: "single",
   bundledCourses: [],
   price: "",
-  youtubeSheetPrice: "",
-  officialAccessPrice: "",
+  purchaseOptions: [],
   status: "running",
   publishStatus: "published",
   imageType: "upload",
@@ -139,8 +138,11 @@ export default function ManageCourses() {
       courseFormat: course.courseFormat || "single",
       bundledCourses: course.bundledCourses || [],
       price: course.price || "",
-      youtubeSheetPrice: course.purchaseOptions?.find((option) => option.id === "youtube-sheet")?.price || "",
-      officialAccessPrice: course.purchaseOptions?.find((option) => option.id === "official-access")?.price || "",
+      purchaseOptions: (course.purchaseOptions || []).map((option, index) => ({
+        id: option.id || `option-${index + 1}`,
+        label: option.label || "",
+        price: option.price ?? "",
+      })),
       status: course.status || "running",
       publishStatus: course.publishStatus || "published",
       imageType: course.thumbnailURL ? "link" : "upload",
@@ -204,14 +206,14 @@ export default function ManageCourses() {
         courseFormat: formData.courseFormat || "single",
         bundledCourses: formData.courseFormat === "bundle" ? formData.bundledCourses : [],
         price: Number(formData.price) || 0,
-        purchaseOptions: [
-          formData.youtubeSheetPrice !== ""
-            ? { id: "youtube-sheet", label: "YouTube Sheet সহ", price: Number(formData.youtubeSheetPrice) }
-            : null,
-          formData.officialAccessPrice !== ""
-            ? { id: "official-access", label: "Official Access (FB+Web)", price: Number(formData.officialAccessPrice) }
-            : null,
-        ].filter((option) => option && Number.isFinite(option.price) && option.price >= 0),
+        purchaseOptions: (formData.purchaseOptions || [])
+          .filter((option) => option.label.trim() && option.price !== "")
+          .map((option, index) => ({
+            id: option.id || `option-${index + 1}`,
+            label: option.label.trim(),
+            price: Number(option.price),
+          }))
+          .filter((option) => Number.isFinite(option.price) && option.price >= 0),
         status: formData.status,
         publishStatus: formData.publishStatus,
         thumbnailURL: thumbnailURL || "",
@@ -771,36 +773,88 @@ export default function ManageCourses() {
                   </div>
 
                   <div className="rounded-lg border border-border bg-muted/20 p-4">
-                    <div className="mb-3">
-                      <h3 className="text-sm font-semibold">Optional Purchase Packages</h3>
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold">Optional Purchase Packages</h3>
+                        <p className="text-xs text-muted-foreground">
+                          Add any package name and price. Leave this list empty to use only the normal course price.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFormData({
+                            ...formData,
+                            purchaseOptions: [
+                              ...(formData.purchaseOptions || []),
+                              { id: `option-${Date.now()}`, label: "", price: "" },
+                            ],
+                          })
+                        }
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                      >
+                        <Plus className="h-4 w-4" />
+                        Add Option
+                      </button>
+                    </div>
+
+                    {(formData.purchaseOptions || []).length === 0 ? (
                       <p className="text-xs text-muted-foreground">
-                        Leave both empty to use the normal course price without showing package options.
+                        No purchase options added. Buyers will see the normal course price.
                       </p>
-                    </div>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div>
-                        <label className="block text-sm font-medium mb-1.5">YouTube Sheet সহ — Price (৳)</label>
-                        <input
-                          type="number"
-                          value={formData.youtubeSheetPrice}
-                          onChange={(e) => setFormData({ ...formData, youtubeSheetPrice: e.target.value })}
-                          className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                          placeholder="Optional"
-                          min="0"
-                        />
+                    ) : (
+                      <div className="space-y-3">
+                        {formData.purchaseOptions.map((option, index) => (
+                          <div
+                            key={option.id}
+                            className="grid grid-cols-1 gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-[minmax(0,1fr)_180px_auto]"
+                          >
+                            <input
+                              type="text"
+                              value={option.label}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  purchaseOptions: formData.purchaseOptions.map((item, itemIndex) =>
+                                    itemIndex === index ? { ...item, label: e.target.value } : item,
+                                  ),
+                                })
+                              }
+                              className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                              placeholder="Option name, e.g. YouTube Sheet সহ"
+                            />
+                            <input
+                              type="number"
+                              value={option.price}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  purchaseOptions: formData.purchaseOptions.map((item, itemIndex) =>
+                                    itemIndex === index ? { ...item, price: e.target.value } : item,
+                                  ),
+                                })
+                              }
+                              className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                              placeholder="Price (৳)"
+                              min="0"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFormData({
+                                  ...formData,
+                                  purchaseOptions: formData.purchaseOptions.filter((_, itemIndex) => itemIndex !== index),
+                                })
+                              }
+                              className="inline-flex h-10 items-center justify-center rounded-lg border border-red-500/30 px-3 text-red-500 hover:bg-red-500/10"
+                              aria-label={`Remove ${option.label || `option ${index + 1}`}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-1.5">Official Access (FB+Web) — Price (৳)</label>
-                        <input
-                          type="number"
-                          value={formData.officialAccessPrice}
-                          onChange={(e) => setFormData({ ...formData, officialAccessPrice: e.target.value })}
-                          className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                          placeholder="Optional"
-                          min="0"
-                        />
-                      </div>
-                    </div>
+                    )}
                   </div>
 
                   {formData.courseFormat === 'bundle' && (
