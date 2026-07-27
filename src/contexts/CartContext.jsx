@@ -44,6 +44,13 @@ export function CartProvider({ children }) {
     setCartItems(cartItems.filter((item) => item.id !== courseId))
   }
 
+  const setCartItem = (course) => {
+    setCartItems((currentItems) => [
+      ...currentItems.filter((item) => item.id !== course.id),
+      course,
+    ])
+  }
+
   const clearCart = () => {
     setCartItems([])
   }
@@ -58,6 +65,7 @@ export function CartProvider({ children }) {
   const value = {
     cartItems,
     addToCart,
+    setCartItem,
     removeFromCart,
     clearCart,
     getTotal,
