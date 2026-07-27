@@ -1,5 +1,6 @@
 import { Navigate } from "react-router-dom"
 import { useAuth } from "../contexts/AuthContext"
+import { isAdminPanelUser } from "../lib/adminPermissions"
 
 export default function ProtectedRoute({ children, adminOnly = false }) {
   const { currentUser, userProfile, loading, isBanned } = useAuth()
@@ -24,7 +25,7 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     )
   }
 
-  if (adminOnly && userProfile?.role !== "admin") {
+  if (adminOnly && !isAdminPanelUser(userProfile)) {
     return <Navigate to="/dashboard" replace />
   }
 
