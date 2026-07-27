@@ -86,8 +86,17 @@ export default function ClassComments() {
     })
   }
 
-  const handleGoToClass = (classId) => {
-    navigate(`/courses/class/${classId}`)
+  const handleGoToClass = (courseId, classId) => {
+    if (!courseId || !classId) {
+      toast({
+        variant: "error",
+        title: "Class unavailable",
+        description: "This class or its course may have been deleted.",
+      })
+      return
+    }
+
+    navigate(`/course/${courseId}/watch/${classId}`)
   }
 
   const filteredComments = comments.filter(
@@ -197,7 +206,7 @@ export default function ClassComments() {
 
                   <div className="flex gap-2 pt-2 border-t border-border">
                     <button
-                      onClick={() => handleGoToClass(comment.classId)}
+                      onClick={() => handleGoToClass(comment.courseId, comment.classId)}
                       className="flex-1 px-3 py-1.5 bg-primary/10 text-primary rounded hover:bg-primary/20 transition-colors flex items-center justify-center gap-1.5 text-xs font-medium"
                     >
                       <ExternalLink className="w-3 h-3" />
