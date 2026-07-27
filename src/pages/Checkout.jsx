@@ -236,6 +236,7 @@ export default function Checkout() {
           id: item.id,
           title: item.title,
           price: parseFloat(item.price) || 0,
+          purchaseOption: item.purchaseOption || null,
           courseFormat: item.courseFormat || 'regular',
           bundledCourses: (item.bundledCourses || []).map(course => 
             typeof course === 'string' ? course : course.id
@@ -372,7 +373,10 @@ export default function Checkout() {
                 <div className="space-y-1.5 sm:space-y-2 mb-4 sm:mb-6 max-h-40 sm:max-h-48 overflow-y-auto">
                   {cartItems.map((item) => (
                     <div key={item.id} className="flex justify-between text-xs sm:text-sm">
-                      <span className="truncate mr-2">{item.title}</span>
+                      <span className="truncate mr-2">
+                        {item.title}
+                        {item.purchaseOption?.label ? ` — ${item.purchaseOption.label}` : ""}
+                      </span>
                       <span className="font-medium flex-shrink-0">৳{item.price || 0}</span>
                     </div>
                   ))}
