@@ -123,9 +123,14 @@ export default function ManageUsers() {
   const handlePromoteToAdmin = async (userId) => {
     try {
       console.log(" Promoting user to admin:", userId)
-      await updateDoc(doc(db, "users", userId), { role: "admin" })
-      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "admin" } : u)))
-      showSuccess("User promoted to admin successfully!")
+      const adminAccess = {
+        mode: "limited",
+        classPdfCourseIds: [],
+        examCourseIds: [],
+      }
+      await updateDoc(doc(db, "users", userId), { role: "admin", adminAccess })
+      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "admin", adminAccess } : u)))
+      showSuccess("Limited admin created. Assign permissions from Administration.")
       console.log(" User promoted successfully")
     } catch (error) {
       console.error(" Error promoting user:", error)
@@ -140,8 +145,8 @@ export default function ManageUsers() {
   const handleDemoteToUser = async (userId) => {
     try {
       console.log(" Demoting user to regular user:", userId)
-      await updateDoc(doc(db, "users", userId), { role: "user" })
-      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "user" } : u)))
+      await updateDoc(doc(db, "users", userId), { role: "user", adminAccess: deleteField() })
+      setUsers(users.map((u) => (u.id === userId ? { ...u, role: "user", adminAccess: undefined } : u)))
       showSuccess("User demoted to regular user successfully!")
       console.log(" User demoted successfully")
     } catch (error) {
