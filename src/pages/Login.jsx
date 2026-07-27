@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Chrome } from "lucide-react"
 import { useAuth } from "../contexts/AuthContext"
+import { isAdminPanelUser } from "../lib/adminPermissions"
 
 export default function Login() {
   const [error, setError] = useState("")
@@ -13,7 +14,7 @@ export default function Login() {
   useEffect(() => {
     if (currentUser && userProfile) {
       console.log(" User already logged in, redirecting...")
-      if (userProfile.role === "admin") {
+      if (isAdminPanelUser(userProfile)) {
         navigate("/admin", { replace: true })
       } else {
         navigate("/dashboard", { replace: true })
@@ -31,7 +32,7 @@ export default function Login() {
       console.log(" Google login successful, profile:", profile)
 
       setTimeout(() => {
-        if (profile?.role === "admin") {
+        if (isAdminPanelUser(profile)) {
           console.log(" Redirecting to admin dashboard")
           navigate("/admin", { replace: true })
         } else {
