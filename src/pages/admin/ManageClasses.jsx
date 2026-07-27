@@ -51,6 +51,7 @@ export default function ManageClasses() {
   const [selectedArchiveExams, setSelectedArchiveExams] = useState([])
   const [archiveSubject, setArchiveSubject] = useState("")
   const [archiveChapter, setArchiveChapter] = useState("")
+  const [archiveCourseSearchQuery, setArchiveCourseSearchQuery] = useState("")
   const [archiveSubmitting, setArchiveSubmitting] = useState(false)
   const [teachers, setTeachers] = useState([])
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
@@ -397,6 +398,7 @@ export default function ManageClasses() {
     setSelectedArchiveExams([])
     setArchiveSubject("")
     setArchiveChapter("")
+    setArchiveCourseSearchQuery("")
   }
 
   const toggleArchiveExam = (examId) => {
@@ -1283,6 +1285,13 @@ export default function ManageClasses() {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium mb-1.5">Source Course (Archive)</label>
+                <input
+                  type="text"
+                  placeholder="Search source courses..."
+                  value={archiveCourseSearchQuery}
+                  onChange={(e) => setArchiveCourseSearchQuery(e.target.value)}
+                  className="w-full px-3 py-1.5 mb-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                />
                 <select
                   value={archiveSourceCourse}
                   onChange={(e) => {
@@ -1298,7 +1307,9 @@ export default function ManageClasses() {
                     .filter(
                       (c) =>
                         c.id !== selectedCourse &&
-                        (c.type || "subject") === (selectedCourseData?.type || "subject"),
+                        (c.type || "subject") === (selectedCourseData?.type || "subject") &&
+                        (!archiveCourseSearchQuery ||
+                          c.title?.toLowerCase().includes(archiveCourseSearchQuery.toLowerCase())),
                     )
                     .map((course) => (
                       <option key={course.id} value={course.id}>
