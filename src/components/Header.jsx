@@ -33,7 +33,7 @@ export default function Header() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const { currentUser, userProfile, signOut, isAdmin } = useAuth()
+  const { currentUser, userProfile, signOut, isAdminPanelUser } = useAuth()
   const { theme, toggleTheme, isDark } = useTheme()
   const navigate = useNavigate()
   const searchRef = useRef(null)
@@ -393,7 +393,7 @@ export default function Header() {
               {currentUser ? (
                 <>
                   <Link
-                    to={isAdmin ? "/admin" : "/dashboard"}
+                    to={isAdminPanelUser ? "/admin" : "/dashboard"}
                     className="hidden sm:flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-white dark:text-black rounded-lg smooth-transition text-sm font-medium hover:scale-105 active:scale-95"
                   >
                     <LayoutDashboard className="w-4 h-4" />
@@ -509,7 +509,7 @@ export default function Header() {
               {currentUser && (
                 <div className="p-4 border-t border-border/50 space-y-1">
                   <Link
-                    to={isAdmin ? "/admin" : "/dashboard"}
+                    to={isAdminPanelUser ? "/admin" : "/dashboard"}
                     onClick={() => setSidebarOpen(false)}
                     className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-primary/10 smooth-transition group hover:scale-[1.02] active:scale-[0.98]"
                   >
@@ -524,7 +524,7 @@ export default function Header() {
                     <BookOpen className="w-5 h-5 text-muted-foreground group-hover:text-primary smooth-transition" />
                     <span className="font-medium group-hover:text-primary smooth-transition">My Courses</span>
                   </Link>
-                  {!isAdmin && (
+                  {!isAdminPanelUser && (
                     <>
                       <Link
                         to="/payment-history"
