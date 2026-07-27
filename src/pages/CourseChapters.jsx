@@ -24,6 +24,7 @@ export default function CourseChapters() {
   const [subjects, setSubjects] = useState([])
   const [subjectData, setSubjectData] = useState([])
   const [exams, setExams] = useState([])
+  const [hasArchive, setHasArchive] = useState(false)
   const [loading, setLoading] = useState(true)
   const [courseNotFound, setCourseNotFound] = useState(false)
   const [hasAccess, setHasAccess] = useState(false)
@@ -172,10 +173,36 @@ export default function CourseChapters() {
           return subjectIsArchive || chapterIsArchive
         }
 
+        const allArchivedClasses = classesData.filter((cls) => isClassArchived(cls))
+        setHasArchive(allArchivedClasses.length > 0)
+
         if (isArchiveRoot) {
-          const archivedClasses = classesData.filter((cls) => isClassArchived(cls))
+          const archivedClasses = allArchivedClasses
           classesData = archivedClasses
 
+          if ((courseData.type || "subject") === "subject") {
+            const archivedChapterNames = [
+              ...new Set(
+                archivedClasses
+                  .flatMap((cls) => (Array.isArray(cls.chapter) ? cls.chapter : [cls.chapter || "General"]))
+                  .filter((chapter) => chapter && chapter !== "archive"),
+              ),
+            ].sort()
+            setChapters(archivedChapterNames)
+            setSubjects([])
+
+            const chaptersSnapshot = await getDocs(collection(db, "chapters"))
+            setChapterData(
+              chaptersSnapshot.docs
+                .map((chapterDoc) => ({ id: chapterDoc.id, ...chapterDoc.data() }))
+                .filter((chapterItem) => {
+                  if (chapterItem.courseIds && Array.isArray(chapterItem.courseIds)) {
+                    return chapterItem.courseIds.includes(resolvedCourseId) || chapterItem.courseIds.includes("archive")
+                  }
+                  return chapterItem.courseId === resolvedCourseId
+                }),
+            )
+          } else {
           const subjectChapterMap = {}
           archivedClasses.forEach((cls) => {
             const subjects = Array.isArray(cls.subject) ? cls.subject : [cls.subject]
@@ -214,6 +241,7 @@ export default function CourseChapters() {
               return s.courseId === resolvedCourseId
             })
           setSubjectData(fetchedSubjects)
+          }
         } else if (isArchiveSubject && subject) {
           const decodedSubject = decodeURIComponent(subject)
           const filteredClasses = classesData.filter((cls) => {
@@ -459,6 +487,24 @@ export default function CourseChapters() {
             </motion.button>
           )}
 
+          {!isArchive && !subject && (course?.type || "subject") === "subject" && hasArchive && (
+            <motion.button
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              onClick={() => navigate(`/course/${courseId}/subjects/archive/chapters`)}
+              className="group relative bg-card border border-border rounded-xl p-6 hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-secondary/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="relative">
+                <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
+                  <Archive className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">Archive</h3>
+                <p className="text-sm text-muted-foreground">View archived chapters and classes</p>
+              </div>
+            </motion.button>
+          )}
+
           {isArchive && subjects.length > 0
             ? subjects.map((archiveSubject, index) => {
                 const subjectInfo = subjectData.find(s => s.title === archiveSubject)
@@ -520,7 +566,9 @@ export default function CourseChapters() {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.1 }}
                     onClick={() => {
-                      if (isArchiveSubject && subject) {
+                      if (isArchiveRoot && (course?.type || "subject") === "subject") {
+                        navigate(`/course/${courseId}/archive/${encodeURIComponent(chapter)}/classes`)
+                      } else if (isArchiveSubject && subject) {
                         navigate(
                           `/course/${courseId}/archive/${encodeURIComponent(subject)}/${encodeURIComponent(chapter)}/classes`,
                         )
