@@ -9,6 +9,7 @@ import { collection, query, where, getDocs, doc, getDoc } from "firebase/firesto
 import { db } from "../lib/firebase"
 import ProgressBar from "./ProgressBar"
 import { toast } from "../hooks/use-toast"
+import { getCourseCategories } from "../lib/courseCategories"
 
 export default function CourseCard({ course, onAddToCart, showProgress = false, showResources = false, showMinimal = false }) {
   const { addToCart, removeFromCart, cartItems, openCart } = useCart()
@@ -246,7 +247,7 @@ export default function CourseCard({ course, onAddToCart, showProgress = false, 
               )}
               <div className="flex items-center justify-end mb-3">
                 <span className="px-3 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium">
-                  {course.category}
+                  {getCourseCategories(course).join(", ") || "Uncategorized"}
                 </span>
               </div>
 
