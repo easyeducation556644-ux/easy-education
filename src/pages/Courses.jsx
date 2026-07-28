@@ -8,6 +8,7 @@ import CourseCard from "../components/CourseCard"
 import { collection, query, orderBy, getDocs, where } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
+import { getCourseCategories } from "../lib/courseCategories"
 
 export default function Courses() {
   const location = useLocation()
@@ -97,14 +98,14 @@ export default function Courses() {
         return (
           course.title?.toLowerCase().includes(query) ||
           course.description?.toLowerCase().includes(query) ||
-          course.category?.toLowerCase().includes(query) ||
+          getCourseCategories(course).some((category) => category.toLowerCase().includes(query)) ||
           searchableKeywords.includes(query)
         )
       })
     }
 
     if (categoryFilter && categoryFilter !== "all") {
-      filtered = filtered.filter((course) => course.category === categoryFilter)
+      filtered = filtered.filter((course) => getCourseCategories(course).includes(categoryFilter))
     }
 
     if (sortBy === "newest") {
@@ -118,7 +119,7 @@ export default function Courses() {
     setFilteredCourses(filtered)
   }
 
-  const categories = ["all", ...new Set(courses.map((c) => c.category).filter(Boolean))]
+  const categories = ["all", ...new Set(courses.flatMap(getCourseCategories))]
 
   return (
     <div className="min-h-screen py-8 md:py-12 px-4 md:px-6">
