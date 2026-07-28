@@ -7,8 +7,18 @@ import { Plus, Edit, Trash2, X, Upload, Loader2 } from "lucide-react"
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, query, where } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+import { ADMIN_PERMISSION_KEYS, getAllowedCourseIds } from "../../lib/adminPermissions"
+
+const getSubjectCourseIds = (subject) =>
+  Array.isArray(subject.courseIds)
+    ? subject.courseIds
+    : subject.courseId
+      ? [subject.courseId]
+      : []
 
 export default function ManageSubjects() {
+  const { userProfile } = useAuth()
   const [courses, setCourses] = useState([])
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
@@ -34,7 +44,19 @@ export default function ManageSubjects() {
   useEffect(() => {
     fetchCourses()
     fetchSubjects()
-  }, [])
+  }, [userProfile])
+
+  const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.CLASS_PDF)
+  const canUseCourse = (courseId) =>
+    allowedCourseIds === null || allowedCourseIds.includes(courseId)
+  const canManageSubject = (subject) => {
+    const subjectCourseIds = getSubjectCourseIds(subject)
+    return (
+      allowedCourseIds === null ||
+      (subjectCourseIds.length > 0 &&
+        subjectCourseIds.every((courseId) => allowedCourseIds.includes(courseId)))
+    )
+  }
 
   const fetchCourses = async () => {
     try {
@@ -43,7 +65,11 @@ export default function ManageSubjects() {
         id: doc.id,
         ...doc.data(),
       }))
-      setCourses(coursesData)
+      setCourses(
+        allowedCourseIds === null
+          ? coursesData
+          : coursesData.filter((course) => allowedCourseIds.includes(course.id)),
+      )
     } catch (error) {
       console.error("Error fetching courses:", error)
     }
@@ -52,7 +78,9 @@ export default function ManageSubjects() {
   const fetchSubjects = async () => {
     try {
       const snapshot = await getDocs(collection(db, "subjects"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      const data = snapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter(canManageSubject)
       data.sort((a, b) => (b.order || 0) - (a.order || 0))
       setSubjects(data)
     } catch (error) {
@@ -186,6 +214,14 @@ export default function ManageSubjects() {
       })
       return
     }
+    if (!formData.courseIds.every(canUseCourse)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You can only manage subjects in your assigned courses.",
+      })
+      return
+    }
 
     try {
       let finalImageUrl = formData.imageUrl
@@ -232,6 +268,15 @@ export default function ManageSubjects() {
   }
 
   const handleDelete = async (id) => {
+    const subject = subjects.find((item) => item.id === id)
+    if (!subject || !canManageSubject(subject)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You cannot delete this subject.",
+      })
+      return
+    }
     setConfirmDialog({
       isOpen: true,
       title: "Delete Subject",
@@ -281,6 +326,14 @@ export default function ManageSubjects() {
         variant: "error",
         title: "Course Required",
         description: "Please select a batch course first!",
+      })
+      return
+    }
+    if (!canUseCourse(selectedCourse)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You can only create subjects in your assigned courses.",
       })
       return
     }
