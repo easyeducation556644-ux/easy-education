@@ -95,6 +95,22 @@ export default function ManageCourses() {
       form: typeof updater === 'function' ? updater(prev.form) : updater
     }))
   }
+
+  const updatePurchaseOption = (optionId, updates) => {
+    setFormData((currentForm) => ({
+      ...currentForm,
+      purchaseOptions: (currentForm.purchaseOptions || []).map((option) =>
+        option.id === optionId ? { ...option, ...updates } : option,
+      ),
+    }))
+  }
+
+  const removePurchaseOption = (optionId) => {
+    setFormData((currentForm) => ({
+      ...currentForm,
+      purchaseOptions: (currentForm.purchaseOptions || []).filter((option) => option.id !== optionId),
+    }))
+  }
   
   const [tagInput, setTagInput] = useState("")
   const [imageFile, setImageFile] = useState(null)
@@ -650,7 +666,9 @@ export default function ManageCourses() {
                         ref={editor}
                         value={formData.description}
                         config={editorConfig}
-                        onBlur={(newContent) => setFormData({ ...formData, description: newContent })}
+                        onBlur={(newContent) =>
+                          setFormData((currentForm) => ({ ...currentForm, description: newContent }))
+                        }
                         onChange={(newContent) => {}}
                       />
                     </div>
@@ -958,7 +976,10 @@ export default function ManageCourses() {
                       <input
                         type="number"
                         value={formData.price}
-                        onChange={(e) => setFormData({ ...formData, price: e.target.value })}
+                        onChange={(e) => {
+                          const price = e.target.value
+                          setFormData((currentForm) => ({ ...currentForm, price }))
+                        }}
                         className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                         placeholder="0"
                         min="0"
@@ -1002,13 +1023,13 @@ export default function ManageCourses() {
                       <button
                         type="button"
                         onClick={() =>
-                          setFormData({
-                            ...formData,
+                          setFormData((currentForm) => ({
+                            ...currentForm,
                             purchaseOptions: [
-                              ...(formData.purchaseOptions || []),
+                              ...(currentForm.purchaseOptions || []),
                               { id: `option-${Date.now()}`, label: "", price: "" },
                             ],
-                          })
+                          }))
                         }
                         className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
                       >
@@ -1088,40 +1109,21 @@ export default function ManageCourses() {
                             <input
                               type="text"
                               value={option.label}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  purchaseOptions: formData.purchaseOptions.map((item, itemIndex) =>
-                                    itemIndex === index ? { ...item, label: e.target.value } : item,
-                                  ),
-                                })
-                              }
+                              onChange={(e) => updatePurchaseOption(option.id, { label: e.target.value })}
                               className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                               placeholder="Option name, e.g. YouTube Sheet সহ"
                             />
                             <input
                               type="number"
                               value={option.price}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  purchaseOptions: formData.purchaseOptions.map((item, itemIndex) =>
-                                    itemIndex === index ? { ...item, price: e.target.value } : item,
-                                  ),
-                                })
-                              }
+                              onChange={(e) => updatePurchaseOption(option.id, { price: e.target.value })}
                               className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                               placeholder="Price (৳)"
                               min="0"
                             />
                             <button
                               type="button"
-                              onClick={() =>
-                                setFormData({
-                                  ...formData,
-                                  purchaseOptions: formData.purchaseOptions.filter((_, itemIndex) => itemIndex !== index),
-                                })
-                              }
+                              onClick={() => removePurchaseOption(option.id)}
                               className="inline-flex h-10 items-center justify-center rounded-lg border border-red-500/30 px-3 text-red-500 hover:bg-red-500/10"
                               aria-label={`Remove ${option.label || `option ${index + 1}`}`}
                             >
