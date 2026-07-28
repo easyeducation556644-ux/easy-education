@@ -270,12 +270,43 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
     let cancelled = false
     let youtubePlayer = null
+    let captionTimers = []
 
     const clearReadyTimeout = () => {
       if (loadTimeoutRef.current) {
         clearTimeout(loadTimeoutRef.current)
         loadTimeoutRef.current = null
       }
+    }
+
+    const clearCaptionTimers = () => {
+      captionTimers.forEach((timer) => clearTimeout(timer))
+      captionTimers = []
+    }
+
+    const disableYouTubeCaptions = (target) => {
+      clearCaptionTimers()
+
+      const turnCaptionsOff = () => {
+        if (cancelled) return
+
+        try {
+          target.setOption?.("captions", "track", {})
+        } catch {
+          // Captions may not be initialized yet.
+        }
+
+        try {
+          target.unloadModule?.("captions")
+        } catch {
+          // Some YouTube player versions do not expose unloadModule.
+        }
+      }
+
+      turnCaptionsOff()
+      captionTimers = [250, 900, 1800].map((delay) =>
+        setTimeout(turnCaptionsOff, delay),
+      )
     }
 
     const syncPlayerMetrics = (target) => {
@@ -354,6 +385,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               }
 
               syncPlayerMetrics(event.target)
+              disableYouTubeCaptions(event.target)
               setLoading(false)
               event.target.playVideo()
             },
@@ -374,6 +406,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               if (isPlaying) {
                 setHasStartedPlaying(true)
                 setLoading(false)
+                disableYouTubeCaptions(event.target)
               }
               if (state === YT.PlayerState.ENDED) {
                 setPlaying(false)
@@ -412,6 +445,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     return () => {
       cancelled = true
       clearReadyTimeout()
+      clearCaptionTimers()
       if (updateIntervalRef.current) {
         clearInterval(updateIntervalRef.current)
         updateIntervalRef.current = null
