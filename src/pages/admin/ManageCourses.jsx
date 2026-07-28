@@ -4,7 +4,7 @@ import { toast } from "../../hooks/use-toast"
 import { useState, useEffect, useRef, useMemo } from "react"
 import { motion } from "framer-motion"
 import { Plus, Search, Edit2, Trash2, X, BookOpen, Upload, Link as LinkIcon, Tag } from "lucide-react"
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore"
+import { collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, setDoc, serverTimestamp } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import { generateSlug } from "../../lib/slug"
@@ -31,6 +31,16 @@ const initialForm = () => ({
   tags: [],
   demoVideos: [],
 })
+
+const normalizePurchaseOptions = (options) =>
+  (options || [])
+    .filter((option) => option.label?.trim() && option.price !== "")
+    .map((option, index) => ({
+      id: option.id || `option-${index + 1}`,
+      label: option.label.trim(),
+      price: Number(option.price),
+    }))
+    .filter((option) => Number.isFinite(option.price) && option.price >= 0)
 
 export default function ManageCourses() {
   const editor = useRef(null)
@@ -62,6 +72,10 @@ export default function ManageCourses() {
   const [submitting, setSubmitting] = useState(false)
   const [demoVideoInput, setDemoVideoInput] = useState({ title: "", url: "" })
   const [telegramLinkInput, setTelegramLinkInput] = useState("")
+  const [purchaseOptionPresets, setPurchaseOptionPresets] = useState([])
+  const [selectedPresetId, setSelectedPresetId] = useState("")
+  const [presetName, setPresetName] = useState("")
+  const [savingPreset, setSavingPreset] = useState(false)
 
   const editorConfig = useMemo(
     () => ({
@@ -109,10 +123,11 @@ export default function ManageCourses() {
 
   const fetchData = async () => {
     try {
-      const [coursesSnap, categoriesSnap, teachersSnap] = await Promise.all([
+      const [coursesSnap, categoriesSnap, teachersSnap, presetsSnap] = await Promise.all([
         getDocs(collection(db, "courses")),
         getDocs(collection(db, "categories")),
         getDocs(collection(db, "teachers")),
+        getDoc(doc(db, "settings", "purchaseOptionPresets")),
       ])
 
       setCourses(
@@ -121,11 +136,79 @@ export default function ManageCourses() {
       )
       setCategories(categoriesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })))
       setTeachers(teachersSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })))
+      setPurchaseOptionPresets(presetsSnap.exists() ? presetsSnap.data().presets || [] : [])
     } catch (error) {
       console.error("Error fetching data:", error)
     } finally {
       setLoading(false)
     }
+  }
+
+  const savePresetList = async (presets) => {
+    await setDoc(
+      doc(db, "settings", "purchaseOptionPresets"),
+      {
+        type: "purchase_options",
+        presets,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+    setPurchaseOptionPresets(presets)
+  }
+
+  const handleSavePurchasePreset = async () => {
+    const name = presetName.trim()
+    const options = normalizePurchaseOptions(formData.purchaseOptions)
+
+    if (!name) {
+      toast({ variant: "error", title: "Preset Name Required", description: "Enter a name for this preset." })
+      return
+    }
+    if (options.length === 0) {
+      toast({ variant: "error", title: "Options Required", description: "Add at least one valid option and price." })
+      return
+    }
+
+    setSavingPreset(true)
+    try {
+      const existingPreset = purchaseOptionPresets.find(
+        (preset) => preset.name.toLowerCase() === name.toLowerCase(),
+      )
+      const preset = {
+        id: existingPreset?.id || `preset-${Date.now()}`,
+        name,
+        options: options.map(({ label, price }) => ({ label, price })),
+      }
+      const nextPresets = existingPreset
+        ? purchaseOptionPresets.map((item) => (item.id === existingPreset.id ? preset : item))
+        : [...purchaseOptionPresets, preset]
+
+      await savePresetList(nextPresets)
+      setSelectedPresetId(preset.id)
+      setPresetName("")
+      toast({ title: existingPreset ? "Preset Updated" : "Preset Saved", description: `${name} is ready to reuse.` })
+    } catch (error) {
+      console.error("Error saving purchase option preset:", error)
+      toast({ variant: "error", title: "Save Failed", description: "Could not save the preset." })
+    } finally {
+      setSavingPreset(false)
+    }
+  }
+
+  const handleApplyPurchasePreset = () => {
+    const preset = purchaseOptionPresets.find((item) => item.id === selectedPresetId)
+    if (!preset) return
+
+    setFormData({
+      ...formData,
+      purchaseOptions: preset.options.map((option, index) => ({
+        id: `option-${Date.now()}-${index}`,
+        label: option.label,
+        price: option.price,
+      })),
+    })
+    toast({ title: "Preset Applied", description: `${preset.name} options added to this course.` })
   }
 
   const handleOpenModal = (course = null) => {
@@ -164,6 +247,8 @@ export default function ManageCourses() {
     setTagInput("")
     setDemoVideoInput({ title: "", url: "" })
     setTelegramLinkInput("")
+    setSelectedPresetId("")
+    setPresetName("")
   }
 
   const handleCloseModal = () => {
@@ -175,6 +260,8 @@ export default function ManageCourses() {
     setImageFile(null)
     setDemoVideoInput({ title: "", url: "" })
     setTelegramLinkInput("")
+    setSelectedPresetId("")
+    setPresetName("")
   }
 
   const handleSubmit = async (e) => {
@@ -208,14 +295,7 @@ export default function ManageCourses() {
         courseFormat: formData.courseFormat || "single",
         bundledCourses: formData.courseFormat === "bundle" ? formData.bundledCourses : [],
         price: Number(formData.price) || 0,
-        purchaseOptions: (formData.purchaseOptions || [])
-          .filter((option) => option.label.trim() && option.price !== "")
-          .map((option, index) => ({
-            id: option.id || `option-${index + 1}`,
-            label: option.label.trim(),
-            price: Number(option.price),
-          }))
-          .filter((option) => Number.isFinite(option.price) && option.price >= 0),
+        purchaseOptions: normalizePurchaseOptions(formData.purchaseOptions),
         status: formData.status,
         publishStatus: formData.publishStatus,
         thumbnailURL: thumbnailURL || "",
@@ -809,6 +889,54 @@ export default function ManageCourses() {
                         <Plus className="h-4 w-4" />
                         Add Option
                       </button>
+                    </div>
+
+                    <div className="mb-4 grid gap-3 rounded-lg border border-border bg-background p-3">
+                      {purchaseOptionPresets.length > 0 && (
+                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                          <select
+                            value={selectedPresetId}
+                            onChange={(event) => setSelectedPresetId(event.target.value)}
+                            className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                          >
+                            <option value="">Select a saved preset...</option>
+                            {purchaseOptionPresets.map((preset) => (
+                              <option key={preset.id} value={preset.id}>
+                                {preset.name} ({preset.options?.length || 0} options)
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={handleApplyPurchasePreset}
+                            disabled={!selectedPresetId}
+                            className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Apply Preset
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <input
+                          type="text"
+                          value={presetName}
+                          onChange={(event) => setPresetName(event.target.value)}
+                          placeholder="Preset name, e.g. YouTube + Official"
+                          className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSavePurchasePreset}
+                          disabled={savingPreset}
+                          className="rounded-lg border border-primary px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {savingPreset ? "Saving..." : "Save Current as Preset"}
+                        </button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Applying a preset copies its names and prices; you can edit them for this course.
+                      </p>
                     </div>
 
                     {(formData.purchaseOptions || []).length === 0 ? (
