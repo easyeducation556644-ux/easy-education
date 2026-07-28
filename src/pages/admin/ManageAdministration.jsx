@@ -202,7 +202,7 @@ export default function ManageAdministration() {
     const nextExamIds = examEnabled ? examCourseIds : []
 
     if ((selectedRole === "class_pdf_admin" || selectedRole === "class_exam_admin") && nextClassIds.length === 0) {
-      toast({ variant: "error", title: "Course Required", description: "Select a course for Class & PDF Admin." })
+      toast({ variant: "error", title: "Course Required", description: "Select a course for the content admin role." })
       return
     }
     if ((selectedRole === "exam_create_admin" || selectedRole === "class_exam_admin") && nextExamIds.length === 0) {
@@ -254,7 +254,7 @@ export default function ManageAdministration() {
     <div>
       <div className="mb-6">
         <h1 className="text-3xl font-bold mb-2">Administration</h1>
-        <p className="text-muted-foreground">Assign course-specific roles to uploaders and exam creators.</p>
+        <p className="text-muted-foreground">Assign course-specific content and exam roles.</p>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
@@ -361,9 +361,9 @@ export default function ManageAdministration() {
                 className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="admin">Full Admin</option>
-                <option value="class_pdf_admin">Class & PDF Admin</option>
+                <option value="class_pdf_admin">Class, PDF, Subject & Chapter Admin</option>
                 <option value="exam_create_admin">Exam Create Admin</option>
-                <option value="class_exam_admin">Class, PDF & Exam Admin</option>
+                <option value="class_exam_admin">Content & Exam Admin</option>
                 <option value="user">Normal User</option>
               </select>
             </div>
@@ -381,8 +381,8 @@ export default function ManageAdministration() {
             )}
 
             {classPdfEnabled && <PermissionSection
-              title="Class & PDF Admin"
-              description="Can manage classes/PDF resources only in selected courses."
+              title="Class, PDF, Subject & Chapter Admin"
+              description="Can manage classes, PDFs, subjects and chapters only in selected courses."
               enabled={classPdfEnabled}
               setEnabled={setClassPdfEnabled}
               locked
