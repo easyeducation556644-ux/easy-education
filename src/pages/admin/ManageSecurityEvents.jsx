@@ -21,11 +21,14 @@ import {
   orderBy,
   query,
   startAfter,
-  where,
+  startAt,
+  endAt,
 } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 
 const PAGE_SIZE = 10
+const SECURITY_EVENT_PREFIX = "security_"
+const SECURITY_EVENT_UPPER_BOUND = `${SECURITY_EVENT_PREFIX}\uf8ff`
 
 const EVENT_LABELS = {
   devtools_shortcut: "Inspect / DevTools Shortcut",
@@ -72,15 +75,15 @@ export default function ManageSecurityEvents() {
     try {
       const queryParts = [
         collection(db, "examAttempts"),
-        where(documentId(), ">=", "security_"),
-        where(documentId(), "<", "security`"),
         orderBy(documentId(), "desc"),
       ]
 
       if (targetCursor) {
         queryParts.push(startAfter(targetCursor))
+      } else {
+        queryParts.push(startAt(SECURITY_EVENT_UPPER_BOUND))
       }
-      queryParts.push(limit(PAGE_SIZE + 1))
+      queryParts.push(endAt(SECURITY_EVENT_PREFIX), limit(PAGE_SIZE + 1))
 
       const snapshot = await getDocs(query(...queryParts))
       const pageDocs = snapshot.docs.slice(0, PAGE_SIZE)

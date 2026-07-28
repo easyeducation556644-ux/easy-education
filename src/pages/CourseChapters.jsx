@@ -11,6 +11,27 @@ import { useExam } from "../contexts/ExamContext"
 import { toast as showGlobalToast } from "../hooks/use-toast"
 import { isFirebaseId } from "../lib/utils/slugUtils"
 
+const sortChapterNamesByOrder = (chapterNames, chapterItems) => {
+  const orderByTitle = new Map()
+
+  chapterItems.forEach((chapter) => {
+    const chapterOrder = Number(chapter.order)
+    const normalizedOrder = Number.isFinite(chapterOrder) ? chapterOrder : 0
+    const currentOrder = orderByTitle.get(chapter.title)
+
+    if (currentOrder === undefined || normalizedOrder > currentOrder) {
+      orderByTitle.set(chapter.title, normalizedOrder)
+    }
+  })
+
+  return [...chapterNames].sort((first, second) => {
+    const orderDifference =
+      (orderByTitle.get(second) || 0) - (orderByTitle.get(first) || 0)
+
+    return orderDifference || first.localeCompare(second)
+  })
+}
+
 export default function CourseChapters() {
   const { courseId, subject } = useParams()
   const navigate = useNavigate()
@@ -201,20 +222,33 @@ export default function CourseChapters() {
                   .flatMap((cls) => (Array.isArray(cls.chapter) ? cls.chapter : [cls.chapter || "General"]))
                   .filter((chapter) => chapter && chapter !== "archive"),
               ),
-            ].sort()
-            setChapters(archivedChapterNames)
+            ]
             setSubjects([])
 
             const chaptersSnapshot = await getDocs(collection(db, "chapters"))
-            setChapterData(
-              chaptersSnapshot.docs
-                .map((chapterDoc) => ({ id: chapterDoc.id, ...chapterDoc.data() }))
-                .filter((chapterItem) => {
-                  if (chapterItem.courseIds && Array.isArray(chapterItem.courseIds)) {
-                    return chapterItem.courseIds.includes(resolvedCourseId) || chapterItem.courseIds.includes("archive")
-                  }
-                  return chapterItem.courseId === resolvedCourseId
-                }),
+            const fetchedChapters = chaptersSnapshot.docs
+              .map((chapterDoc) => ({
+                id: chapterDoc.id,
+                ...chapterDoc.data(),
+              }))
+              .filter((chapterItem) => {
+                if (
+                  chapterItem.courseIds &&
+                  Array.isArray(chapterItem.courseIds)
+                ) {
+                  return (
+                    chapterItem.courseIds.includes(resolvedCourseId) ||
+                    chapterItem.courseIds.includes("archive")
+                  )
+                }
+                return chapterItem.courseId === resolvedCourseId
+              })
+            setChapterData(fetchedChapters)
+            setChapters(
+              sortChapterNamesByOrder(
+                archivedChapterNames,
+                fetchedChapters,
+              ),
             )
           } else {
           const subjectChapterMap = {}
@@ -278,8 +312,7 @@ export default function CourseChapters() {
           })
 
           const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses.sort()
-          setChapters(uniqueChapters)
+          const uniqueChapters = chaptersWithClasses
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
@@ -295,6 +328,9 @@ export default function CourseChapters() {
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
+          setChapters(
+            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
+          )
         } else if (subject) {
           const decodedSubject = decodeURIComponent(subject)
           const filteredClasses = classesData.filter((cls) => {
@@ -317,8 +353,7 @@ export default function CourseChapters() {
           })
 
           const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses.sort()
-          setChapters(uniqueChapters)
+          const uniqueChapters = chaptersWithClasses
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
@@ -334,6 +369,9 @@ export default function CourseChapters() {
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
+          setChapters(
+            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
+          )
         } else {
           const filteredClasses = classesData.filter((cls) => !isClassArchived(cls))
           classesData = filteredClasses
@@ -349,8 +387,7 @@ export default function CourseChapters() {
           })
 
           const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses.sort()
-          setChapters(uniqueChapters)
+          const uniqueChapters = chaptersWithClasses
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
@@ -366,6 +403,9 @@ export default function CourseChapters() {
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
+          setChapters(
+            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
+          )
         }
 
         const examsData = await getExamsByCourse(resolvedCourseId)

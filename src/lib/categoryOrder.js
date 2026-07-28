@@ -4,12 +4,20 @@ const getTimestampMillis = (value) => {
   return 0
 }
 
-export const sortCategoriesByDisplayOrder = (categories) =>
+const getCategoryOrder = (category) => {
+  const order = Number(category.order)
+  if (Number.isFinite(order)) return order
+
+  const legacyOrder = Number(category.displayOrder)
+  return Number.isFinite(legacyOrder) ? legacyOrder : null
+}
+
+export const sortCategoriesByOrder = (categories) =>
   [...categories].sort((first, second) => {
-    const firstOrder = Number(first.displayOrder)
-    const secondOrder = Number(second.displayOrder)
-    const firstHasOrder = Number.isFinite(firstOrder)
-    const secondHasOrder = Number.isFinite(secondOrder)
+    const firstOrder = getCategoryOrder(first)
+    const secondOrder = getCategoryOrder(second)
+    const firstHasOrder = firstOrder !== null
+    const secondHasOrder = secondOrder !== null
 
     if (firstHasOrder && secondHasOrder && firstOrder !== secondOrder) {
       return firstOrder - secondOrder
@@ -26,7 +34,7 @@ export const sortCategoriesByDisplayOrder = (categories) =>
   })
 
 export const normalizeCategoryOrder = (categories) =>
-  sortCategoriesByDisplayOrder(categories).map((category, index) => ({
+  sortCategoriesByOrder(categories).map((category, index) => ({
     ...category,
-    displayOrder: index,
+    order: index,
   }))

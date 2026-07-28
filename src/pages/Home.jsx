@@ -7,7 +7,7 @@ import { Search, TrendingUp, ArrowRight, BookOpen, Award, Infinity } from "lucid
 import CourseCard from "../components/CourseCard"
 import { collection, query, orderBy, getDocs, where } from "firebase/firestore"
 import { db } from "../lib/firebase"
-import { sortCategoriesByDisplayOrder } from "../lib/categoryOrder"
+import { sortCategoriesByOrder } from "../lib/categoryOrder"
 import { useAuth } from "../contexts/AuthContext"
 import useEmblaCarousel from "embla-carousel-react"
 import Autoplay from "embla-carousel-autoplay"
@@ -89,7 +89,7 @@ export default function Home() {
       setTrendingCourses(coursesData)
 
       const categoriesSnapshot = await getDocs(collection(db, "categories"))
-      const categoriesData = sortCategoriesByDisplayOrder(
+      const categoriesData = sortCategoriesByOrder(
         categoriesSnapshot.docs.map((categoryDoc) => ({
           id: categoryDoc.id,
           ...categoryDoc.data(),

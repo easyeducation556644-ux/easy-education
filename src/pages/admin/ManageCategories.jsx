@@ -18,6 +18,7 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  deleteField,
   serverTimestamp,
   writeBatch,
 } from "firebase/firestore"
@@ -59,14 +60,19 @@ export default function ManageCategories() {
         const storedCategory = snapshot.docs.find(
           (categoryDoc) => categoryDoc.id === category.id,
         )
-        return Number(storedCategory?.data()?.displayOrder) !== index
+        const storedData = storedCategory?.data()
+        return (
+          Number(storedData?.order) !== index ||
+          Object.prototype.hasOwnProperty.call(storedData || {}, "displayOrder")
+        )
       })
 
       if (needsNormalization) {
         const batch = writeBatch(db)
         data.forEach((category, index) => {
           batch.update(doc(db, "categories", category.id), {
-            displayOrder: index,
+            order: index,
+            displayOrder: deleteField(),
           })
         })
         await batch.commit()
@@ -116,7 +122,7 @@ export default function ManageCategories() {
       } else {
         await addDoc(collection(db, "categories"), {
           ...formData,
-          displayOrder: categories.length,
+          order: categories.length,
           createdAt: serverTimestamp(),
         })
       }
@@ -195,13 +201,13 @@ export default function ManageCategories() {
 
     const reordered = [...categories]
     const previousOrderById = new Map(
-      categories.map((category) => [category.id, category.displayOrder]),
+      categories.map((category) => [category.id, category.order]),
     )
     const [movedCategory] = reordered.splice(currentIndex, 1)
     reordered.splice(targetIndex, 0, movedCategory)
     const normalized = reordered.map((category, index) => ({
       ...category,
-      displayOrder: index,
+      order: index,
     }))
 
     setCategories(normalized)
@@ -212,7 +218,7 @@ export default function ManageCategories() {
       normalized.forEach((category, index) => {
         if (Number(previousOrderById.get(category.id)) !== index) {
           batch.update(doc(db, "categories", category.id), {
-            displayOrder: index,
+            order: index,
             updatedAt: serverTimestamp(),
           })
         }
