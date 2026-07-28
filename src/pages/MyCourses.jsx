@@ -8,6 +8,7 @@ import { collection, query, where, getDocs, doc, getDoc } from "firebase/firesto
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import ProgressBar from "../components/ProgressBar"
+import { getCourseCategories } from "../lib/courseCategories"
 
 export default function MyCourses() {
   const { currentUser } = useAuth()
@@ -247,7 +248,9 @@ export default function MyCourses() {
                 <div className="p-4 space-y-3">
                   <div>
                     <h3 className="font-semibold text-lg line-clamp-2 mb-1">{course.title}</h3>
-                    <p className="text-xs text-muted-foreground">{course.category}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {getCourseCategories(course).join(", ") || "Uncategorized"}
+                    </p>
                   </div>
 
                   <div className="space-y-1">
