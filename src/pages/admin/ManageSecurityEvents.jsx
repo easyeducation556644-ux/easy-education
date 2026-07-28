@@ -15,20 +15,13 @@ import {
 } from "lucide-react"
 import {
   collection,
-  documentId,
   getDocs,
-  limit,
-  orderBy,
   query,
-  startAfter,
-  startAt,
-  endAt,
+  where,
 } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 
 const PAGE_SIZE = 10
-const SECURITY_EVENT_PREFIX = "security_"
-const SECURITY_EVENT_UPPER_BOUND = `${SECURITY_EVENT_PREFIX}\uf8ff`
 
 const EVENT_LABELS = {
   devtools_shortcut: "Inspect / DevTools Shortcut",
@@ -59,48 +52,45 @@ const formatDateTime = (value) => {
   })
 }
 
+const getEventTimestamp = (event) => {
+  const value = event.lastDetectedAt || event.firstDetectedAt
+  if (value?.toMillis) return value.toMillis()
+
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
 export default function ManageSecurityEvents() {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [searchTerm, setSearchTerm] = useState("")
-  const [cursor, setCursor] = useState(null)
-  const [cursorHistory, setCursorHistory] = useState([])
-  const [nextCursor, setNextCursor] = useState(null)
+  const [page, setPage] = useState(0)
 
-  const loadEvents = useCallback(async (targetCursor = null) => {
+  const loadEvents = useCallback(async () => {
     setLoading(true)
     setError("")
 
     try {
-      const queryParts = [
-        collection(db, "examAttempts"),
-        orderBy(documentId(), "desc"),
-      ]
-
-      if (targetCursor) {
-        queryParts.push(startAfter(targetCursor))
-      } else {
-        queryParts.push(startAt(SECURITY_EVENT_UPPER_BOUND))
-      }
-      queryParts.push(endAt(SECURITY_EVENT_PREFIX), limit(PAGE_SIZE + 1))
-
-      const snapshot = await getDocs(query(...queryParts))
-      const pageDocs = snapshot.docs.slice(0, PAGE_SIZE)
-
-      setEvents(
-        pageDocs
-          .map((eventDoc) => ({ id: eventDoc.id, ...eventDoc.data() }))
-          .filter((event) => event.eventCategory === "security_event"),
+      const snapshot = await getDocs(
+        query(
+          collection(db, "examAttempts"),
+          where("eventCategory", "==", "security_event"),
+        ),
       )
-      setNextCursor(
-        snapshot.docs.length > PAGE_SIZE
-          ? pageDocs[pageDocs.length - 1]
-          : null,
-      )
+      const securityEvents = snapshot.docs
+        .map((eventDoc) => ({ id: eventDoc.id, ...eventDoc.data() }))
+        .sort(
+          (first, second) =>
+            getEventTimestamp(second) - getEventTimestamp(first) ||
+            second.id.localeCompare(first.id),
+        )
+
+      setEvents(securityEvents)
+      setPage(0)
     } catch (loadError) {
       setEvents([])
-      setNextCursor(null)
+      setPage(0)
       setError(
         loadError.code === "permission-denied"
           ? "Security Events access denied"
@@ -112,14 +102,20 @@ export default function ManageSecurityEvents() {
   }, [])
 
   useEffect(() => {
-    loadEvents(cursor)
-  }, [cursor, loadEvents])
+    loadEvents()
+  }, [loadEvents])
+
+  const totalPages = Math.max(1, Math.ceil(events.length / PAGE_SIZE))
+  const pageEvents = useMemo(
+    () => events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [events, page],
+  )
 
   const filteredEvents = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
-    if (!term) return events
+    if (!term) return pageEvents
 
-    return events.filter((event) =>
+    return pageEvents.filter((event) =>
       [
         event.userName,
         event.userEmail,
@@ -131,19 +127,14 @@ export default function ManageSecurityEvents() {
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(term)),
     )
-  }, [events, searchTerm])
+  }, [pageEvents, searchTerm])
 
   const handleNext = () => {
-    if (!nextCursor) return
-    setCursorHistory((history) => [...history, cursor])
-    setCursor(nextCursor)
+    setPage((currentPage) => Math.min(totalPages - 1, currentPage + 1))
   }
 
   const handlePrevious = () => {
-    if (cursorHistory.length === 0) return
-    const previousCursor = cursorHistory[cursorHistory.length - 1]
-    setCursorHistory((history) => history.slice(0, -1))
-    setCursor(previousCursor)
+    setPage((currentPage) => Math.max(0, currentPage - 1))
   }
 
   return (
@@ -160,7 +151,7 @@ export default function ManageSecurityEvents() {
         </div>
         <button
           type="button"
-          onClick={() => loadEvents(cursor)}
+          onClick={loadEvents}
           disabled={loading}
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
@@ -269,13 +260,13 @@ export default function ManageSecurityEvents() {
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
-          Page {cursorHistory.length + 1} • Maximum {PAGE_SIZE} records
+          Page {page + 1} of {totalPages} • Maximum {PAGE_SIZE} records
         </p>
         <div className="flex gap-2">
           <button
             type="button"
             onClick={handlePrevious}
-            disabled={loading || cursorHistory.length === 0}
+            disabled={loading || page === 0}
             className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -284,7 +275,7 @@ export default function ManageSecurityEvents() {
           <button
             type="button"
             onClick={handleNext}
-            disabled={loading || !nextCursor}
+            disabled={loading || page >= totalPages - 1}
             className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
             Next
