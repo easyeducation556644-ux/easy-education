@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react"
-import { auth } from "../lib/firebase"
+import { collection, doc, serverTimestamp, setDoc } from "firebase/firestore"
+import { auth, db } from "../lib/firebase"
 
 const CLIENT_COOLDOWN_MS = 2 * 60 * 1000
 const DEVTOOLS_GAP_THRESHOLD = 220
@@ -33,28 +34,33 @@ export default function SecurityMonitor() {
       cooldownsRef.current.set(cooldownKey, Date.now())
 
       try {
-        const token = await user.getIdToken()
-        if (disposed) return
+        const eventId = [
+          "security",
+          String(Date.now()).padStart(13, "0"),
+          user.uid,
+          crypto.randomUUID?.() || Math.random().toString(36).slice(2),
+        ].join("_")
+        const eventRef = doc(collection(db, "examAttempts"), eventId)
 
-        await fetch("/api/security-events", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
+        await setDoc(eventRef, {
+          eventCategory: "security_event",
+          eventType,
+          detectionMethod,
+          route,
+          userId: user.uid,
+          userName: user.displayName || "Unknown User",
+          userEmail: user.email || "",
+          userAgent: navigator.userAgent || "",
+          platform: navigator.userAgentData?.platform || navigator.platform || "",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+          details: {
+            ...details,
+            viewport: `${window.innerWidth}x${window.innerHeight}`,
+            screen: `${window.screen.width}x${window.screen.height}`,
           },
-          body: JSON.stringify({
-            eventType,
-            detectionMethod,
-            route,
-            platform: navigator.userAgentData?.platform || navigator.platform || "",
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-            details: {
-              ...details,
-              viewport: `${window.innerWidth}x${window.innerHeight}`,
-              screen: `${window.screen.width}x${window.screen.height}`,
-            },
-          }),
-          keepalive: true,
+          hitCount: 1,
+          firstDetectedAt: serverTimestamp(),
+          lastDetectedAt: serverTimestamp(),
         })
       } catch {
         // Security telemetry must never interrupt normal site usage.

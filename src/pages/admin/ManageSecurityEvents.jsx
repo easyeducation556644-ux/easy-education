@@ -13,7 +13,17 @@ import {
   ShieldAlert,
   User,
 } from "lucide-react"
-import { auth } from "../../lib/firebase"
+import {
+  collection,
+  documentId,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  startAfter,
+  where,
+} from "firebase/firestore"
+import { db } from "../../lib/firebase"
 
 const PAGE_SIZE = 10
 
@@ -33,7 +43,7 @@ const EVENT_STYLES = {
 
 const formatDateTime = (value) => {
   if (!value) return "Unknown"
-  const date = new Date(value)
+  const date = value?.toDate ? value.toDate() : new Date(value)
   if (Number.isNaN(date.getTime())) return "Unknown"
 
   return date.toLocaleString("en-BD", {
@@ -60,31 +70,39 @@ export default function ManageSecurityEvents() {
     setError("")
 
     try {
-      const user = auth.currentUser
-      if (!user) throw new Error("Please sign in again")
+      const queryParts = [
+        collection(db, "examAttempts"),
+        where(documentId(), ">=", "security_"),
+        where(documentId(), "<", "security`"),
+        orderBy(documentId(), "desc"),
+      ]
 
-      const token = await user.getIdToken()
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) })
-      if (targetCursor) params.set("cursor", targetCursor)
-
-      const response = await fetch(`/api/security-events?${params}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        cache: "no-store",
-      })
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to load security events")
+      if (targetCursor) {
+        queryParts.push(startAfter(targetCursor))
       }
+      queryParts.push(limit(PAGE_SIZE + 1))
 
-      setEvents(data.events || [])
-      setNextCursor(data.nextCursor || null)
+      const snapshot = await getDocs(query(...queryParts))
+      const pageDocs = snapshot.docs.slice(0, PAGE_SIZE)
+
+      setEvents(
+        pageDocs
+          .map((eventDoc) => ({ id: eventDoc.id, ...eventDoc.data() }))
+          .filter((event) => event.eventCategory === "security_event"),
+      )
+      setNextCursor(
+        snapshot.docs.length > PAGE_SIZE
+          ? pageDocs[pageDocs.length - 1]
+          : null,
+      )
     } catch (loadError) {
       setEvents([])
       setNextCursor(null)
-      setError(loadError.message || "Failed to load security events")
+      setError(
+        loadError.code === "permission-denied"
+          ? "Security Events access denied"
+          : loadError.message || "Failed to load security events",
+      )
     } finally {
       setLoading(false)
     }
