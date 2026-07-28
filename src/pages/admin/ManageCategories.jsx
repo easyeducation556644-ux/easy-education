@@ -2,10 +2,28 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Plus, Edit, Trash2, Loader2, ImageIcon } from "lucide-react"
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore"
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Loader2,
+  ImageIcon,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react"
+import {
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  serverTimestamp,
+  writeBatch,
+} from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
+import { normalizeCategoryOrder } from "../../lib/categoryOrder"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
 
@@ -15,6 +33,7 @@ export default function ManageCategories() {
   const [showForm, setShowForm] = useState(false)
   const [editingCategory, setEditingCategory] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [savingOrder, setSavingOrder] = useState(false)
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
   const [formData, setFormData] = useState({
     title: "",
@@ -28,8 +47,30 @@ export default function ManageCategories() {
   const fetchCategories = async () => {
     try {
       const snapshot = await getDocs(collection(db, "categories"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      const data = normalizeCategoryOrder(
+        snapshot.docs.map((categoryDoc) => ({
+          id: categoryDoc.id,
+          ...categoryDoc.data(),
+        })),
+      )
       setCategories(data)
+
+      const needsNormalization = data.some((category, index) => {
+        const storedCategory = snapshot.docs.find(
+          (categoryDoc) => categoryDoc.id === category.id,
+        )
+        return Number(storedCategory?.data()?.displayOrder) !== index
+      })
+
+      if (needsNormalization) {
+        const batch = writeBatch(db)
+        data.forEach((category, index) => {
+          batch.update(doc(db, "categories", category.id), {
+            displayOrder: index,
+          })
+        })
+        await batch.commit()
+      }
     } catch (error) {
       console.error("Error fetching categories:", error)
     } finally {
@@ -75,6 +116,7 @@ export default function ManageCategories() {
       } else {
         await addDoc(collection(db, "categories"), {
           ...formData,
+          displayOrder: categories.length,
           createdAt: serverTimestamp(),
         })
       }
@@ -136,10 +178,73 @@ export default function ManageCategories() {
     })
   }
 
+  const handleMoveCategory = async (categoryId, direction) => {
+    if (savingOrder) return
+
+    const currentIndex = categories.findIndex(
+      (category) => category.id === categoryId,
+    )
+    const targetIndex = currentIndex + direction
+    if (
+      currentIndex < 0 ||
+      targetIndex < 0 ||
+      targetIndex >= categories.length
+    ) {
+      return
+    }
+
+    const reordered = [...categories]
+    const previousOrderById = new Map(
+      categories.map((category) => [category.id, category.displayOrder]),
+    )
+    const [movedCategory] = reordered.splice(currentIndex, 1)
+    reordered.splice(targetIndex, 0, movedCategory)
+    const normalized = reordered.map((category, index) => ({
+      ...category,
+      displayOrder: index,
+    }))
+
+    setCategories(normalized)
+    setSavingOrder(true)
+
+    try {
+      const batch = writeBatch(db)
+      normalized.forEach((category, index) => {
+        if (Number(previousOrderById.get(category.id)) !== index) {
+          batch.update(doc(db, "categories", category.id), {
+            displayOrder: index,
+            updatedAt: serverTimestamp(),
+          })
+        }
+      })
+      await batch.commit()
+      toast({
+        variant: "success",
+        title: "Order Updated",
+        description: "Category position updated successfully!",
+      })
+    } catch (error) {
+      console.error("Error updating category order:", error)
+      await fetchCategories()
+      toast({
+        variant: "error",
+        title: "Order Update Failed",
+        description: "Failed to update category position",
+      })
+    } finally {
+      setSavingOrder(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Manage Categories</h1>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Manage Categories</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Use the arrow buttons to control the category order on the homepage.
+          </p>
+        </div>
         <button
           onClick={() => {
             setShowForm(!showForm)
@@ -148,7 +253,7 @@ export default function ManageCategories() {
               setFormData({ title: "", imageURL: "" })
             }
           }}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
+          className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-primary-foreground transition-colors hover:bg-primary/90 sm:shrink-0"
         >
           <Plus className="w-4 h-4" />
           Add Category
@@ -244,7 +349,7 @@ export default function ManageCategories() {
         </div>
       ) : categories.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {categories.map((category) => (
+          {categories.map((category, index) => (
             <motion.div
               key={category.id}
               initial={{ opacity: 0, scale: 0.9 }}
@@ -269,7 +374,40 @@ export default function ManageCategories() {
                 )}
               </div>
               <div className="p-4">
-                <h3 className="font-semibold text-lg mb-2">{category.title}</h3>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Position {index + 1}
+                    </p>
+                    <h3 className="truncate text-lg font-semibold">
+                      {category.title}
+                    </h3>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleMoveCategory(category.id, -1)}
+                      disabled={savingOrder || index === 0}
+                      className="rounded-lg border border-border p-2 transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-35"
+                      aria-label={`Move ${category.title} up`}
+                      title="Move up"
+                    >
+                      <ArrowUp className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMoveCategory(category.id, 1)}
+                      disabled={
+                        savingOrder || index === categories.length - 1
+                      }
+                      className="rounded-lg border border-border p-2 transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-35"
+                      aria-label={`Move ${category.title} down`}
+                      title="Move down"
+                    >
+                      <ArrowDown className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleEdit(category)}

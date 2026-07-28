@@ -5,8 +5,9 @@ import { Link, useNavigate } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Search, TrendingUp, ArrowRight, BookOpen, Award, Infinity } from "lucide-react"
 import CourseCard from "../components/CourseCard"
-import { collection, query, orderBy, limit, getDocs, where } from "firebase/firestore"
+import { collection, query, orderBy, getDocs, where } from "firebase/firestore"
 import { db } from "../lib/firebase"
+import { sortCategoriesByDisplayOrder } from "../lib/categoryOrder"
 import { useAuth } from "../contexts/AuthContext"
 import useEmblaCarousel from "embla-carousel-react"
 import Autoplay from "embla-carousel-autoplay"
@@ -87,12 +88,13 @@ export default function Home() {
       
       setTrendingCourses(coursesData)
 
-      const categoriesQuery = query(collection(db, "categories"), limit(8))
-      const categoriesSnapshot = await getDocs(categoriesQuery)
-      const categoriesData = categoriesSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
+      const categoriesSnapshot = await getDocs(collection(db, "categories"))
+      const categoriesData = sortCategoriesByDisplayOrder(
+        categoriesSnapshot.docs.map((categoryDoc) => ({
+          id: categoryDoc.id,
+          ...categoryDoc.data(),
+        })),
+      ).slice(0, 8)
       setCategories(categoriesData)
     } catch (error) {
       console.error(" Error fetching data:", error)
