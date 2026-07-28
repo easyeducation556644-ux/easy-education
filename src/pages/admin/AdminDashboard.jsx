@@ -115,8 +115,8 @@ export default function AdminDashboard() {
     { name: "Users", path: "/admin/users", icon: Users, fullOnly: true },
     { name: "Categories", path: "/admin/categories", icon: Grid, fullOnly: true },
     { name: "Courses", path: "/admin/courses", icon: BookOpen, fullOnly: true },
-    { name: "Subjects", path: "/admin/subjects", icon: BookMarked, fullOnly: true },
-    { name: "Chapters", path: "/admin/chapters", icon: BookMarked, fullOnly: true },
+    { name: "Subjects", path: "/admin/subjects", icon: BookMarked, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
+    { name: "Chapters", path: "/admin/chapters", icon: BookMarked, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
     { name: "Classes & PDF", path: "/admin/classes", icon: Video, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
     { name: "Class Comments", path: "/admin/class-comments", icon: MessageSquare, fullOnly: true },
     { name: "Exam Create", path: "/admin/exams", icon: FileQuestion, permission: ADMIN_PERMISSION_KEYS.EXAM_CREATE },
@@ -218,8 +218,8 @@ export default function AdminDashboard() {
               <Route path="exams/:examId/questions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_CREATE}><ManageExamQuestions /></AdminRoute>} />
               <Route path="exam-results" element={<AdminRoute fullOnly><ViewExamResults /></AdminRoute>} />
               <Route path="exam-submissions" element={<AdminRoute fullOnly><ViewExamSubmissions /></AdminRoute>} />
-              <Route path="subjects" element={<AdminRoute fullOnly><ManageSubjects /></AdminRoute>} />
-              <Route path="chapters" element={<AdminRoute fullOnly><ManageChapters /></AdminRoute>} />
+              <Route path="subjects" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageSubjects /></AdminRoute>} />
+              <Route path="chapters" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageChapters /></AdminRoute>} />
               <Route path="categories" element={<AdminRoute fullOnly><ManageCategories /></AdminRoute>} />
               <Route path="teachers" element={<AdminRoute fullOnly><ManageTeachers /></AdminRoute>} />
               <Route path="announcements" element={<AdminRoute fullOnly><ManageAnnouncements /></AdminRoute>} />
