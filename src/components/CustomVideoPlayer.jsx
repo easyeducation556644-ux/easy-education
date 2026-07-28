@@ -8,10 +8,11 @@ import {
   Maximize,
   Minimize,
   Settings,
-  Loader2,
   AlertCircle,
   RotateCw,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
 
 const YOUTUBE_REGEX =
@@ -162,12 +163,15 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   const controlsTimeoutRef = useRef(null)
   const hlsRef = useRef(null)
   const lastTapRef = useRef({ time: 0, side: null })
+  const singleTapTimeoutRef = useRef(null)
+  const doubleTapTimeoutRef = useRef(null)
   const updateIntervalRef = useRef(null)
   const mouseMoveTimeoutRef = useRef(null)
   const volumeSliderRef = useRef(null)
   const loadTimeoutRef = useRef(null)
   const hlsTimeoutRef = useRef(null)
   const pendingSeekRef = useRef(0)
+  const currentTimeRef = useRef(0)
   const onNextRef = useRef(onNext)
   const volumeRef = useRef(volume)
   const playbackRateRef = useRef(playbackRate)
@@ -185,6 +189,10 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   }, [playbackRate])
 
   useEffect(() => {
+    currentTimeRef.current = currentTime
+  }, [currentTime])
+
+  useEffect(() => {
     setPlaying(false)
     setCurrentTime(0)
     setDuration(0)
@@ -196,6 +204,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setShowSettings(false)
     setPlaybackRates(DEFAULT_PLAYBACK_RATES)
     pendingSeekRef.current = 0
+    currentTimeRef.current = 0
     setError(null)
     setLoading(Boolean(url) && !isDrive && !isDailymotion && !isRumble)
   }, [url, isDrive, isDailymotion, isRumble])
@@ -300,6 +309,8 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         if (cancelled || !youtubeContainerRef.current) return
 
         youtubePlayer = new YT.Player(youtubeContainerRef.current, {
+          width: "100%",
+          height: "100%",
           videoId,
           playerVars: {
             autoplay: 1,
@@ -658,16 +669,17 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     }
 
     setCurrentTime(newTime)
+    currentTimeRef.current = newTime
     pendingSeekRef.current = newTime
     setTimeout(() => setIsSeekingLoading(false), 800)
   }
 
   const skipForward = () => {
-    commitSeek(currentTime + 10)
+    commitSeek(currentTimeRef.current + 10)
   }
 
   const skipBackward = () => {
-    commitSeek(currentTime - 10)
+    commitSeek(currentTimeRef.current - 10)
   }
 
   const handleTouchStart = (e) => {
@@ -734,26 +746,81 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsSwiping(false)
   }
 
-  const handleSingleTap = (e) => {
-    if (isSwiping) return
-    
-    const now = Date.now()
-    const timeSinceLastTap = now - lastTapRef.current.time
+  const showDoubleTapFeedback = (side) => {
+    const isLeft = side === "left"
 
-    if (timeSinceLastTap < 300) {
+    commitSeek(currentTimeRef.current + (isLeft ? -10 : 10))
+    setShowControls(false)
+    setShowSettings(false)
+    setShowVolumeSlider(false)
+    setShowDoubleTapLeft(isLeft)
+    setShowDoubleTapRight(!isLeft)
+    setDoubleTapCount((previous) => ({
+      left: isLeft ? previous.left + 1 : 0,
+      right: isLeft ? 0 : previous.right + 1,
+    }))
+
+    if (doubleTapTimeoutRef.current) {
+      clearTimeout(doubleTapTimeoutRef.current)
+    }
+
+    doubleTapTimeoutRef.current = setTimeout(() => {
+      setShowDoubleTapLeft(false)
+      setShowDoubleTapRight(false)
+      setDoubleTapCount({ left: 0, right: 0 })
+    }, 750)
+  }
+
+  const handleTap = (event, side) => {
+    event?.preventDefault()
+    if (isSwiping) return
+
+    const now = Date.now()
+    const previousTap = lastTapRef.current
+    const isDoubleTap =
+      side !== "center" &&
+      previousTap.side === side &&
+      now - previousTap.time < 320
+
+    if (isDoubleTap) {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current)
+        singleTapTimeoutRef.current = null
+      }
       lastTapRef.current = { time: 0, side: null }
+      showDoubleTapFeedback(side)
       return
     }
 
-    setTimeout(() => {
-      if (lastTapRef.current.time !== 0) {
-        setShowControls(!showControls)
+    if (singleTapTimeoutRef.current) {
+      clearTimeout(singleTapTimeoutRef.current)
+    }
+
+    lastTapRef.current = { time: now, side }
+    singleTapTimeoutRef.current = setTimeout(() => {
+      if (
+        lastTapRef.current.time === now &&
+        lastTapRef.current.side === side
+      ) {
+        setShowControls((visible) => !visible)
+        setShowSettings(false)
+        setShowVolumeSlider(false)
         lastTapRef.current = { time: 0, side: null }
       }
     }, 300)
-    
-    lastTapRef.current = { time: now, side: null }
   }
+
+  useEffect(
+    () => () => {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current)
+      }
+      if (doubleTapTimeoutRef.current) {
+        clearTimeout(doubleTapTimeoutRef.current)
+      }
+    },
+    [],
+  )
 
   const resetControlsTimeout = () => {
     setShowControls(true)
@@ -1043,188 +1110,128 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   return (
     <>
       <style jsx>{`
-        /* Maximum YouTube branding blocking - Enhanced */
+        #yt-player {
+          position: absolute !important;
+          inset: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          border: 0 !important;
+          pointer-events: none !important;
+        }
+
         #yt-player iframe {
           pointer-events: none !important;
         }
-        #yt-player {
-          pointer-events: auto;
+
+        .provider-top-mask {
+          height: clamp(52px, 18%, 74px);
+          background: #000;
+          box-shadow: 0 10px 20px rgba(0, 0, 0, 0.45);
         }
-        
-        /* Aggressive YouTube UI blocking - All variations */
-        .ytp-watermark,
-        .ytp-chrome-top-buttons,
-        .ytp-show-cards-title,
-        .ytp-pause-overlay,
-        .ytp-scroll-min,
-        .ytp-impression-link,
-        .ytp-title,
-        .ytp-title-text,
-        .ytp-title-link,
-        .ytp-gradient-top,
-        .ytp-chrome-top,
-        .ytp-show-cards-title,
-        .ytp-ce-element,
-        .ytp-cards-teaser,
-        .ytp-endscreen-content,
-        .ytp-suggested-action,
-        .iv-branding,
-        .annotation,
-        .ytp-cued-thumbnail-overlay,
-        .ytp-cued-thumbnail-overlay-image,
-        .ytp-youtube-button,
-        .ytp-cards-button,
-        .ytp-info-panel-detail,
-        .ytp-videowall-still,
-        .ytp-ce-covering-overlay,
-        .ytp-ce-element-show,
-        .ytp-ce-covering-image,
-        .ytp-ce-expanding-image,
-        .ytp-ce-video,
-        .ytp-ce-playlist,
-        .ytp-ce-channel,
-        .ytp-large-play-button,
-        .ytp-button,
-        a[class*="ytp"],
-        div[class*="ytp-pause"],
-        div[class*="ytp-cued"],
-        .ytp-player-content,
-        .ytp-title-channel,
-        .ytp-title-expanded-overlay,
-        .ytp-cards-button-icon,
-        .ytp-watermark-icon,
-        .ytp-share-button,
-        .ytp-watch-later-button,
-        .ytp-share-button-visible,
-        .ytp-chrome-controls,
-        .ytp-gradient-bottom,
-        .ytp-progress-bar-container,
-        .html5-video-player a,
-        .html5-video-player .ytp-title,
-        .html5-endscreen,
-        .ytp-paid-content-overlay,
-        .ytp-ce-shadow,
-        .ytp-ce-size-1280,
-        .ytp-ce-top-left-quad,
-        .ytp-element-shadow,
-        .ytp-ce-covering-overlay,
-        .ytp-ce-expanding-overlay-background,
-        .ytp-spinner,
-        .ytp-error,
-        .ytp-player-minimized,
-        .ytp-contextmenu,
-        .ytp-popup,
-        .ytp-settings-menu,
-        .ytp-panel,
-        .ytp-menuitem,
-        .ytp-iv-video-content,
-        .ytp-cards-teaser-box,
-        .ytp-flyout,
-        .ytp-share-panel,
-        .ytp-overflow-panel,
-        .ytp-time-display,
-        .ytp-volume-panel,
-        .ytp-autonav-toggle-button,
-        .ytp-fullerscreen-edu-button,
-        .ytp-miniplayer-button,
-        .ytp-size-button,
-        .ytp-subtitles-button,
-        .ytp-ad-overlay-container,
-        .ytp-ad-text-overlay,
-        .ytp-ad-player-overlay,
-        .ytp-ad-overlay-close-button,
-        .ytp-related-on-error-overlay,
-        .ytp-upnext,
-        .ytp-impression-link-content,
-        .ytp-paid-content-overlay-text,
-        .ytp-sb-unsubscribe,
-        .ytp-sb-subscribe,
-        .ytp-videowall-still-info-content,
-        .ytp-cards-button-icon-default,
-        .ytp-multicam-menu,
-        .ytp-remote-button,
-        .ytp-youtube-logo,
-        .branding-img,
-        .branding-img-container,
-        [class*="branding"],
-        [class*="watermark"],
-        [class*="youtube"] {
-          display: none !important;
-          opacity: 0 !important;
-          visibility: hidden !important;
-          pointer-events: none !important;
-          width: 0 !important;
-          height: 0 !important;
-          position: absolute !important;
-          left: -9999px !important;
-          z-index: -9999 !important;
-          overflow: hidden !important;
+
+        .provider-bottom-mask {
+          width: clamp(108px, 30%, 180px);
+          height: clamp(42px, 15%, 62px);
+          background: #000;
+          border-top-left-radius: 10px;
+          box-shadow: -8px -8px 16px rgba(0, 0, 0, 0.42);
         }
-        
-        /* Block all iframes from accepting pointer events */
-        iframe[src*="youtube.com"],
-        iframe[src*="youtube-nocookie.com"] {
-          pointer-events: none !important;
+
+        .player-controls-backdrop {
+          background: linear-gradient(
+            to top,
+            rgba(0, 0, 0, 0.98) 0%,
+            rgba(0, 0, 0, 0.78) 52%,
+            transparent 100%
+          );
         }
-        
-        /* Additional blocking for any remaining UI elements */
-        .html5-video-player .ytp-chrome-bottom,
-        .html5-video-player .ytp-chrome-top,
-        .html5-video-player .ytp-gradient-top,
-        .html5-video-player .ytp-gradient-bottom {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
+
+        .yt-like-spinner {
+          width: clamp(34px, 8vw, 48px);
+          height: clamp(34px, 8vw, 48px);
+          border: 4px solid rgba(255, 255, 255, 0.28);
+          border-top-color: #fff;
+          border-radius: 9999px;
+          animation: player-spin 0.72s linear infinite;
+          filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.65));
         }
-        
-        /* Force hide on any state */
-        .ytp-pause-overlay-container,
-        .ytp-scroll-min,
-        .ytp-player-content.ytp-iv-player-content {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
+
+        @keyframes player-spin {
+          to {
+            transform: rotate(360deg);
+          }
         }
-        
-        /* Enhanced blocking for pause/play/seek states */
-        .html5-video-player:hover .ytp-gradient-top,
-        .html5-video-player.ytp-autohide .ytp-gradient-top,
-        .html5-video-player.ytp-autohide .ytp-chrome-top,
-        .html5-video-player.paused-mode .ytp-gradient-top,
-        .html5-video-player.playing-mode .ytp-gradient-top,
-        .html5-video-player.seeking .ytp-gradient-top,
-        .ytp-pause-overlay,
-        .ytp-pause-overlay *,
-        .ytp-info-panel-preview,
-        div[class*="pause-overlay"],
-        div[class*="info-panel"] {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
-          position: absolute !important;
-          left: -10000px !important;
+
+        .double-tap-visual {
+          position: absolute;
+          top: 50%;
+          width: 62%;
+          height: 145%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 9999px;
+          background: rgba(0, 0, 0, 0.52);
+          transform: translateY(-50%);
+          overflow: hidden;
         }
-        
-        /* Block YouTube logo and title during all states */
-        .ytp-chrome-top-buttons,
-        .ytp-cards-teaser,
-        .ytp-cards-teaser-label,
-        .ytp-preview,
-        .ytp-cued-thumbnail-overlay,
-        .ytp-ce-element,
-        .ytp-ce-covering-overlay,
-        .ytp-ce-covering-image,
-        .html5-video-player .ytp-title-beacon,
-        .html5-video-player .ytp-title-channel-logo {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
-          width: 0 !important;
-          height: 0 !important;
+
+        .double-tap-visual.left {
+          left: -22%;
         }
-        
+
+        .double-tap-visual.right {
+          right: -22%;
+        }
+
+        .double-tap-content {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          color: #fff;
+          text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+        }
+
+        .double-tap-visual.left .double-tap-content {
+          transform: translateX(34%);
+        }
+
+        .double-tap-visual.right .double-tap-content {
+          transform: translateX(-34%);
+        }
+
+        .double-tap-chevrons {
+          display: flex;
+          align-items: center;
+          gap: 0;
+        }
+
+        .double-tap-chevron {
+          width: clamp(22px, 6vw, 34px);
+          height: clamp(22px, 6vw, 34px);
+          margin-inline: -5px;
+          animation: chevron-pulse 0.72s ease-in-out infinite;
+        }
+
+        .double-tap-chevron:nth-child(2) {
+          animation-delay: 0.1s;
+        }
+
+        .double-tap-chevron:nth-child(3) {
+          animation-delay: 0.2s;
+        }
+
+        @keyframes chevron-pulse {
+          0%,
+          100% {
+            opacity: 0.28;
+          }
+          50% {
+            opacity: 1;
+          }
+        }
+
         /* Improved seek bar */
         .seek-bar-container {
           position: relative;
@@ -1357,7 +1364,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
       <div
         ref={containerRef}
         data-security-zone="video-player"
-        className={`relative w-full aspect-video bg-black group rounded-xl overflow-hidden ${
+        className={`relative w-full aspect-video touch-none bg-black group rounded-xl overflow-hidden ${
           fullscreen ? "flex items-center justify-center" : ""
         }`}
         onMouseMove={resetControlsTimeout}
@@ -1376,16 +1383,12 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
               className="absolute inset-0 w-full h-full transition-all duration-100"
             />
             {!hasStartedPlaying && <div className="absolute inset-0 bg-black z-10 pointer-events-none" />}
-            <div className="absolute inset-0 pointer-events-none z-[10] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[15] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[20] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[25] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[28] bg-transparent" />
-            <div className="absolute top-0 right-0 w-32 h-20 pointer-events-none z-[35] bg-transparent" />
-            <div className="absolute top-0 left-0 right-0 h-16 pointer-events-none z-[35] bg-transparent" />
-            <div className="absolute bottom-12 left-0 right-0 h-24 pointer-events-none z-[35] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[40] bg-transparent" />
-            <div className="absolute inset-0 pointer-events-none z-[45] bg-transparent" />
+            <div
+              className={`provider-top-mask absolute inset-x-0 top-0 z-[35] pointer-events-none transition-opacity duration-200 ${
+                !playing || showControls ? "opacity-100" : "opacity-0"
+              }`}
+            />
+            <div className="provider-bottom-mask absolute bottom-0 right-0 z-[35] pointer-events-none" />
           </>
         ) : isDrive ? (
           <iframe
@@ -1423,38 +1426,18 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         )}
 
         {!isDrive && !isDailymotion && !isRumble && (
-        <div className="absolute inset-0 flex z-30 pointer-events-none">
+        <div className="absolute inset-0 flex z-[40] pointer-events-none">
           <div 
             className="w-1/4 h-full pointer-events-auto cursor-pointer" 
-            onClick={handleSingleTap}
-            onDoubleClick={(e) => {
-              e.preventDefault()
-              skipBackward()
-              setShowDoubleTapLeft(true)
-              setDoubleTapCount(prev => ({ ...prev, left: prev.left + 1 }))
-              setTimeout(() => {
-                setShowDoubleTapLeft(false)
-                setDoubleTapCount(prev => ({ ...prev, left: 0 }))
-              }, 800)
-            }}
+            onClick={(event) => handleTap(event, "left")}
           />
           <div 
             className="w-1/2 h-full pointer-events-auto cursor-pointer" 
-            onClick={handleSingleTap}
+            onClick={(event) => handleTap(event, "center")}
           />
           <div 
             className="w-1/4 h-full pointer-events-auto cursor-pointer" 
-            onClick={handleSingleTap}
-            onDoubleClick={(e) => {
-              e.preventDefault()
-              skipForward()
-              setShowDoubleTapRight(true)
-              setDoubleTapCount(prev => ({ ...prev, right: prev.right + 1 }))
-              setTimeout(() => {
-                setShowDoubleTapRight(false)
-                setDoubleTapCount(prev => ({ ...prev, right: 0 }))
-              }, 800)
-            }}
+            onClick={(event) => handleTap(event, "right")}
           />
         </div>
         )}
@@ -1523,28 +1506,28 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           {showDoubleTapLeft && (
             <motion.div
               key="double-tap-left"
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.5 }}
-              transition={{ duration: 0.3, ease: "easeOut" }}
-              className="absolute top-1/2 left-[12%] -translate-y-1/2 z-[60] pointer-events-none"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
             >
-              <div className="bg-black/40 backdrop-blur-md rounded-full p-6 sm:p-8 flex items-center justify-center shadow-xl">
-                <div className="flex flex-col items-center gap-1 sm:gap-2">
-                  <div className="flex items-center gap-0.5 sm:gap-1">
-                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white" strokeWidth={2.5} />
-                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-60" strokeWidth={2.5} />
-                    <RotateCcw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-30" strokeWidth={2.5} />
+              <div className="double-tap-visual left">
+                <motion.div
+                  key={doubleTapCount.left}
+                  initial={{ scale: 0.82 }}
+                  animate={{ scale: 1 }}
+                  className="double-tap-content"
+                >
+                  <div className="double-tap-chevrons">
+                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
                   </div>
-                  <motion.span 
-                    key={doubleTapCount.left}
-                    initial={{ scale: 1.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="text-white font-bold text-lg sm:text-xl"
-                  >
+                  <span className="text-xs font-semibold sm:text-sm">
                     {10 * (doubleTapCount.left || 1)} seconds
-                  </motion.span>
-                </div>
+                  </span>
+                </motion.div>
               </div>
             </motion.div>
           )}
@@ -1555,78 +1538,73 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           {showDoubleTapRight && (
             <motion.div
               key="double-tap-right"
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.5 }}
-              transition={{ duration: 0.3, ease: "easeOut" }}
-              className="absolute top-1/2 right-[12%] -translate-y-1/2 z-[60] pointer-events-none"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
             >
-              <div className="bg-black/40 backdrop-blur-md rounded-full p-6 sm:p-8 flex items-center justify-center shadow-xl">
-                <div className="flex flex-col items-center gap-1 sm:gap-2">
-                  <div className="flex items-center gap-0.5 sm:gap-1">
-                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white opacity-30" strokeWidth={2.5} />
-                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6 opacity-60" strokeWidth={2.5} />
-                    <RotateCw className="w-8 h-8 sm:w-10 sm:h-10 text-white -ml-5 sm:-ml-6" strokeWidth={2.5} />
+              <div className="double-tap-visual right">
+                <motion.div
+                  key={doubleTapCount.right}
+                  initial={{ scale: 0.82 }}
+                  animate={{ scale: 1 }}
+                  className="double-tap-content"
+                >
+                  <div className="double-tap-chevrons">
+                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
                   </div>
-                  <motion.span 
-                    key={doubleTapCount.right}
-                    initial={{ scale: 1.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="text-white font-bold text-lg sm:text-xl"
-                  >
+                  <span className="text-xs font-semibold sm:text-sm">
                     {10 * (doubleTapCount.right || 1)} seconds
-                  </motion.span>
-                </div>
+                  </span>
+                </motion.div>
               </div>
             </motion.div>
           )}
         </AnimatePresence>
 
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center z-40 bg-gradient-to-br from-gray-900 to-black">
-            <div className="text-center">
-              <Loader2 className="w-12 h-12 text-red-500 animate-spin mx-auto mb-4" />
-              <p className="text-white text-lg font-semibold">Loading video...</p>
-            </div>
+          <div className="absolute inset-0 z-[80] flex items-center justify-center bg-black">
+            <div className="yt-like-spinner" aria-label="Loading video" />
           </div>
         )}
 
         {(isBuffering || isSeekingLoading) && !loading && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }}
-            className="absolute inset-0 flex items-center justify-center z-40 pointer-events-none"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[65] flex items-center justify-center pointer-events-none"
           >
-            <div className="bg-black/60 backdrop-blur-sm rounded-2xl p-6">
-              <Loader2 className="w-10 h-10 sm:w-12 sm:h-12 text-red-500 animate-spin" />
-            </div>
+            <div className="yt-like-spinner" aria-label="Buffering" />
           </motion.div>
         )}
 
-        {!playing && !loading && (
+        {!playing && !loading && !isBuffering && !isSeekingLoading && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="absolute inset-0 flex items-center justify-center cursor-pointer z-35"
+            className="absolute inset-0 z-[50] flex items-center justify-center cursor-pointer"
             onClick={handlePlayPause}
           >
             <motion.div
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.95 }}
-              className="w-16 h-16 bg-gradient-to-br from-red-500 to-red-600 rounded-full flex items-center justify-center backdrop-blur-sm"
+              className="flex h-12 w-[68px] items-center justify-center rounded-[14px] bg-[#ff0033] shadow-lg sm:h-14 sm:w-20"
             >
-              <Play className="w-8 h-8 text-white fill-white ml-1" />
+              <Play className="ml-1 h-7 w-7 fill-white text-white sm:h-8 sm:w-8" />
             </motion.div>
           </motion.div>
         )}
 
         <div
-          className={`controls-container absolute bottom-0 left-0 right-0 z-[50] pb-2 ${
+          className={`controls-container player-controls-backdrop absolute bottom-0 left-0 right-0 z-[60] pb-1 sm:pb-2 ${
             !showControls ? "controls-hidden" : ""
           }`}
         >
-          <div className="px-4 sm:px-6 pt-8 pb-3">
+          <div className="px-3 pt-7 pb-1 sm:px-6 sm:pt-8 sm:pb-3">
             <div
               className={`seek-bar-container ${isSeeking ? "seeking" : ""}`}
               onMouseDown={handleSeekMouseDown}
@@ -1652,9 +1630,9 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between px-4 sm:px-6 py-2 gap-3">
+          <div className="flex items-center justify-between px-2 sm:px-6 py-1.5 sm:py-2 gap-1 sm:gap-3">
             {/* Left controls */}
-            <div className="flex items-center gap-3">
+            <div className="flex min-w-0 items-center gap-1 sm:gap-3">
               <motion.button
                 whileHover={{ scale: 1.1 }}
                 whileTap={{ scale: 0.9 }}
@@ -1669,7 +1647,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 )}
               </motion.button>
 
-              <div className="flex items-center gap-1 md:gap-2 border-l border-white/20 pl-2 md:pl-3">
+              <div className="flex items-center gap-0 sm:gap-1 md:gap-2 border-l border-white/20 pl-1.5 md:pl-3">
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
@@ -1693,7 +1671,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 </motion.button>
               </div>
 
-              <div className="flex items-center gap-2 border-l border-white/20 pl-3 relative" ref={volumeSliderRef}>
+              <div className="relative flex items-center gap-1 border-l border-white/20 pl-1.5 sm:gap-2 sm:pl-3" ref={volumeSliderRef}>
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
@@ -1768,13 +1746,13 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 </AnimatePresence>
               </div>
 
-              <div className="text-white text-xs sm:text-sm font-medium border-l border-white/20 pl-3 whitespace-nowrap">
+              <div className="whitespace-nowrap border-l border-white/20 pl-1.5 text-[10px] font-medium text-white sm:pl-3 sm:text-sm">
                 {formatTime(currentTime)} / {formatTime(duration)}
               </div>
             </div>
 
             {/* Right controls */}
-            <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-1 sm:gap-3">
               <div className="relative">
                 <motion.button
                   whileHover={{ scale: 1.1 }}
