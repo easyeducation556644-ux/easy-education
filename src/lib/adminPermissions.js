@@ -19,11 +19,11 @@ export const hasAdminPermission = (userProfile, permission) => {
   if (!STAFF_ROLES.includes(userProfile?.role) && !isLegacyLimitedAdmin(userProfile)) return false
 
   if (permission === ADMIN_PERMISSION_KEYS.CLASS_PDF) {
-    return (userProfile.adminAccess.classPdfCourseIds || []).length > 0
+    return (userProfile.adminAccess?.classPdfCourseIds || []).length > 0
   }
 
   if (permission === ADMIN_PERMISSION_KEYS.EXAM_CREATE) {
-    return (userProfile.adminAccess.examCourseIds || []).length > 0
+    return (userProfile.adminAccess?.examCourseIds || []).length > 0
   }
 
   return false
@@ -34,11 +34,11 @@ export const getAllowedCourseIds = (userProfile, permission) => {
   if (!STAFF_ROLES.includes(userProfile?.role) && !isLegacyLimitedAdmin(userProfile)) return []
 
   if (permission === ADMIN_PERMISSION_KEYS.CLASS_PDF) {
-    return userProfile.adminAccess.classPdfCourseIds || []
+    return userProfile.adminAccess?.classPdfCourseIds || []
   }
 
   if (permission === ADMIN_PERMISSION_KEYS.EXAM_CREATE) {
-    return userProfile.adminAccess.examCourseIds || []
+    return userProfile.adminAccess?.examCourseIds || []
   }
 
   return []
@@ -73,9 +73,9 @@ export const getRoleLabel = (role, adminAccess) => {
     )
   }
   if (role === "admin") return "Full Admin"
-  if (role === "class_pdf_admin") return "Class & PDF Admin"
+  if (role === "class_pdf_admin") return "Class, PDF, Subject & Chapter Admin"
   if (role === "exam_create_admin") return "Exam Create Admin"
-  if (role === "class_exam_admin") return "Class, PDF & Exam Admin"
+  if (role === "class_exam_admin") return "Content & Exam Admin"
   if (role === "user") return "Normal User"
   return role ? role.replaceAll("_", " ") : "Normal User"
 }
