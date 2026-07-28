@@ -7,8 +7,18 @@ import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
+import { useAuth } from "../../contexts/AuthContext"
+import { ADMIN_PERMISSION_KEYS, getAllowedCourseIds } from "../../lib/adminPermissions"
+
+const getSubjectCourseIds = (subject) =>
+  Array.isArray(subject.courseIds)
+    ? subject.courseIds
+    : subject.courseId
+      ? [subject.courseId]
+      : []
 
 export default function ManageChapters() {
+  const { userProfile } = useAuth()
   const [courses, setCourses] = useState([])
   const [subjects, setSubjects] = useState([])
   const [chapters, setChapters] = useState([])
@@ -38,7 +48,11 @@ export default function ManageChapters() {
     fetchCourses()
     fetchSubjects()
     fetchChapters()
-  }, [])
+  }, [userProfile])
+
+  const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.CLASS_PDF)
+  const canUseCourse = (courseId) =>
+    allowedCourseIds === null || allowedCourseIds.includes(courseId)
 
   const fetchCourses = async () => {
     try {
@@ -47,7 +61,11 @@ export default function ManageChapters() {
         id: doc.id,
         ...doc.data(),
       }))
-      setCourses(coursesData)
+      setCourses(
+        allowedCourseIds === null
+          ? coursesData
+          : coursesData.filter((course) => allowedCourseIds.includes(course.id)),
+      )
     } catch (error) {
       console.error("Error fetching courses:", error)
     }
@@ -56,7 +74,13 @@ export default function ManageChapters() {
   const fetchSubjects = async () => {
     try {
       const snapshot = await getDocs(collection(db, "subjects"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      const data = snapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter(
+          (subject) =>
+            allowedCourseIds === null ||
+            getSubjectCourseIds(subject).some(canUseCourse),
+        )
       setSubjects(data)
     } catch (error) {
       console.error("Error fetching subjects:", error)
@@ -66,7 +90,9 @@ export default function ManageChapters() {
   const fetchChapters = async () => {
     try {
       const snapshot = await getDocs(collection(db, "chapters"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      const data = snapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((chapter) => canUseCourse(chapter.courseId))
       data.sort((a, b) => (b.order || 0) - (a.order || 0))
       setChapters(data)
     } catch (error) {
@@ -203,6 +229,14 @@ export default function ManageChapters() {
       })
       return
     }
+    if (!canUseCourse(formData.courseId)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You can only manage chapters in your assigned courses.",
+      })
+      return
+    }
 
     try {
       let finalImageUrl = formData.imageUrl
@@ -250,6 +284,15 @@ export default function ManageChapters() {
   }
 
   const handleDelete = async (id) => {
+    const chapter = chapters.find((item) => item.id === id)
+    if (!chapter || !canUseCourse(chapter.courseId)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You cannot delete this chapter.",
+      })
+      return
+    }
     setConfirmDialog({
       isOpen: true,
       title: "Delete Chapter",
@@ -300,6 +343,14 @@ export default function ManageChapters() {
         variant: "error",
         title: "Course Required",
         description: "Please select a course first!",
+      })
+      return
+    }
+    if (!canUseCourse(selectedCourse)) {
+      toast({
+        variant: "error",
+        title: "Access Denied",
+        description: "You can only create chapters in your assigned courses.",
       })
       return
     }
