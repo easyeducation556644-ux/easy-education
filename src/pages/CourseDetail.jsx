@@ -63,11 +63,7 @@ export default function CourseDetail() {
           where("courseId", "==", courseData.id)
         )
         const enrolledSnapshot = await getDocs(enrolledQuery)
-        const actualEnrolledCount = enrolledSnapshot.docs.filter(doc => {
-          const data = doc.data()
-          return !data.isBundle && !data.bundleId
-        }).length
-        setEnrolledCount(actualEnrolledCount)
+        setEnrolledCount(enrolledSnapshot.size)
 
         if (courseData.instructors && courseData.instructors.length > 0) {
           const teachersQuery = query(
