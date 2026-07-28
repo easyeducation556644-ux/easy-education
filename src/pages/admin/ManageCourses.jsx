@@ -4,7 +4,7 @@ import { toast } from "../../hooks/use-toast"
 import { useState, useEffect, useRef, useMemo } from "react"
 import { motion } from "framer-motion"
 import { Plus, Search, Edit2, Trash2, X, BookOpen, Upload, Link as LinkIcon, Tag } from "lucide-react"
-import { collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, setDoc, serverTimestamp } from "firebase/firestore"
+import { collection, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, runTransaction, serverTimestamp } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import { generateSlug } from "../../lib/slug"
@@ -33,14 +33,43 @@ const initialForm = () => ({
 })
 
 const normalizePurchaseOptions = (options) =>
-  (options || [])
-    .filter((option) => option.label?.trim() && option.price !== "")
+  (Array.isArray(options) ? options : [])
+    .filter(
+      (option) =>
+        typeof option?.label === "string" &&
+        option.label.trim() &&
+        option.price !== "" &&
+        option.price !== null &&
+        option.price !== undefined,
+    )
     .map((option, index) => ({
       id: option.id || `option-${index + 1}`,
       label: option.label.trim(),
       price: Number(option.price),
     }))
     .filter((option) => Number.isFinite(option.price) && option.price >= 0)
+
+const normalizePresetOptions = (options) => {
+  const seenLabels = new Set()
+
+  return normalizePurchaseOptions(options)
+    .filter((option) => {
+      const labelKey = option.label.toLocaleLowerCase()
+      if (seenLabels.has(labelKey)) return false
+      seenLabels.add(labelKey)
+      return true
+    })
+    .map(({ label, price }) => ({ label, price }))
+}
+
+const normalizePurchaseOptionPresets = (presets) =>
+  (Array.isArray(presets) ? presets : [])
+    .map((preset, index) => ({
+      id: typeof preset?.id === "string" && preset.id ? preset.id : `legacy-preset-${index}`,
+      name: typeof preset?.name === "string" ? preset.name.trim() : "",
+      options: normalizePresetOptions(preset?.options),
+    }))
+    .filter((preset) => preset.name && preset.options.length > 0)
 
 export default function ManageCourses() {
   const editor = useRef(null)
@@ -119,15 +148,15 @@ export default function ManageCourses() {
 
   useEffect(() => {
     fetchData()
+    fetchPurchaseOptionPresets()
   }, [])
 
   const fetchData = async () => {
     try {
-      const [coursesSnap, categoriesSnap, teachersSnap, presetsSnap] = await Promise.all([
+      const [coursesSnap, categoriesSnap, teachersSnap] = await Promise.all([
         getDocs(collection(db, "courses")),
         getDocs(collection(db, "categories")),
         getDocs(collection(db, "teachers")),
-        getDoc(doc(db, "settings", "purchaseOptionPresets")),
       ])
 
       setCourses(
@@ -136,7 +165,6 @@ export default function ManageCourses() {
       )
       setCategories(categoriesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })))
       setTeachers(teachersSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() })))
-      setPurchaseOptionPresets(presetsSnap.exists() ? presetsSnap.data().presets || [] : [])
     } catch (error) {
       console.error("Error fetching data:", error)
     } finally {
@@ -144,22 +172,25 @@ export default function ManageCourses() {
     }
   }
 
-  const savePresetList = async (presets) => {
-    await setDoc(
-      doc(db, "settings", "purchaseOptionPresets"),
-      {
-        type: "purchase_options",
-        presets,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
-    setPurchaseOptionPresets(presets)
+  const fetchPurchaseOptionPresets = async () => {
+    try {
+      const presetsSnap = await getDoc(doc(db, "settings", "purchaseOptionPresets"))
+      const presets = presetsSnap.exists() ? presetsSnap.data().presets : []
+      setPurchaseOptionPresets(normalizePurchaseOptionPresets(presets))
+    } catch (error) {
+      console.error("Error fetching purchase option presets:", error)
+      setPurchaseOptionPresets([])
+      toast({
+        variant: "warning",
+        title: "Presets Unavailable",
+        description: "Courses loaded, but saved presets could not be loaded.",
+      })
+    }
   }
 
   const handleSavePurchasePreset = async () => {
     const name = presetName.trim()
-    const options = normalizePurchaseOptions(formData.purchaseOptions)
+    const options = normalizePresetOptions(formData.purchaseOptions)
 
     if (!name) {
       toast({ variant: "error", title: "Preset Name Required", description: "Enter a name for this preset." })
@@ -172,22 +203,45 @@ export default function ManageCourses() {
 
     setSavingPreset(true)
     try {
-      const existingPreset = purchaseOptionPresets.find(
-        (preset) => preset.name.toLowerCase() === name.toLowerCase(),
-      )
-      const preset = {
-        id: existingPreset?.id || `preset-${Date.now()}`,
-        name,
-        options: options.map(({ label, price }) => ({ label, price })),
-      }
-      const nextPresets = existingPreset
-        ? purchaseOptionPresets.map((item) => (item.id === existingPreset.id ? preset : item))
-        : [...purchaseOptionPresets, preset]
+      const presetRef = doc(db, "settings", "purchaseOptionPresets")
+      const result = await runTransaction(db, async (transaction) => {
+        const presetSnap = await transaction.get(presetRef)
+        const currentPresets = normalizePurchaseOptionPresets(
+          presetSnap.exists() ? presetSnap.data().presets : [],
+        )
+        const existingPreset = currentPresets.find(
+          (preset) => preset.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        )
+        const preset = {
+          id: existingPreset?.id || `preset-${Date.now()}`,
+          name,
+          options,
+        }
+        const nextPresets = existingPreset
+          ? currentPresets.map((item) => (item.id === existingPreset.id ? preset : item))
+          : [...currentPresets, preset]
 
-      await savePresetList(nextPresets)
+        transaction.set(
+          presetRef,
+          {
+            type: "purchase_options",
+            presets: nextPresets,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        )
+
+        return { existingPreset, nextPresets, preset }
+      })
+
+      setPurchaseOptionPresets(result.nextPresets)
+      const preset = result.preset
       setSelectedPresetId(preset.id)
       setPresetName("")
-      toast({ title: existingPreset ? "Preset Updated" : "Preset Saved", description: `${name} is ready to reuse.` })
+      toast({
+        title: result.existingPreset ? "Preset Updated" : "Preset Saved",
+        description: `${name} is ready to reuse.`,
+      })
     } catch (error) {
       console.error("Error saving purchase option preset:", error)
       toast({ variant: "error", title: "Save Failed", description: "Could not save the preset." })
@@ -200,15 +254,87 @@ export default function ManageCourses() {
     const preset = purchaseOptionPresets.find((item) => item.id === selectedPresetId)
     if (!preset) return
 
-    setFormData({
-      ...formData,
-      purchaseOptions: preset.options.map((option, index) => ({
-        id: `option-${Date.now()}-${index}`,
-        label: option.label,
-        price: option.price,
-      })),
+    const existingLabels = new Set(
+      (formData.purchaseOptions || [])
+        .map((option) => (typeof option?.label === "string" ? option.label.trim().toLocaleLowerCase() : ""))
+        .filter(Boolean),
+    )
+    const optionsToAdd = normalizePresetOptions(preset.options).filter((option) => {
+      const labelKey = option.label.toLocaleLowerCase()
+      if (existingLabels.has(labelKey)) return false
+      existingLabels.add(labelKey)
+      return true
     })
-    toast({ title: "Preset Applied", description: `${preset.name} options added to this course.` })
+
+    if (optionsToAdd.length === 0) {
+      toast({
+        variant: "warning",
+        title: "Already Added",
+        description: "All options from this preset are already in the course.",
+      })
+      return
+    }
+
+    setFormData((currentForm) => ({
+      ...currentForm,
+      purchaseOptions: [
+        ...(currentForm.purchaseOptions || []),
+        ...optionsToAdd.map((option, index) => ({
+          id: `option-${Date.now()}-${index}`,
+          label: option.label,
+          price: option.price,
+        })),
+      ],
+    }))
+    toast({
+      title: "Preset Added",
+      description: `${optionsToAdd.length} option${optionsToAdd.length === 1 ? "" : "s"} added without replacing existing options.`,
+    })
+  }
+
+  const handleDeletePurchasePreset = () => {
+    const preset = purchaseOptionPresets.find((item) => item.id === selectedPresetId)
+    if (!preset) return
+
+    setConfirmDialog({
+      isOpen: true,
+      title: "Delete Preset",
+      message: `Delete "${preset.name}"? Existing course options will not be affected.`,
+      variant: "danger",
+      onConfirm: async () => {
+        setSavingPreset(true)
+        try {
+          const presetRef = doc(db, "settings", "purchaseOptionPresets")
+          const nextPresets = await runTransaction(db, async (transaction) => {
+            const presetSnap = await transaction.get(presetRef)
+            const currentPresets = normalizePurchaseOptionPresets(
+              presetSnap.exists() ? presetSnap.data().presets : [],
+            )
+            const updatedPresets = currentPresets.filter((item) => item.id !== preset.id)
+
+            transaction.set(
+              presetRef,
+              {
+                type: "purchase_options",
+                presets: updatedPresets,
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true },
+            )
+            return updatedPresets
+          })
+
+          setPurchaseOptionPresets(nextPresets)
+          setSelectedPresetId("")
+          toast({ title: "Preset Deleted", description: `${preset.name} was removed.` })
+        } catch (error) {
+          console.error("Error deleting purchase option preset:", error)
+          toast({ variant: "error", title: "Delete Failed", description: "Could not delete the preset." })
+        } finally {
+          setSavingPreset(false)
+        }
+      },
+    })
   }
 
   const handleOpenModal = (course = null) => {
@@ -893,7 +1019,7 @@ export default function ManageCourses() {
 
                     <div className="mb-4 grid gap-3 rounded-lg border border-border bg-background p-3">
                       {purchaseOptionPresets.length > 0 && (
-                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
                           <select
                             value={selectedPresetId}
                             onChange={(event) => setSelectedPresetId(event.target.value)}
@@ -909,10 +1035,19 @@ export default function ManageCourses() {
                           <button
                             type="button"
                             onClick={handleApplyPurchasePreset}
-                            disabled={!selectedPresetId}
+                            disabled={!selectedPresetId || savingPreset}
                             className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            Apply Preset
+                            Add Preset Options
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDeletePurchasePreset}
+                            disabled={!selectedPresetId || savingPreset}
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-2 text-sm font-semibold text-red-500 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
                           </button>
                         </div>
                       )}
@@ -935,7 +1070,7 @@ export default function ManageCourses() {
                         </button>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Applying a preset copies its names and prices; you can edit them for this course.
+                        Adding a preset keeps current options and skips duplicate option names. You can edit the copied values.
                       </p>
                     </div>
 
