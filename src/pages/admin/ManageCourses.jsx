@@ -10,13 +10,14 @@ import { uploadImageToImgBB } from "../../lib/imgbb"
 import { generateSlug } from "../../lib/slug"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import JoditEditor from "jodit-react"
+import { getCourseCategories } from "../../lib/courseCategories"
 
 const initialForm = () => ({
   title: "",
   searchKeywords: "",
   description: "",
   instructors: [],
-  category: "",
+  categories: [],
   type: "subject",
   courseFormat: "single",
   bundledCourses: [],
@@ -133,7 +134,7 @@ export default function ManageCourses() {
       searchKeywords: course.searchKeywords || "",
       description: course.description || "",
       instructors: course.instructors || (course.instructorName ? [course.instructorName] : []),
-      category: course.category || "",
+      categories: getCourseCategories(course),
       type: course.type || "subject",
       courseFormat: course.courseFormat || "single",
       bundledCourses: course.bundledCourses || [],
@@ -201,7 +202,8 @@ export default function ManageCourses() {
         description: formData.description,
         instructors: formData.instructors,
         instructorName: formData.instructors.join(", "),
-        category: formData.category,
+        categories: formData.categories,
+        category: formData.categories[0] || "",
         type: formData.type,
         courseFormat: formData.courseFormat || "single",
         bundledCourses: formData.courseFormat === "bundle" ? formData.bundledCourses : [],
@@ -286,7 +288,9 @@ export default function ManageCourses() {
       course.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       course.instructorName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      course.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      getCourseCategories(course).some((category) =>
+        category.toLowerCase().includes(searchQuery.toLowerCase()),
+      ) ||
       course.searchKeywords?.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
@@ -348,7 +352,7 @@ export default function ManageCourses() {
                 <div className="flex items-center justify-between mb-2 pb-2 border-b border-border">
                   <span className="text-xs text-muted-foreground">{course.instructorName || "No instructor"}</span>
                   <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
-                    {course.category || "Uncategorized"}
+                    {getCourseCategories(course).join(", ") || "Uncategorized"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between mb-3">
@@ -695,19 +699,28 @@ export default function ManageCourses() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium mb-1.5">Category</label>
-                      <select
-                        value={formData.category}
-                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                        className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                      >
-                        <option value="">Select category</option>
+                      <label className="block text-sm font-medium mb-1.5">Categories</label>
+                      <div className="grid max-h-40 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-border bg-input p-3 sm:grid-cols-2">
                         {categories.map((cat) => (
-                          <option key={cat.id} value={cat.title}>
-                            {cat.title}
-                          </option>
+                          <label key={cat.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={formData.categories.includes(cat.title)}
+                              onChange={(event) => {
+                                const nextCategories = event.target.checked
+                                  ? [...formData.categories, cat.title]
+                                  : formData.categories.filter((category) => category !== cat.title)
+                                setFormData({ ...formData, categories: nextCategories })
+                              }}
+                              className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                            />
+                            <span>{cat.title}</span>
+                          </label>
                         ))}
-                      </select>
+                      </div>
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        Select one or more categories.
+                      </p>
                     </div>
 
                     <div>
