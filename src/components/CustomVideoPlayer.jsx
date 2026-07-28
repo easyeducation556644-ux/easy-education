@@ -24,6 +24,7 @@ const DAILYMOTION_REGEX =
 const RUMBLE_REGEX =
   /rumble\.com\/(?:embed\/)?(v[a-zA-Z0-9]+)(?:[-/?#.]|$)/
 const DEFAULT_PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+const CONTROLS_HIDE_DELAY_MS = 4000
 
 let youtubeApiPromise
 
@@ -746,6 +747,22 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     setIsSwiping(false)
   }
 
+  const revealControlsTemporarily = () => {
+    setShowControls(true)
+
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current)
+    }
+
+    if (playing) {
+      controlsTimeoutRef.current = setTimeout(() => {
+        setShowControls(false)
+        setShowSettings(false)
+        setShowVolumeSlider(false)
+      }, CONTROLS_HIDE_DELAY_MS)
+    }
+  }
+
   const showDoubleTapFeedback = (side) => {
     const isLeft = side === "left"
 
@@ -802,7 +819,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         lastTapRef.current.time === now &&
         lastTapRef.current.side === side
       ) {
-        setShowControls((visible) => !visible)
+        revealControlsTemporarily()
         setShowSettings(false)
         setShowVolumeSlider(false)
         lastTapRef.current = { time: 0, side: null }
@@ -823,22 +840,20 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
   )
 
   const resetControlsTimeout = () => {
-    setShowControls(true)
-
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current)
-    }
-
     if (mouseMoveTimeoutRef.current) {
       clearTimeout(mouseMoveTimeoutRef.current)
     }
 
-    if (playing) {
-      controlsTimeoutRef.current = setTimeout(() => {
-        setShowControls(false)
-        setShowSettings(false)
-        setShowVolumeSlider(false)
-      }, 3000)
+    revealControlsTemporarily()
+  }
+
+  const handleMouseLeave = () => {
+    const hasPreciseHover = window.matchMedia?.(
+      "(hover: hover) and (pointer: fine)",
+    ).matches
+
+    if (playing && hasPreciseHover) {
+      setShowControls(false)
     }
   }
 
@@ -1368,7 +1383,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           fullscreen ? "flex items-center justify-center" : ""
         }`}
         onMouseMove={resetControlsTimeout}
-        onMouseLeave={() => playing && setShowControls(false)}
+        onMouseLeave={handleMouseLeave}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -1388,7 +1403,11 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
                 !playing || showControls ? "opacity-100" : "opacity-0"
               }`}
             />
-            <div className="provider-bottom-mask absolute bottom-0 right-0 z-[35] pointer-events-none" />
+            <div
+              className={`provider-bottom-mask absolute bottom-0 right-0 z-[35] pointer-events-none transition-opacity duration-200 ${
+                !playing ? "opacity-100" : "opacity-0"
+              }`}
+            />
           </>
         ) : isDrive ? (
           <iframe
