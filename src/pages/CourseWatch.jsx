@@ -39,7 +39,7 @@ import {
   saveOfflineVideo,
 } from "../lib/offlineVideos"
 
-const YOUTUBE_URL_PATTERN = /(?:youtube\.com|youtu\.be)\//i
+const RUMBLE_URL_PATTERN = /https?:\/\/(?:www\.)?rumble\.com\//i
 
 function formatOfflineSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "সাইজ অজানা"
@@ -112,7 +112,11 @@ export default function CourseWatch() {
     const checkOfflineCopy = async () => {
       setOfflineSaved(false)
       setOfflineProgress(0)
-      if (!currentUser?.uid || !currentClass?.id) return
+      if (
+        !currentUser?.uid ||
+        !currentClass?.id ||
+        !RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
+      ) return
 
       try {
         await removeOfflineVideosForOtherUsers(currentUser.uid)
@@ -135,7 +139,7 @@ export default function CourseWatch() {
     if (
       !currentUser ||
       !currentClass?.id ||
-      !YOUTUBE_URL_PATTERN.test(currentClass.videoURL || "")
+      !RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
     ) {
       setOfflineQualityOptions([])
       return
@@ -574,7 +578,9 @@ export default function CourseWatch() {
                 {currentClass?.videoURL ? (
                   <CustomVideoPlayer
                     url={
-                      offlineSaved && currentUser?.uid
+                      offlineSaved &&
+                      currentUser?.uid &&
+                      RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
                         ? getOfflineVideoUrl(currentUser.uid, currentClass.id)
                         : currentClass.videoURL
                     }
@@ -590,7 +596,7 @@ export default function CourseWatch() {
                   </div>
                 )}
               </div>
-              {currentClass?.videoURL && YOUTUBE_URL_PATTERN.test(currentClass.videoURL) && (
+              {currentClass?.videoURL && RUMBLE_URL_PATTERN.test(currentClass.videoURL) && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
                   <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
                     {offlineBusy ? (
