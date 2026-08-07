@@ -290,7 +290,13 @@ function getOptions(formats) {
   const byHeight = new Map()
   for (const format of formats) {
     const current = byHeight.get(format.height)
-    if (!current || format.bitrate > current.bitrate) byHeight.set(format.height, format)
+    if (
+      !current
+      || (
+        format.bitrate > 0
+        && (current.bitrate <= 0 || format.bitrate < current.bitrate)
+      )
+    ) byHeight.set(format.height, format)
   }
   return [...byHeight.values()]
     .sort((a, b) => a.height - b.height)
