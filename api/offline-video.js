@@ -67,40 +67,75 @@ async function fetchRumbleEmbedId(videoUrl) {
   return ""
 }
 
-function flattenRumbleFormats(payload) {
+function getRumbleFormatCandidates(payload) {
   const formats = []
-  for (const [type, group] of Object.entries(payload?.ua || {})) {
-    if (["hls", "tar", "timeline", "audio"].includes(type)) continue
-    const entries = Array.isArray(group)
-      ? group
-      : group && typeof group === "object"
-        ? Object.entries(group).map(([height, item]) => ({
-            ...item,
-            meta: { ...(item?.meta || {}), h: item?.meta?.h || height },
-          }))
-        : []
 
-    for (const entry of entries) {
-      const height = Number.parseInt(String(entry?.meta?.h || ""), 10)
-      const contentLength = Number.parseInt(String(entry?.meta?.size || ""), 10)
-      if (
-        !entry?.url ||
-        !Number.isFinite(height) ||
-        height > MAX_HEIGHT ||
-        !Number.isFinite(contentLength) ||
-        contentLength <= 0
-      ) continue
+  const addGroup = (container) => {
+    for (const [type, group] of Object.entries(container || {})) {
+      if (type !== "mp4") continue
+      const entries = Array.isArray(group)
+        ? group
+        : group?.url
+          ? [group]
+          : group && typeof group === "object"
+            ? Object.entries(group).map(([height, item]) => ({
+                ...item,
+                meta: { ...(item?.meta || {}), h: item?.meta?.h || height },
+              }))
+            : []
 
-      formats.push({
-        height,
-        contentLength,
-        bitrate: Number(entry?.meta?.bitrate || 0),
-        url: entry.url,
-        mimeType: "video/mp4",
-      })
+      for (const entry of entries) {
+        const height = Number.parseInt(
+          String(entry?.meta?.h || payload?.h || DEFAULT_HEIGHT),
+          10,
+        )
+        if (!entry?.url || !Number.isFinite(height) || height > MAX_HEIGHT) continue
+        formats.push({
+          height,
+          contentLength: Number.parseInt(String(entry?.meta?.size || ""), 10),
+          bitrate: Number(entry?.meta?.bitrate || 0),
+          url: entry.url,
+          mimeType: "video/mp4",
+        })
+      }
     }
   }
+
+  addGroup(payload?.ua)
+  addGroup(payload?.u)
   return formats
+}
+
+async function discoverContentLength(format, videoUrl) {
+  if (Number.isFinite(format.contentLength) && format.contentLength > 0) return format
+
+  const response = await fetch(format.url, {
+    headers: {
+      ...REQUEST_HEADERS,
+      Referer: videoUrl,
+      Range: "bytes=0-0",
+    },
+    redirect: "follow",
+  })
+  const contentRange = response.headers.get("content-range") || ""
+  const total = Number.parseInt(contentRange.match(/\/(\d+)$/)?.[1] || "", 10)
+  const contentLength = total || (
+    response.status === 200
+      ? Number.parseInt(response.headers.get("content-length") || "", 10)
+      : 0
+  )
+  await response.body?.cancel().catch(() => {})
+
+  return { ...format, contentLength }
+}
+
+async function getRumbleFormats(payload, videoUrl) {
+  const discovered = await Promise.all(
+    getRumbleFormatCandidates(payload).map((format) => discoverContentLength(format, videoUrl)),
+  )
+  return discovered.filter(
+    (format) => Number.isFinite(format.contentLength) && format.contentLength > 0,
+  )
 }
 
 function getOptions(formats) {
@@ -151,7 +186,7 @@ async function getRumbleInfo(videoUrl) {
     throw error
   }
 
-  const formats = flattenRumbleFormats(payload)
+  const formats = await getRumbleFormats(payload, videoUrl)
   if (!formats.length) {
     const error = new Error("No downloadable Rumble MP4 quality is available")
     error.statusCode = 422
