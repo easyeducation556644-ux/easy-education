@@ -1,30 +1,16 @@
 import { Readable } from "node:stream"
-import { Innertube } from "youtubei.js"
 import {
   isFullAdminProfile,
   requireAuthenticatedUser,
 } from "./utils/firebase-admin.js"
 
 const DEFAULT_HEIGHT = 360
-const MAX_HEIGHT = 720
+const MAX_HEIGHT = 1080
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024
-
-let youtubePromise
-
-function getYoutubeClient() {
-  const cookie = String(process.env.YOUTUBE_COOKIE || "").trim()
-  if (!cookie) {
-    const error = new Error("YouTube cookie is not configured")
-    error.statusCode = 503
-    throw error
-  }
-  if (!youtubePromise) {
-    youtubePromise = Innertube.create({ cookie }).catch((error) => {
-      youtubePromise = null
-      throw error
-    })
-  }
-  return youtubePromise
+const RUMBLE_HOST_PATTERN = /(^|\.)rumble\.com$/i
+const REQUEST_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+  Accept: "*/*",
 }
 
 function parseHeight(value) {
@@ -33,66 +19,145 @@ function parseHeight(value) {
   return Math.min(MAX_HEIGHT, Math.max(144, parsed))
 }
 
-function getVideoId(value) {
+function parseRumbleUrl(value) {
   try {
     const url = new URL(String(value || ""))
-    if (url.hostname === "youtu.be") return url.pathname.split("/").filter(Boolean)[0] || ""
-    if (!/(^|\.)youtube\.com$/i.test(url.hostname)) return ""
-    if (url.searchParams.get("v")) return url.searchParams.get("v")
-    const parts = url.pathname.split("/").filter(Boolean)
-    if (["embed", "shorts", "live"].includes(parts[0])) return parts[1] || ""
+    if (!RUMBLE_HOST_PATTERN.test(url.hostname)) return null
+    return url
   } catch {
-    return ""
+    return null
+  }
+}
+
+function getEmbedIdFromUrl(url) {
+  const match = url.pathname.match(/^\/embed\/(?:[0-9a-z]+\.)?([0-9a-z]+)/i)
+  return match?.[1]?.toLowerCase() || ""
+}
+
+async function fetchRumbleEmbedId(videoUrl) {
+  const parsedUrl = parseRumbleUrl(videoUrl)
+  if (!parsedUrl) return ""
+
+  const directId = getEmbedIdFromUrl(parsedUrl)
+  if (directId) return directId
+
+  const response = await fetch(parsedUrl, {
+    headers: {
+      ...REQUEST_HEADERS,
+      Accept: "text/html,application/xhtml+xml",
+    },
+    redirect: "follow",
+  })
+  if (!response.ok) {
+    const error = new Error(`Rumble page returned HTTP ${response.status}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  const webpage = await response.text()
+  const patterns = [
+    /(?:https?:)?\/\/rumble\.com\/embed\/(?:[0-9a-z]+\.)?([0-9a-z]+)/i,
+    /["']embedUrl["']\s*:\s*["'][^"']*\/embed\/(?:[0-9a-z]+\.)?([0-9a-z]+)/i,
+    /\bRumble\(\s*["']play["']\s*,\s*\{[^}]*["']?video["']?\s*:\s*["']([0-9a-z]+)["']/i,
+  ]
+  for (const pattern of patterns) {
+    const id = webpage.match(pattern)?.[1]
+    if (id) return id.toLowerCase()
   }
   return ""
 }
 
-function getCombinedMp4Formats(info) {
-  const streaming = info.streaming_data || {}
-  return [...(streaming.formats || []), ...(streaming.adaptive_formats || [])]
-    .filter((format) =>
-      format.has_video &&
-      format.has_audio &&
-      String(format.mime_type || "").includes("video/mp4") &&
-      Number.isFinite(format.height) &&
-      format.height <= MAX_HEIGHT &&
-      Number(format.content_length) > 0
-    )
-}
+function flattenRumbleFormats(payload) {
+  const formats = []
+  for (const [type, group] of Object.entries(payload?.ua || {})) {
+    if (["hls", "tar", "timeline", "audio"].includes(type)) continue
+    const entries = Array.isArray(group)
+      ? group
+      : group && typeof group === "object"
+        ? Object.entries(group).map(([height, item]) => ({
+            ...item,
+            meta: { ...(item?.meta || {}), h: item?.meta?.h || height },
+          }))
+        : []
 
-function selectFormat(info, requestedHeight) {
-  const formats = getCombinedMp4Formats(info).sort((a, b) => a.height - b.height)
-  if (!formats.length) return null
-  const withinLimit = formats.filter((format) => format.height <= requestedHeight)
-  return withinLimit.at(-1) || formats[0]
-}
+    for (const entry of entries) {
+      const height = Number.parseInt(String(entry?.meta?.h || ""), 10)
+      const contentLength = Number.parseInt(String(entry?.meta?.size || ""), 10)
+      if (
+        !entry?.url ||
+        !Number.isFinite(height) ||
+        height > MAX_HEIGHT ||
+        !Number.isFinite(contentLength) ||
+        contentLength <= 0
+      ) continue
 
-async function getDownloadInfo(youtube, videoId) {
-  const clients = [undefined, "TV", "ANDROID"]
-  let lastInfo = null
-  for (const client of clients) {
-    const info = await youtube.getBasicInfo(videoId, client ? { client } : undefined)
-    lastInfo = info
-    if (getCombinedMp4Formats(info).length > 0) return info
-  }
-  return lastInfo
-}
-
-function getOptions(info) {
-  const byHeight = new Map()
-  for (const format of getCombinedMp4Formats(info)) {
-    const current = byHeight.get(format.height)
-    if (!current || Number(format.bitrate) > Number(current.bitrate)) {
-      byHeight.set(format.height, format)
+      formats.push({
+        height,
+        contentLength,
+        bitrate: Number(entry?.meta?.bitrate || 0),
+        url: entry.url,
+        mimeType: "video/mp4",
+      })
     }
+  }
+  return formats
+}
+
+function getOptions(formats) {
+  const byHeight = new Map()
+  for (const format of formats) {
+    const current = byHeight.get(format.height)
+    if (!current || format.bitrate > current.bitrate) byHeight.set(format.height, format)
   }
   return [...byHeight.values()]
     .sort((a, b) => a.height - b.height)
-    .map((format) => ({
-      height: format.height,
-      contentLength: Number(format.content_length),
-      mimeType: format.mime_type || "video/mp4",
-    }))
+    .map(({ height, contentLength, mimeType }) => ({ height, contentLength, mimeType }))
+}
+
+function selectFormat(formats, requestedHeight) {
+  const sorted = [...formats].sort((a, b) => a.height - b.height)
+  if (!sorted.length) return null
+  return sorted.filter((format) => format.height <= requestedHeight).at(-1) || sorted[0]
+}
+
+async function getRumbleInfo(videoUrl) {
+  const embedId = await fetchRumbleEmbedId(videoUrl)
+  if (!embedId) {
+    const error = new Error("Unable to find the Rumble video ID")
+    error.statusCode = 422
+    throw error
+  }
+
+  const endpoint = new URL("https://rumble.com/embedJS/u3/")
+  endpoint.search = new URLSearchParams({
+    request: "video",
+    ver: "2",
+    v: embedId,
+  }).toString()
+
+  const response = await fetch(endpoint, {
+    headers: { ...REQUEST_HEADERS, Referer: videoUrl },
+  })
+  if (!response.ok) {
+    const error = new Error(`Rumble metadata returned HTTP ${response.status}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  const payload = await response.json()
+  if (payload?.live === 2) {
+    const error = new Error("Live Rumble videos cannot be saved offline")
+    error.statusCode = 422
+    throw error
+  }
+
+  const formats = flattenRumbleFormats(payload)
+  if (!formats.length) {
+    const error = new Error("No downloadable Rumble MP4 quality is available")
+    error.statusCode = 422
+    throw error
+  }
+  return { formats }
 }
 
 async function hasCourseAccess({ db, uid, userProfile, courseId }) {
@@ -136,9 +201,8 @@ export default async function offlineVideoHandler(req, res) {
     const classData = classSnapshot.data() || {}
     const courseId = String(classData.courseId || "")
     const videoUrl = String(classData.videoURL || classData.youtubeLink || "")
-    const videoId = getVideoId(videoUrl)
-    if (!courseId || !videoId) {
-      return sendError(res, 400, "This class does not have a valid YouTube video")
+    if (!courseId || !parseRumbleUrl(videoUrl)) {
+      return sendError(res, 400, "Offline download is available only for Rumble videos")
     }
 
     const canDownload = await hasCourseAccess({
@@ -149,9 +213,8 @@ export default async function offlineVideoHandler(req, res) {
     })
     if (!canDownload) return sendError(res, 403, "Course access required")
 
-    const youtube = await getYoutubeClient()
-    const info = await getDownloadInfo(youtube, videoId)
-    const options = getOptions(info)
+    const { formats } = await getRumbleInfo(videoUrl)
+    const options = getOptions(formats)
 
     if (req.query?.options === "1") {
       const recommended = options.filter((option) => option.height <= 360).at(-1)
@@ -165,10 +228,10 @@ export default async function offlineVideoHandler(req, res) {
     }
 
     const requestedHeight = parseHeight(req.query?.height)
-    const format = selectFormat(info, requestedHeight)
-    if (!format) return sendError(res, 422, "No combined MP4 quality is available")
+    const format = selectFormat(formats, requestedHeight)
+    if (!format) return sendError(res, 422, "No downloadable Rumble MP4 quality is available")
 
-    const totalLength = Number(format.content_length)
+    const totalLength = format.contentLength
     const start = Number.parseInt(String(req.query?.start ?? ""), 10)
     const requestedEnd = Number.parseInt(String(req.query?.end ?? ""), 10)
     if (!Number.isInteger(start) || !Number.isInteger(requestedEnd) || start < 0 || requestedEnd < start) {
@@ -180,29 +243,41 @@ export default async function offlineVideoHandler(req, res) {
     if (start >= totalLength) return sendError(res, 416, "Byte range is outside the video")
 
     const end = Math.min(requestedEnd, totalLength - 1)
-    const stream = await info.download({
-      itag: format.itag,
-      range: { start, end },
+    const upstream = await fetch(format.url, {
+      headers: {
+        ...REQUEST_HEADERS,
+        Referer: videoUrl,
+        Range: `bytes=${start}-${end}`,
+      },
+      redirect: "follow",
     })
+    if (upstream.status !== 206 || !upstream.body) {
+      const error = new Error(`Rumble CDN did not honor the byte range (HTTP ${upstream.status})`)
+      error.statusCode = 502
+      throw error
+    }
+
+    const expectedLength = end - start + 1
+    const receivedLength = Number(upstream.headers.get("content-length"))
+    if (Number.isFinite(receivedLength) && receivedLength !== expectedLength) {
+      const error = new Error("Rumble returned an incomplete video chunk")
+      error.statusCode = 502
+      throw error
+    }
 
     res.status(206)
-    res.setHeader("Content-Type", format.mime_type || "video/mp4")
-    res.setHeader("Content-Length", String(end - start + 1))
+    res.setHeader("Content-Type", upstream.headers.get("content-type") || format.mimeType)
+    res.setHeader("Content-Length", String(expectedLength))
     res.setHeader("Content-Range", `bytes ${start}-${end}/${totalLength}`)
     res.setHeader("Accept-Ranges", "bytes")
-    res.setHeader("Cache-Control", "private, no-store")
     res.setHeader("X-Content-Type-Options", "nosniff")
-    Readable.fromWeb(stream).pipe(res)
+    Readable.fromWeb(upstream.body).pipe(res)
   } catch (error) {
-    console.error("Offline video request failed:", error)
-    const message = error?.message || "Unable to prepare offline video"
-    const isAuthError = /bot|login|required|cookie|sign in/i.test(message)
+    console.error("Offline Rumble video request failed:", error)
     return sendError(
       res,
-      error.statusCode || (isAuthError ? 502 : 500),
-      isAuthError
-        ? "YouTube authentication failed. Refresh the YOUTUBE_COOKIE secret."
-        : message,
+      error.statusCode || 500,
+      error?.message || "Unable to prepare the Rumble video for offline use",
     )
   }
 }
