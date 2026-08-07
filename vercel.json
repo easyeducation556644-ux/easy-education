@@ -58,6 +58,9 @@
     },
     "api/security-events.js": {
       "maxDuration": 10
+    },
+    "api/offline-video.js": {
+      "maxDuration": 300
     }
   }
 }
