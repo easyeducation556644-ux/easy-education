@@ -109,6 +109,11 @@ export default async function offlineVideoHandler(req, res) {
     return sendError(res, 405, "Method not allowed")
   }
 
+  res.setHeader("Cache-Control", "private, no-store, max-age=0")
+  res.setHeader("CDN-Cache-Control", "no-store")
+  res.setHeader("Vercel-CDN-Cache-Control", "no-store")
+  res.setHeader("Vary", "Authorization")
+
   try {
     const classId = String(req.query?.classId || "").trim()
     if (!classId) return sendError(res, 400, "classId is required")
