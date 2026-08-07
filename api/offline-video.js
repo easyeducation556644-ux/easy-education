@@ -67,6 +67,17 @@ function selectFormat(info, requestedHeight) {
   return withinLimit.at(-1) || formats[0]
 }
 
+async function getDownloadInfo(youtube, videoId) {
+  const clients = [undefined, "TV", "ANDROID"]
+  let lastInfo = null
+  for (const client of clients) {
+    const info = await youtube.getBasicInfo(videoId, client ? { client } : undefined)
+    lastInfo = info
+    if (getCombinedMp4Formats(info).length > 0) return info
+  }
+  return lastInfo
+}
+
 function getOptions(info) {
   const byHeight = new Map()
   for (const format of getCombinedMp4Formats(info)) {
@@ -139,7 +150,7 @@ export default async function offlineVideoHandler(req, res) {
     if (!canDownload) return sendError(res, 403, "Course access required")
 
     const youtube = await getYoutubeClient()
-    const info = await youtube.getBasicInfo(videoId)
+    const info = await getDownloadInfo(youtube, videoId)
     const options = getOptions(info)
 
     if (req.query?.options === "1") {
