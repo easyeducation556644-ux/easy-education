@@ -96,7 +96,6 @@ export async function saveOfflineVideo({
   const totalChunks = Math.ceil(totalBytes / chunkSize)
   await ensureStorageSpace(totalBytes)
 
-  const token = await user.getIdToken()
   const cache = await caches.open(OFFLINE_CACHE)
   let completedBytes = 0
 
