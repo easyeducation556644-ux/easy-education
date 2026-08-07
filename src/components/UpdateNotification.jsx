@@ -129,7 +129,11 @@ export default function UpdateNotification() {
       
       if ('caches' in window) {
         const cacheNames = await caches.keys();
-        await Promise.all(cacheNames.map(name => caches.delete(name)));
+        await Promise.all(
+          cacheNames
+            .filter(name => name !== 'easy-education-offline-v1')
+            .map(name => caches.delete(name))
+        );
         console.log('✅ All caches cleared');
       }
       
