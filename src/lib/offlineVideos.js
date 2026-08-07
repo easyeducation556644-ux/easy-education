@@ -68,10 +68,10 @@ export async function removeOfflineVideo(userId, classId) {
   return targets.length > 0
 }
 
-export async function getOfflineVideoOptions({ user, classId, signal }) {
+export async function getOfflineVideoOptions({ user, classId, videoUrl, signal }) {
   const token = await user.getIdToken()
   const response = await fetch(
-    `/api/offline-video?classId=${encodeURIComponent(classId)}&options=1`,
+    `/api/offline-video?classId=${encodeURIComponent(classId)}&options=1&videoUrl=${encodeURIComponent(videoUrl || "")}`,
     {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
@@ -191,12 +191,13 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
 export async function saveOfflineVideo({
   user,
   classId,
+  videoUrl,
   height = 360,
   onProgress,
   signal,
 }) {
   ensureSupport()
-  const metadata = await getOfflineVideoOptions({ user, classId, signal })
+  const metadata = await getOfflineVideoOptions({ user, classId, videoUrl, signal })
   const option = metadata.options?.find((item) => item.height === height)
     || metadata.options?.filter((item) => item.height <= height).at(-1)
     || metadata.options?.[0]
