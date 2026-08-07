@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { useParams, useNavigate, Link } from "react-router-dom"
 import { motion } from "framer-motion"
-import { Eye, Play, BookOpen, GraduationCap, User, Award, Clock, Lock, FileQuestion, FileText, ExternalLink } from "lucide-react"
+import { Eye, Play, BookOpen, GraduationCap, User, Award, Clock, Lock, FileQuestion, FileText, ExternalLink, Download, Trash2, CheckCircle2, LoaderCircle } from "lucide-react"
 import {
   doc,
   getDoc,
@@ -30,6 +30,30 @@ import ClassReactions from "../components/ClassReactions"
 import CommentsSection from "../components/CommentsSection"
 import { toast as showGlobalToast } from "../hooks/use-toast"
 import { isFirebaseId } from "../lib/utils/slugUtils"
+import {
+  getOfflineVideoOptions,
+  getOfflineVideoUrl,
+  hasOfflineVideo,
+  removeOfflineVideo,
+  removeOfflineVideosForOtherUsers,
+  saveOfflineVideo,
+} from "../lib/offlineVideos"
+
+const YOUTUBE_URL_PATTERN = /(?:youtube\.com|youtu\.be)\//i
+
+function formatOfflineSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "সাইজ অজানা"
+  const megabytes = bytes / (1024 * 1024)
+  return megabytes >= 1024
+    ? `${(megabytes / 1024).toFixed(1)} GB`
+    : `${Math.max(1, Math.round(megabytes))} MB`
+}
+
+function getMobileQualityLabel(height) {
+  if (height <= 360) return "মোবাইলের জন্য সেরা · কম ডাটা"
+  if (height <= 480) return "মোবাইলের জন্য ভালো"
+  return "HD · বেশি ডাটা ও স্টোরেজ"
+}
 
 export default function CourseWatch() {
   const { courseId, classId } = useParams()
@@ -48,7 +72,14 @@ export default function CourseWatch() {
   const [toast, setToast] = useState(null)
   const [exams, setExams] = useState([])
   const [showExams, setShowExams] = useState(false)
+  const [offlineSaved, setOfflineSaved] = useState(false)
+  const [offlineProgress, setOfflineProgress] = useState(0)
+  const [offlineBusy, setOfflineBusy] = useState(false)
+  const [offlineQuality, setOfflineQuality] = useState(360)
+  const [offlineQualityOptions, setOfflineQualityOptions] = useState([])
+  const [offlineQualityLoading, setOfflineQualityLoading] = useState(false)
   const trackedViewsRef = useRef(new Set())
+  const offlineAbortRef = useRef(null)
   
   const { getExamsByCourse } = useExam()
 
@@ -74,6 +105,69 @@ export default function CourseWatch() {
       fetchExamsForCourse()
     }
   }, [actualCourseId])
+
+  useEffect(() => {
+    let active = true
+
+    const checkOfflineCopy = async () => {
+      setOfflineSaved(false)
+      setOfflineProgress(0)
+      if (!currentUser?.uid || !currentClass?.id) return
+
+      try {
+        await removeOfflineVideosForOtherUsers(currentUser.uid)
+        const saved = await hasOfflineVideo(currentUser.uid, currentClass.id)
+        if (active) setOfflineSaved(saved)
+      } catch (error) {
+        console.warn("Unable to inspect offline video cache:", error)
+      }
+    }
+
+    checkOfflineCopy()
+    return () => {
+      active = false
+      offlineAbortRef.current?.abort()
+      offlineAbortRef.current = null
+    }
+  }, [currentUser?.uid, currentClass?.id])
+
+  useEffect(() => {
+    if (
+      !currentUser ||
+      !currentClass?.id ||
+      !YOUTUBE_URL_PATTERN.test(currentClass.videoURL || "")
+    ) {
+      setOfflineQualityOptions([])
+      return
+    }
+
+    const controller = new AbortController()
+    setOfflineQualityLoading(true)
+
+    getOfflineVideoOptions({
+      user: currentUser,
+      classId: currentClass.id,
+      signal: controller.signal,
+    })
+      .then((payload) => {
+        const options = Array.isArray(payload?.options) ? payload.options : []
+        setOfflineQualityOptions(options)
+        if (payload?.recommendedHeight) {
+          setOfflineQuality(payload.recommendedHeight)
+        }
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") {
+          console.warn("Unable to load offline quality options:", error)
+          setOfflineQualityOptions([])
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setOfflineQualityLoading(false)
+      })
+
+    return () => controller.abort()
+  }, [currentUser, currentClass?.id, currentClass?.videoURL])
 
   const fetchExamsForCourse = async () => {
     if (!actualCourseId) return
@@ -306,6 +400,49 @@ export default function CourseWatch() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  const handleSaveOffline = async () => {
+    if (!currentUser || !currentClass?.id || offlineBusy) return
+
+    const controller = new AbortController()
+    offlineAbortRef.current = controller
+    setOfflineBusy(true)
+    setOfflineProgress(0)
+
+    try {
+      await saveOfflineVideo({
+        user: currentUser,
+        classId: currentClass.id,
+        height: offlineQuality,
+        signal: controller.signal,
+        onProgress: setOfflineProgress,
+      })
+      setOfflineSaved(true)
+      showToast("ভিডিওটি অফলাইনে দেখার জন্য সেভ হয়েছে", "success")
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        showToast(error.message || "অফলাইন ভিডিও সেভ করা যায়নি", "error")
+      }
+    } finally {
+      if (offlineAbortRef.current === controller) offlineAbortRef.current = null
+      setOfflineBusy(false)
+    }
+  }
+
+  const handleRemoveOffline = async () => {
+    if (!currentUser?.uid || !currentClass?.id || offlineBusy) return
+    setOfflineBusy(true)
+    try {
+      await removeOfflineVideo(currentUser.uid, currentClass.id)
+      setOfflineSaved(false)
+      setOfflineProgress(0)
+      showToast("অফলাইন কপি মুছে ফেলা হয়েছে", "success")
+    } catch {
+      showToast("অফলাইন কপি মুছতে সমস্যা হয়েছে", "error")
+    } finally {
+      setOfflineBusy(false)
+    }
+  }
+
   const organizeClasses = () => {
     if (course?.type === "batch") {
       const structure = {}
@@ -436,7 +573,11 @@ export default function CourseWatch() {
               <div className="aspect-video bg-black relative">
                 {currentClass?.videoURL ? (
                   <CustomVideoPlayer
-                    url={currentClass.videoURL}
+                    url={
+                      offlineSaved && currentUser?.uid
+                        ? getOfflineVideoUrl(currentUser.uid, currentClass.id)
+                        : currentClass.videoURL
+                    }
                     onNext={handleNextVideo}
                     onPrevious={handlePreviousVideo}
                   />
@@ -449,6 +590,80 @@ export default function CourseWatch() {
                   </div>
                 )}
               </div>
+              {currentClass?.videoURL && YOUTUBE_URL_PATTERN.test(currentClass.videoURL) && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+                    {offlineBusy ? (
+                      <LoaderCircle className="h-4 w-4 shrink-0 animate-spin" />
+                    ) : offlineSaved ? (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                    ) : (
+                      <Download className="h-4 w-4 shrink-0" />
+                    )}
+                    <span>
+                      {offlineBusy
+                        ? `অফলাইনের জন্য সেভ হচ্ছে${offlineProgress ? ` — ${offlineProgress}%` : "…"}`
+                        : offlineSaved
+                          ? "এই ডিভাইসে অফলাইনে পাওয়া যাবে"
+                          : "ইন্টারনেট ছাড়াই পরে দেখুন"}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!offlineSaved && (
+                      <label className="sr-only" htmlFor={`offline-quality-${currentClass.id}`}>
+                        অফলাইন ভিডিও কোয়ালিটি
+                      </label>
+                    )}
+                    {!offlineSaved && (
+                      <select
+                        id={`offline-quality-${currentClass.id}`}
+                      value={offlineQuality}
+                      onChange={(event) => setOfflineQuality(Number(event.target.value))}
+                      disabled={offlineBusy || offlineQualityLoading || offlineQualityOptions.length === 0}
+                      className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                    >
+                        {offlineQualityLoading && (
+                          <option value={offlineQuality}>কোয়ালিটি খোঁজা হচ্ছে…</option>
+                        )}
+                        {!offlineQualityLoading && offlineQualityOptions.length === 0 && (
+                          <option value={offlineQuality}>কোনো offline quality পাওয়া যায়নি</option>
+                        )}
+                        {offlineQualityOptions.map((option) => (
+                          <option key={option.height} value={option.height}>
+                            {option.height}p · {formatOfflineSize(option.contentLength)} · {getMobileQualityLabel(option.height)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {offlineSaved ? (
+                      <button
+                        type="button"
+                        onClick={handleRemoveOffline}
+                        disabled={offlineBusy}
+                        className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        মুছে ফেলুন
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleSaveOffline}
+                        disabled={offlineBusy || offlineQualityLoading || offlineQualityOptions.length === 0}
+                        className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {offlineBusy ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Download className="h-4 w-4" />
+                        )}
+                        অফলাইনে সেভ করুন
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             
