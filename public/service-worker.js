@@ -1,6 +1,7 @@
 const CACHE_VERSION = 'v9';
 const APP_VERSION = 'v9.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
+const OFFLINE_VIDEO_CACHE = 'easy-education-offline-v1';
 const STATIC_CACHE = [
   '/',
   '/index.html',
@@ -38,6 +39,23 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+
+  // Offline videos are explicitly saved by the authenticated course UI.
+  // They are never populated by normal browsing or external requests.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/offline-media/')) {
+    event.respondWith(
+      caches.open(OFFLINE_VIDEO_CACHE).then(async (cache) => {
+        const response = await cache.match(event.request, { ignoreSearch: true });
+        if (response) return response;
+        return new Response('Offline video not found', {
+          status: 404,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+      })
+    );
+    return;
+  }
+
   const shouldUseNetworkFirst = NETWORK_FIRST_URLS.some(pattern => url.pathname.includes(pattern));
   
   // Skip caching for Firebase and external API calls
@@ -152,7 +170,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
+          if (cacheWhitelist.indexOf(cacheName) === -1 && cacheName !== OFFLINE_VIDEO_CACHE) {
             return caches.delete(cacheName);
           }
         })
@@ -218,7 +236,9 @@ self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'FORCE_UPDATE') {
     caches.keys().then((cacheNames) => {
       return Promise.all(
-        cacheNames.map((cacheName) => caches.delete(cacheName))
+        cacheNames
+          .filter((cacheName) => cacheName !== OFFLINE_VIDEO_CACHE)
+          .map((cacheName) => caches.delete(cacheName))
       );
     }).then(() => {
       self.skipWaiting();
