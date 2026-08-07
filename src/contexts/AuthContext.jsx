@@ -12,6 +12,7 @@ import { auth, db, googleProvider } from "../lib/firebase"
 import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
 import { usePresence } from "../hooks/usePresence"
+import { removeOfflineVideosForUser } from "../lib/offlineVideos"
 
 const AuthContext = createContext({})
 
@@ -495,6 +496,9 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     try {
       if (currentUser) {
+        await removeOfflineVideosForUser(currentUser.uid).catch((error) => {
+          console.warn("Failed to remove offline videos during logout:", error)
+        })
         const userRef = doc(db, "users", currentUser.uid)
         let deviceID = localStorage.getItem('deviceID')
         let fingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
