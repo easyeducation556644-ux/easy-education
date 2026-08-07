@@ -197,7 +197,18 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
     if (!existing) {
       const response = await fetch(segmentUrls[index], { signal })
       if (!response.ok) throw new Error(`Segment ${index + 1} download failed`)
-      await cache.put(cacheUrl, response)
+      const bytes = await response.arrayBuffer()
+      if (signal?.aborted) throw new DOMException("Download interrupted", "AbortError")
+      await cache.put(
+        cacheUrl,
+        new Response(bytes, {
+          status: 200,
+          headers: {
+            "Content-Type": response.headers.get("content-type") || "video/mp2t",
+            "Content-Length": String(bytes.byteLength),
+          },
+        }),
+      )
     }
 
     completedBytes += segmentLengths[index]
