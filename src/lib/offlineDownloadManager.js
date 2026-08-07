@@ -1,4 +1,5 @@
 import {
+  getOfflineVideoUrl,
   getSavedOfflineVideoUrl,
   removeOfflineVideo,
   saveOfflineVideo,
@@ -103,6 +104,7 @@ export function queueOfflineDownload({
   courseId,
   videoUrl,
   height,
+  kind,
   totalBytes,
 }) {
   const id = getJobId(user.uid, classId)
@@ -118,6 +120,12 @@ export function queueOfflineDownload({
     courseId: courseId || "",
     videoUrl,
     height,
+    kind: kind || "mp4",
+    playbackUrl: existing?.playbackUrl || (
+      kind === "hls"
+        ? `${getOfflineVideoUrl(user.uid, classId)}/playlist.m3u8`
+        : getOfflineVideoUrl(user.uid, classId)
+    ),
     totalBytes: Number(totalBytes) || 0,
     downloadedBytes: Number(existing?.downloadedBytes) || 0,
     progress: Number(existing?.progress) || 0,
