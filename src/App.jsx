@@ -11,6 +11,7 @@ import ProtectedRoute from "./components/ProtectedRoute"
 import PWAInstallPrompt from "./components/PWAInstallPrompt"
 import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
+import DownloadResumeAgent from "./components/DownloadResumeAgent"
 
 // Pages
 import Home from "./pages/Home"
@@ -33,6 +34,7 @@ import PaymentSuccess from "./pages/PaymentSuccess"
 import PaymentCancel from "./pages/PaymentCancel"
 import PaymentHistory from "./pages/PaymentHistory"
 import MyCourses from "./pages/MyCourses"
+import Downloads from "./pages/Downloads"
 import ExamView from "./pages/ExamView"
 import ExamList from "./pages/ExamList"
 import ExamLeaderboard from "./pages/ExamLeaderboard"
@@ -53,6 +55,7 @@ function App() {
         <CartProvider>
           <ExamProvider>
             <SettingsLoader />
+            <DownloadResumeAgent />
             <div className="flex flex-col min-h-screen bg-background text-foreground">
               <Header />
               <main className="flex-1">
@@ -107,6 +110,14 @@ function App() {
                     element={
                       <ProtectedRoute>
                         <Dashboard />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path="/downloads"
+                    element={
+                      <ProtectedRoute>
+                        <Downloads />
                       </ProtectedRoute>
                     }
                   />

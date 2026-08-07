@@ -290,6 +290,7 @@ export default function Header() {
   const navLinks = [
     { name: "Home", path: "/", icon: Home },
     { name: "Courses", path: "/courses", icon: BookOpen },
+    ...(currentUser ? [{ name: "Downloads", path: "/downloads", icon: Download }] : []),
     { name: "Announcements", path: "/announcements", icon: Newspaper },
     ...(communityEnabled ? [{ name: "Community", path: "/community", icon: Users }] : []),
   ]

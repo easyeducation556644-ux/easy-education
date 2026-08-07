@@ -37,8 +37,8 @@ import {
   hasOfflineVideo,
   removeOfflineVideo,
   removeOfflineVideosForOtherUsers,
-  saveOfflineVideo,
 } from "../lib/offlineVideos"
+import { queueOfflineDownload } from "../lib/offlineDownloadManager"
 
 const RUMBLE_URL_PATTERN = /https?:\/\/(?:www\.)?rumble\.com\//i
 
@@ -414,34 +414,23 @@ export default function CourseWatch() {
     setTimeout(() => setToast(null), 3000)
   }
 
-  const handleSaveOffline = async () => {
-    if (!currentUser || !currentClass?.id || offlineBusy) return
+  const handleSaveOffline = () => {
+    if (!currentUser || !currentClass?.id || offlineQualityOptions.length === 0) return
+    const option = offlineQualityOptions.find((item) => item.height === offlineQuality)
+      || offlineQualityOptions[0]
 
-    const controller = new AbortController()
-    offlineAbortRef.current = controller
-    setOfflineBusy(true)
-    setOfflineProgress(0)
-
-    try {
-      const savedUrl = await saveOfflineVideo({
-        user: currentUser,
-        classId: currentClass.id,
-        videoUrl: currentClass.videoURL,
-        height: offlineQuality,
-        signal: controller.signal,
-        onProgress: setOfflineProgress,
-      })
-      setOfflinePlaybackUrl(savedUrl)
-      setOfflineSaved(true)
-      showToast("ভিডিওটি অফলাইনে দেখার জন্য সেভ হয়েছে", "success")
-    } catch (error) {
-      if (error.name !== "AbortError") {
-        showToast(error.message || "অফলাইন ভিডিও সেভ করা যায়নি", "error")
-      }
-    } finally {
-      if (offlineAbortRef.current === controller) offlineAbortRef.current = null
-      setOfflineBusy(false)
-    }
+    queueOfflineDownload({
+      user: currentUser,
+      classId: currentClass.id,
+      title: currentClass.title,
+      courseTitle: course?.title,
+      courseId: actualCourseId,
+      videoUrl: currentClass.videoURL,
+      height: option.height,
+      kind: option.kind,
+      totalBytes: option.contentLength,
+    })
+    navigate("/downloads")
   }
 
   const handleRemoveOffline = async () => {
@@ -677,7 +666,7 @@ export default function CourseWatch() {
                         ) : (
                           <Download className="h-4 w-4" />
                         )}
-                        অফলাইনে সেভ করুন
+                        Download page খুলুন
                       </button>
                     )}
                   </div>

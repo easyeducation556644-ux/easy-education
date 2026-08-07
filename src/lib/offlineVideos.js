@@ -122,8 +122,12 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
   if (!playlistResponse.ok) throw new Error("Rumble HLS playlist download failed")
   const playlistText = await playlistResponse.text()
   const lines = playlistText.split(/\r?\n/)
-  const sourceLines = lines.filter((line) => line && !line.startsWith("#"))
-  const segmentUrls = sourceLines.map((line) => new URL(line, option.playlistUrl).toString())
+  const segmentLineIndexes = lines
+    .map((line, index) => line && !line.startsWith("#") ? index : -1)
+    .filter((index) => index >= 0)
+  const segmentUrls = segmentLineIndexes.map(
+    (lineIndex) => new URL(lines[lineIndex], option.playlistUrl).toString(),
+  )
   const segmentLengths = segmentUrls.map(getHlsSegmentLength)
   const totalBytes = segmentLengths.reduce((total, size) => total + size, 0)
   if (!segmentUrls.length || !totalBytes) {
@@ -134,56 +138,78 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
   const cache = await caches.open(OFFLINE_CACHE)
   await cacheHlsLibrary(cache)
 
+  const writeCheckpoint = async (completedSegments, status) => {
+    if (completedSegments <= 0) return
+    const cutoff = segmentLineIndexes[completedSegments - 1] + 1
+    let segmentIndex = 0
+    const partialLines = lines.slice(0, cutoff)
+      .filter((line) => line !== "#EXT-X-ENDLIST")
+      .map((line) => {
+        if (!line || line.startsWith("#")) return line
+        const localUrl = getHlsSegmentUrl(user.uid, classId, segmentIndex)
+        segmentIndex += 1
+        return localUrl
+      })
+    partialLines.push("#EXT-X-ENDLIST")
+
+    const progress = Math.min(100, Math.round(
+      segmentLengths.slice(0, completedSegments)
+        .reduce((total, size) => total + size, 0) / totalBytes * 100,
+    ))
+    const savedAt = Date.now()
+    await Promise.all([
+      cache.put(
+        getHlsPlaylistUrl(user.uid, classId),
+        new Response(partialLines.join("\n"), {
+          headers: { "Content-Type": "application/vnd.apple.mpegurl" },
+        }),
+      ),
+      cache.put(
+        getManifestUrl(user.uid, classId),
+        new Response(JSON.stringify({
+          version: 4,
+          kind: "hls",
+          status,
+          progress,
+          savedAt,
+          userId: user.uid,
+          classId,
+          height: option.height,
+          contentLength: totalBytes,
+          contentType: "application/vnd.apple.mpegurl",
+          totalChunks: segmentUrls.length,
+          completedChunks: completedSegments,
+        }), {
+          headers: {
+            "Content-Type": "application/json",
+            "X-Offline-Saved-At": String(savedAt),
+          },
+        }),
+      ),
+    ])
+  }
+
   let completedBytes = 0
   for (let index = 0; index < segmentUrls.length; index += 1) {
     if (signal?.aborted) throw new DOMException("Download cancelled", "AbortError")
     const cacheUrl = getHlsSegmentUrl(user.uid, classId, index)
     const existing = await cache.match(cacheUrl)
-    if (existing) {
-      completedBytes += segmentLengths[index]
-      onProgress?.(Math.min(99, Math.round((completedBytes / totalBytes) * 100)))
-      continue
+    if (!existing) {
+      const response = await fetch(segmentUrls[index], { signal })
+      if (!response.ok) throw new Error(`Segment ${index + 1} download failed`)
+      await cache.put(cacheUrl, response)
     }
 
-    const response = await fetch(segmentUrls[index], { signal })
-    if (!response.ok) throw new Error(`Segment ${index + 1} download failed`)
-    await cache.put(cacheUrl, response)
     completedBytes += segmentLengths[index]
-    onProgress?.(Math.min(99, Math.round((completedBytes / totalBytes) * 100)))
+    const completedSegments = index + 1
+    const progress = Math.min(99, Math.round((completedBytes / totalBytes) * 100))
+    onProgress?.(progress)
+    if (completedSegments === 1 || completedSegments % 5 === 0) {
+      await writeCheckpoint(completedSegments, "downloading")
+    }
   }
 
-  let segmentIndex = 0
-  const offlinePlaylist = lines.map((line) => {
-    if (!line || line.startsWith("#")) return line
-    const localUrl = getHlsSegmentUrl(user.uid, classId, segmentIndex)
-    segmentIndex += 1
-    return localUrl
-  }).join("\n")
-
-  await cache.put(
-    getHlsPlaylistUrl(user.uid, classId),
-    new Response(offlinePlaylist, {
-      headers: { "Content-Type": "application/vnd.apple.mpegurl" },
-    }),
-  )
-
-  const manifest = {
-    version: 3,
-    kind: "hls",
-    savedAt: Date.now(),
-    userId: user.uid,
-    classId,
-    height: option.height,
-    contentLength: totalBytes,
-    contentType: "application/vnd.apple.mpegurl",
-    totalChunks: segmentUrls.length,
-  }
-  await cache.put(
-    getManifestUrl(user.uid, classId),
-    new Response(JSON.stringify(manifest), {
-      headers: { "Content-Type": "application/json", "X-Offline-Saved-At": String(manifest.savedAt) },
-    }),
-  )
+  await writeCheckpoint(segmentUrls.length, "completed")
   onProgress?.(100)
   return getHlsPlaylistUrl(user.uid, classId)
 }
