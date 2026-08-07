@@ -1,5 +1,5 @@
-const CACHE_VERSION = 'v9';
-const APP_VERSION = 'v9.0';
+const CACHE_VERSION = 'v10';
+const APP_VERSION = 'v10.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
 const OFFLINE_VIDEO_CACHE = 'easy-education-offline-v2';
 const OFFLINE_VIDEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -41,7 +41,16 @@ self.addEventListener('install', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Reassemble authenticated offline-video chunks and support media Range requests.
+  if (url.origin === self.location.origin && url.pathname === '/offline-assets/hls.min.js') {
+    event.respondWith(
+      caches.open(OFFLINE_VIDEO_CACHE)
+        .then((cache) => cache.match(url.pathname))
+        .then((response) => response || new Response('Offline HLS player not found', { status: 404 }))
+    );
+    return;
+  }
+
+  // Serve cached HLS playlists/segments or reassemble MP4 chunks.
   if (url.origin === self.location.origin && url.pathname.startsWith('/offline-media/')) {
     event.respondWith(serveOfflineVideo(event.request, url));
     return;
@@ -157,7 +166,8 @@ self.addEventListener('fetch', (event) => {
 
 async function serveOfflineVideo(request, url) {
   const cache = await caches.open(OFFLINE_VIDEO_CACHE);
-  const basePath = url.pathname.replace(/\/$/, '');
+  const basePath = url.pathname.match(/^\/offline-media\/[^/]+\/[^/]+/)?.[0];
+  if (!basePath) return new Response('Invalid offline video path', { status: 400 });
   const manifestResponse = await cache.match(`${basePath}/manifest`);
   const manifest = await manifestResponse?.json().catch(() => null);
   if (!manifest || !manifest.savedAt || Date.now() - manifest.savedAt > OFFLINE_VIDEO_TTL_MS) {
@@ -165,6 +175,10 @@ async function serveOfflineVideo(request, url) {
       status: 404,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' }
     });
+  }
+  if (manifest.kind === 'hls' && url.pathname !== basePath) {
+    const cached = await cache.match(url.pathname);
+    return cached || new Response('Offline HLS file not found', { status: 404 });
   }
 
   const total = Number(manifest.contentLength);
