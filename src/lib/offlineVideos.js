@@ -52,7 +52,11 @@ export async function getOfflineVideoOptions({ user, classId, signal }) {
   const token = await user.getIdToken()
   const response = await fetch(
     `/api/offline-video?classId=${encodeURIComponent(classId)}&options=1`,
-    { headers: { Authorization: `Bearer ${token}` }, signal },
+    {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+      signal,
+    },
   )
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
