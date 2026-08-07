@@ -96,7 +96,6 @@ export async function saveOfflineVideo({
   const totalChunks = Math.ceil(totalBytes / chunkSize)
   await ensureStorageSpace(totalBytes)
 
-  const token = await user.getIdToken()
   const cache = await caches.open(OFFLINE_CACHE)
   let completedBytes = 0
 
@@ -114,8 +113,8 @@ export async function saveOfflineVideo({
     }
 
     const response = await fetch(
-      `/api/offline-video?classId=${encodeURIComponent(classId)}&height=${option.height}&start=${start}&end=${end}`,
-      { headers: { Authorization: `Bearer ${token}` }, signal },
+      `/api/offline-video?classId=${encodeURIComponent(classId)}&height=${option.height}&start=${start}&end=${end}&downloadToken=${encodeURIComponent(metadata.downloadToken || "")}`,
+      { signal },
     )
     if (!response.ok) {
       const payload = await response.json().catch(() => null)
