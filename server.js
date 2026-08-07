@@ -10,6 +10,7 @@ import processEnrollmentHandler from './api/process-enrollment.js';
 import dynamicManifestHandler from './api/dynamic-manifest.js';
 import versionHandler from './api/version.js';
 import securityEventsHandler from './api/security-events.js';
+import offlineVideoHandler from './api/offline-video.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -39,6 +40,10 @@ app.get('/api/version', (req, res) => {
 
 app.all('/api/security-events', (req, res) => {
   securityEventsHandler(req, res);
+});
+
+app.get('/api/offline-video', (req, res) => {
+  offlineVideoHandler(req, res);
 });
 
 app.post('/api/create-payment', (req, res) => {
