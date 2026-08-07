@@ -81,9 +81,16 @@ export async function startOfflineDownload({ user, job }) {
       })
       return playbackUrl
     } catch (error) {
+      const message = error?.message || "Download failed"
+      const reloadOrNetworkInterruption = (
+        error?.name === "AbortError"
+        || /Cache\.put|network error|Failed to fetch|Load failed/i.test(message)
+      )
       updateJob(id, {
-        status: error?.name === "AbortError" ? "paused" : "error",
-        error: error?.name === "AbortError" ? null : error?.message || "Download failed",
+        status: reloadOrNetworkInterruption ? "queued" : "error",
+        error: reloadOrNetworkInterruption
+          ? "Download interrupted — automatically resuming"
+          : message,
       })
       throw error
     } finally {
@@ -158,7 +165,11 @@ export function resumeOfflineDownload(user, classId) {
 export function resumePendingDownloads(user) {
   if (!user?.uid) return
   for (const job of getDownloadJobs(user.uid)) {
-    if (["queued", "downloading"].includes(job.status)) {
+    const reloadError = (
+      job.status === "error"
+      && /Cache\.put|network error|Failed to fetch|Load failed/i.test(job.error || "")
+    )
+    if (["queued", "downloading"].includes(job.status) || reloadError) {
       startOfflineDownload({ user, job })
     }
   }
