@@ -82,15 +82,22 @@ export async function startOfflineDownload({ user, job }) {
       return playbackUrl
     } catch (error) {
       const message = error?.message || "Download failed"
-      const reloadOrNetworkInterruption = (
+      const intentionallyPaused = activeDownloads.get(id)?.intentionalPause === true
+      const reloadOrNetworkInterruption = !intentionallyPaused && (
         error?.name === "AbortError"
         || /Cache\.put|network error|Failed to fetch|Load failed/i.test(message)
       )
       updateJob(id, {
-        status: reloadOrNetworkInterruption ? "queued" : "error",
-        error: reloadOrNetworkInterruption
-          ? "Download interrupted — automatically resuming"
-          : message,
+        status: intentionallyPaused
+          ? "paused"
+          : reloadOrNetworkInterruption
+            ? "queued"
+            : "error",
+        error: intentionallyPaused
+          ? null
+          : reloadOrNetworkInterruption
+            ? "Download interrupted — automatically resuming"
+            : message,
       })
       throw error
     } finally {
@@ -150,7 +157,11 @@ export function queueOfflineDownload({
 
 export function pauseOfflineDownload(userId, classId) {
   const id = getJobId(userId, classId)
-  activeDownloads.get(id)?.controller.abort()
+  const active = activeDownloads.get(id)
+  if (active) {
+    active.intentionalPause = true
+    active.controller.abort()
+  }
   updateJob(id, { status: "paused" })
 }
 
