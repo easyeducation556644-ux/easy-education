@@ -1,6 +1,8 @@
 const OFFLINE_CACHE = "easy-education-offline-v2"
 const OFFLINE_VIDEO_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const FALLBACK_CHUNK_SIZE = 8 * 1024 * 1024
+const HLS_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
+const OFFLINE_HLS_LIBRARY_URL = "/offline-assets/hls.min.js"
 
 function ensureSupport() {
   if (!("caches" in window) || !("serviceWorker" in navigator)) {
@@ -18,6 +20,24 @@ function getManifestUrl(userId, classId) {
 
 function getChunkUrl(userId, classId, index) {
   return `${getOfflineVideoUrl(userId, classId)}/chunks/${index}`
+}
+
+function getHlsPlaylistUrl(userId, classId) {
+  return `${getOfflineVideoUrl(userId, classId)}/playlist.m3u8`
+}
+
+function getHlsSegmentUrl(userId, classId, index) {
+  return `${getOfflineVideoUrl(userId, classId)}/segments/${index}.ts`
+}
+
+export async function getSavedOfflineVideoUrl(userId, classId) {
+  if (!("caches" in window)) return null
+  const cache = await caches.open(OFFLINE_CACHE)
+  const manifest = await readManifest(cache, userId, classId)
+  if (!manifest) return null
+  return manifest.kind === "hls"
+    ? getHlsPlaylistUrl(userId, classId)
+    : getOfflineVideoUrl(userId, classId)
 }
 
 async function readManifest(cache, userId, classId) {
@@ -77,6 +97,97 @@ async function ensureStorageSpace(requiredBytes) {
   }
 }
 
+function getHlsSegmentLength(segmentUrl) {
+  try {
+    const range = new URL(segmentUrl).searchParams.get("r_range") || ""
+    const [start, end] = range.split("-").map(Number)
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start
+      ? end - start + 1
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+async function cacheHlsLibrary(cache) {
+  const existing = await cache.match(OFFLINE_HLS_LIBRARY_URL)
+  if (existing) return
+  const response = await fetch(HLS_LIBRARY_URL)
+  if (!response.ok) throw new Error("Offline HLS player download failed")
+  await cache.put(OFFLINE_HLS_LIBRARY_URL, response)
+}
+
+async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
+  const playlistResponse = await fetch(option.playlistUrl, { signal })
+  if (!playlistResponse.ok) throw new Error("Rumble HLS playlist download failed")
+  const playlistText = await playlistResponse.text()
+  const lines = playlistText.split(/\r?\n/)
+  const sourceLines = lines.filter((line) => line && !line.startsWith("#"))
+  const segmentUrls = sourceLines.map((line) => new URL(line, option.playlistUrl).toString())
+  const segmentLengths = segmentUrls.map(getHlsSegmentLength)
+  const totalBytes = segmentLengths.reduce((total, size) => total + size, 0)
+  if (!segmentUrls.length || !totalBytes) {
+    throw new Error("Rumble HLS segment sizes are unavailable")
+  }
+
+  await ensureStorageSpace(totalBytes)
+  const cache = await caches.open(OFFLINE_CACHE)
+  await cacheHlsLibrary(cache)
+
+  let completedBytes = 0
+  for (let index = 0; index < segmentUrls.length; index += 1) {
+    if (signal?.aborted) throw new DOMException("Download cancelled", "AbortError")
+    const cacheUrl = getHlsSegmentUrl(user.uid, classId, index)
+    const existing = await cache.match(cacheUrl)
+    if (existing) {
+      completedBytes += segmentLengths[index]
+      onProgress?.(Math.min(99, Math.round((completedBytes / totalBytes) * 100)))
+      continue
+    }
+
+    const response = await fetch(segmentUrls[index], { signal })
+    if (!response.ok) throw new Error(`Segment ${index + 1} download failed`)
+    await cache.put(cacheUrl, response)
+    completedBytes += segmentLengths[index]
+    onProgress?.(Math.min(99, Math.round((completedBytes / totalBytes) * 100)))
+  }
+
+  let segmentIndex = 0
+  const offlinePlaylist = lines.map((line) => {
+    if (!line || line.startsWith("#")) return line
+    const localUrl = getHlsSegmentUrl(user.uid, classId, segmentIndex)
+    segmentIndex += 1
+    return localUrl
+  }).join("\n")
+
+  await cache.put(
+    getHlsPlaylistUrl(user.uid, classId),
+    new Response(offlinePlaylist, {
+      headers: { "Content-Type": "application/vnd.apple.mpegurl" },
+    }),
+  )
+
+  const manifest = {
+    version: 3,
+    kind: "hls",
+    savedAt: Date.now(),
+    userId: user.uid,
+    classId,
+    height: option.height,
+    contentLength: totalBytes,
+    contentType: "application/vnd.apple.mpegurl",
+    totalChunks: segmentUrls.length,
+  }
+  await cache.put(
+    getManifestUrl(user.uid, classId),
+    new Response(JSON.stringify(manifest), {
+      headers: { "Content-Type": "application/json", "X-Offline-Saved-At": String(manifest.savedAt) },
+    }),
+  )
+  onProgress?.(100)
+  return getHlsPlaylistUrl(user.uid, classId)
+}
+
 export async function saveOfflineVideo({
   user,
   classId,
@@ -90,6 +201,9 @@ export async function saveOfflineVideo({
     || metadata.options?.filter((item) => item.height <= height).at(-1)
     || metadata.options?.[0]
   if (!option?.contentLength) throw new Error("Selected quality size is unavailable")
+  if (option.kind === "hls" && option.playlistUrl) {
+    return saveHlsVideo({ user, classId, option, onProgress, signal })
+  }
 
   const totalBytes = Number(option.contentLength)
   const chunkSize = Math.min(Number(metadata.chunkSize) || FALLBACK_CHUNK_SIZE, 10 * 1024 * 1024)

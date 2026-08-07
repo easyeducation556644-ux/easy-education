@@ -81,7 +81,7 @@ function loadHlsApi() {
   if (hlsApiPromise) return hlsApiPromise
 
   hlsApiPromise = new Promise((resolve, reject) => {
-    let script = document.querySelector('script[src*="hls.js"]')
+    let script = document.querySelector('script[src="/offline-assets/hls.min.js"]')
     let shouldAppend = false
 
     const handleLoad = () => {
@@ -99,7 +99,7 @@ function loadHlsApi() {
 
     if (!script) {
       script = document.createElement("script")
-      script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest"
+      script.src = "/offline-assets/hls.min.js"
       script.async = true
       shouldAppend = true
     }

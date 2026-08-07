@@ -33,6 +33,7 @@ import { isFirebaseId } from "../lib/utils/slugUtils"
 import {
   getOfflineVideoOptions,
   getOfflineVideoUrl,
+  getSavedOfflineVideoUrl,
   hasOfflineVideo,
   removeOfflineVideo,
   removeOfflineVideosForOtherUsers,
@@ -73,6 +74,7 @@ export default function CourseWatch() {
   const [exams, setExams] = useState([])
   const [showExams, setShowExams] = useState(false)
   const [offlineSaved, setOfflineSaved] = useState(false)
+  const [offlinePlaybackUrl, setOfflinePlaybackUrl] = useState(null)
   const [offlineProgress, setOfflineProgress] = useState(0)
   const [offlineBusy, setOfflineBusy] = useState(false)
   const [offlineQuality, setOfflineQuality] = useState(360)
@@ -111,6 +113,7 @@ export default function CourseWatch() {
 
     const checkOfflineCopy = async () => {
       setOfflineSaved(false)
+      setOfflinePlaybackUrl(null)
       setOfflineProgress(0)
       if (
         !currentUser?.uid ||
@@ -121,7 +124,13 @@ export default function CourseWatch() {
       try {
         await removeOfflineVideosForOtherUsers(currentUser.uid)
         const saved = await hasOfflineVideo(currentUser.uid, currentClass.id)
-        if (active) setOfflineSaved(saved)
+        const savedUrl = saved
+          ? await getSavedOfflineVideoUrl(currentUser.uid, currentClass.id)
+          : null
+        if (active) {
+          setOfflineSaved(saved)
+          setOfflinePlaybackUrl(savedUrl)
+        }
       } catch (error) {
         console.warn("Unable to inspect offline video cache:", error)
       }
@@ -413,13 +422,14 @@ export default function CourseWatch() {
     setOfflineProgress(0)
 
     try {
-      await saveOfflineVideo({
+      const savedUrl = await saveOfflineVideo({
         user: currentUser,
         classId: currentClass.id,
         height: offlineQuality,
         signal: controller.signal,
         onProgress: setOfflineProgress,
       })
+      setOfflinePlaybackUrl(savedUrl)
       setOfflineSaved(true)
       showToast("ভিডিওটি অফলাইনে দেখার জন্য সেভ হয়েছে", "success")
     } catch (error) {
@@ -438,6 +448,7 @@ export default function CourseWatch() {
     try {
       await removeOfflineVideo(currentUser.uid, currentClass.id)
       setOfflineSaved(false)
+      setOfflinePlaybackUrl(null)
       setOfflineProgress(0)
       showToast("অফলাইন কপি মুছে ফেলা হয়েছে", "success")
     } catch {
@@ -581,7 +592,7 @@ export default function CourseWatch() {
                       offlineSaved &&
                       currentUser?.uid &&
                       RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
-                        ? getOfflineVideoUrl(currentUser.uid, currentClass.id)
+                        ? offlinePlaybackUrl || getOfflineVideoUrl(currentUser.uid, currentClass.id)
                         : currentClass.videoURL
                     }
                     onNext={handleNextVideo}

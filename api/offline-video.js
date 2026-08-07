@@ -99,6 +99,19 @@ async function fetchRumbleEmbedId(videoUrl) {
   const directId = getEmbedIdFromUrl(parsedUrl)
   if (directId) return directId
 
+  const oEmbedUrl = new URL("https://rumble.com/api/Media/oembed.json")
+  oEmbedUrl.searchParams.set("url", parsedUrl.toString())
+  const oEmbedResponse = await fetch(oEmbedUrl, {
+    headers: { ...REQUEST_HEADERS, Accept: "application/json" },
+  })
+  if (oEmbedResponse.ok) {
+    const oEmbed = await oEmbedResponse.json()
+    const embedId = String(oEmbed?.html || "").match(
+      /rumble\.com\/embed\/(?:[0-9a-z]+\.)?([0-9a-z]+)/i,
+    )?.[1]
+    if (embedId) return embedId.toLowerCase()
+  }
+
   const response = await fetch(parsedUrl, {
     headers: {
       ...REQUEST_HEADERS,
@@ -196,15 +209,104 @@ async function getRumbleFormats(payload, videoUrl) {
   )
 }
 
+function getHlsMasterUrl(payload) {
+  const candidates = [payload?.ua?.hls, payload?.u?.hls]
+  for (const group of candidates) {
+    if (group?.url) return group.url
+    for (const entry of Object.values(group || {})) {
+      if (entry?.url) return entry.url
+    }
+  }
+  return ""
+}
+
+function parseHlsAttribute(line, name) {
+  return line.match(new RegExp(`(?:^|,)${name}=([^,]+)`, "i"))?.[1] || ""
+}
+
+function getSegmentLength(segmentUrl) {
+  try {
+    const range = new URL(segmentUrl).searchParams.get("r_range") || ""
+    const [start, end] = range.split("-").map(Number)
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start
+      ? end - start + 1
+      : 0
+  } catch {
+    return 0
+  }
+}
+
+async function getHlsFormats(payload, videoUrl) {
+  const masterUrl = getHlsMasterUrl(payload)
+  if (!masterUrl) return []
+
+  const response = await fetch(masterUrl, {
+    headers: { ...REQUEST_HEADERS, Referer: videoUrl },
+  })
+  if (!response.ok) return []
+
+  const lines = (await response.text()).split(/\r?\n/)
+  const variants = []
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].startsWith("#EXT-X-STREAM-INF:")) continue
+    const source = lines.slice(index + 1).find((line) => line && !line.startsWith("#"))
+    if (!source) continue
+    const resolution = parseHlsAttribute(lines[index], "RESOLUTION")
+    const height = Number.parseInt(resolution.split("x")[1] || "", 10)
+    const bitrate = Number.parseInt(parseHlsAttribute(lines[index], "BANDWIDTH"), 10)
+    if (!Number.isFinite(height) || height > MAX_HEIGHT) continue
+    variants.push({
+      height,
+      bitrate: Number.isFinite(bitrate) ? bitrate : 0,
+      playlistUrl: new URL(source, masterUrl).toString(),
+    })
+  }
+
+  return Promise.all(variants.map(async (variant) => {
+    const playlistResponse = await fetch(variant.playlistUrl, {
+      headers: { ...REQUEST_HEADERS, Referer: videoUrl },
+    })
+    if (!playlistResponse.ok) return null
+    const playlistText = await playlistResponse.text()
+    const segmentUrls = playlistText
+      .split(/\r?\n/)
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => new URL(line, variant.playlistUrl).toString())
+    const contentLength = segmentUrls.reduce(
+      (total, segmentUrl) => total + getSegmentLength(segmentUrl),
+      0,
+    )
+    if (!segmentUrls.length || !contentLength) return null
+    return {
+      ...variant,
+      contentLength,
+      kind: "hls",
+      mimeType: "application/vnd.apple.mpegurl",
+    }
+  })).then((items) => items.filter(Boolean))
+}
+
 function getOptions(formats) {
   const byHeight = new Map()
   for (const format of formats) {
     const current = byHeight.get(format.height)
-    if (!current || format.bitrate > current.bitrate) byHeight.set(format.height, format)
+    if (
+      !current
+      || (
+        format.bitrate > 0
+        && (current.bitrate <= 0 || format.bitrate < current.bitrate)
+      )
+    ) byHeight.set(format.height, format)
   }
   return [...byHeight.values()]
     .sort((a, b) => a.height - b.height)
-    .map(({ height, contentLength, mimeType }) => ({ height, contentLength, mimeType }))
+    .map(({ height, contentLength, mimeType, kind, playlistUrl }) => ({
+      height,
+      contentLength,
+      mimeType,
+      kind: kind || "mp4",
+      ...(playlistUrl ? { playlistUrl } : {}),
+    }))
 }
 
 function selectFormat(formats, requestedHeight) {
@@ -244,7 +346,9 @@ async function getRumbleInfo(videoUrl) {
     throw error
   }
 
-  const formats = await getRumbleFormats(payload, videoUrl)
+  const mp4Formats = await getRumbleFormats(payload, videoUrl)
+  const hlsFormats = await getHlsFormats(payload, videoUrl)
+  const formats = [...mp4Formats, ...hlsFormats]
   if (!formats.length) {
     const error = new Error("No downloadable Rumble MP4 quality is available")
     error.statusCode = 422
@@ -338,7 +442,10 @@ export default async function offlineVideoHandler(req, res) {
 
     const requestedHeight = parseHeight(req.query?.height)
     const format = selectFormat(formats, requestedHeight)
-    if (!format) return sendError(res, 422, "No downloadable Rumble MP4 quality is available")
+    if (!format) return sendError(res, 422, "No downloadable Rumble quality is available")
+    if (format.kind === "hls") {
+      return sendError(res, 400, "HLS segments must be downloaded directly by the browser")
+    }
 
     const totalLength = format.contentLength
     const start = Number.parseInt(String(req.query?.start ?? ""), 10)
