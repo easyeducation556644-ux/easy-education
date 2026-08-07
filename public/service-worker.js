@@ -1,7 +1,8 @@
 const CACHE_VERSION = 'v9';
 const APP_VERSION = 'v9.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
-const OFFLINE_VIDEO_CACHE = 'easy-education-offline-v1';
+const OFFLINE_VIDEO_CACHE = 'easy-education-offline-v2';
+const OFFLINE_VIDEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STATIC_CACHE = [
   '/',
   '/index.html',
@@ -40,19 +41,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Offline videos are explicitly saved by the authenticated course UI.
-  // They are never populated by normal browsing or external requests.
+  // Reassemble authenticated offline-video chunks and support media Range requests.
   if (url.origin === self.location.origin && url.pathname.startsWith('/offline-media/')) {
-    event.respondWith(
-      caches.open(OFFLINE_VIDEO_CACHE).then(async (cache) => {
-        const response = await cache.match(event.request, { ignoreSearch: true });
-        if (response) return response;
-        return new Response('Offline video not found', {
-          status: 404,
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-        });
-      })
-    );
+    event.respondWith(serveOfflineVideo(event.request, url));
     return;
   }
 
@@ -163,6 +154,80 @@ self.addEventListener('fetch', (event) => {
       })
   );
 });
+
+async function serveOfflineVideo(request, url) {
+  const cache = await caches.open(OFFLINE_VIDEO_CACHE);
+  const basePath = url.pathname.replace(/\/$/, '');
+  const manifestResponse = await cache.match(`${basePath}/manifest`);
+  const manifest = await manifestResponse?.json().catch(() => null);
+  if (!manifest || !manifest.savedAt || Date.now() - manifest.savedAt > OFFLINE_VIDEO_TTL_MS) {
+    return new Response('Offline video not found', {
+      status: 404,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    });
+  }
+
+  const total = Number(manifest.contentLength);
+  const chunkSize = Number(manifest.chunkSize);
+  if (!total || !chunkSize || !manifest.totalChunks) {
+    return new Response('Offline video manifest is invalid', { status: 500 });
+  }
+
+  const rangeHeader = request.headers.get('range');
+  let start = 0;
+  let end = total - 1;
+  let partial = false;
+  if (rangeHeader) {
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+    if (!match) return new Response('Invalid range', { status: 416 });
+    if (match[1]) {
+      start = Number(match[1]);
+      end = match[2] ? Number(match[2]) : total - 1;
+    } else if (match[2]) {
+      const suffix = Number(match[2]);
+      start = Math.max(0, total - suffix);
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= total || end < start) {
+      return new Response('Range not satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${total}` }
+      });
+    }
+    end = Math.min(end, total - 1);
+    partial = true;
+  }
+
+  const firstChunk = Math.floor(start / chunkSize);
+  const lastChunk = Math.floor(end / chunkSize);
+  const body = new ReadableStream({
+    async start(controller) {
+      try {
+        for (let index = firstChunk; index <= lastChunk; index += 1) {
+          const response = await cache.match(`${basePath}/chunks/${index}`);
+          if (!response) throw new Error(`Missing offline chunk ${index}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const chunkStart = index * chunkSize;
+          const from = index === firstChunk ? start - chunkStart : 0;
+          const to = index === lastChunk ? end - chunkStart + 1 : bytes.byteLength;
+          controller.enqueue(bytes.slice(from, to));
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    }
+  });
+
+  const headers = new Headers({
+    'Content-Type': manifest.contentType || 'video/mp4',
+    'Content-Length': String(end - start + 1),
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=604800',
+    'X-Offline-Saved-At': String(manifest.savedAt)
+  });
+  if (partial) headers.set('Content-Range', `bytes ${start}-${end}/${total}`);
+  return new Response(body, { status: partial ? 206 : 200, headers });
+}
 
 self.addEventListener('activate', (event) => {
   const cacheWhitelist = [CACHE_NAME];
