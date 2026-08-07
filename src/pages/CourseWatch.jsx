@@ -160,6 +160,7 @@ export default function CourseWatch() {
     getOfflineVideoOptions({
       user: currentUser,
       classId: currentClass.id,
+      videoUrl: currentClass.videoURL,
       signal: controller.signal,
     })
       .then((payload) => {
@@ -425,6 +426,7 @@ export default function CourseWatch() {
       const savedUrl = await saveOfflineVideo({
         user: currentUser,
         classId: currentClass.id,
+        videoUrl: currentClass.videoURL,
         height: offlineQuality,
         signal: controller.signal,
         onProgress: setOfflineProgress,

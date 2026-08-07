@@ -1,9 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { Readable } from "node:stream"
-import {
-  isFullAdminProfile,
-  requireAuthenticatedUser,
-} from "./utils/firebase-admin.js"
+import { requireVerifiedUser } from "./utils/firebase-admin.js"
 
 const DEFAULT_HEIGHT = 360
 const MAX_HEIGHT = 1080
@@ -357,20 +354,6 @@ async function getRumbleInfo(videoUrl) {
   return { formats }
 }
 
-async function hasCourseAccess({ db, uid, userProfile, courseId }) {
-  if (isFullAdminProfile(userProfile)) return true
-  const enrollment = await db.collection("userCourses").doc(`${uid}_${courseId}`).get()
-  if (enrollment.exists) return true
-  const payments = await db.collection("payments")
-    .where("userId", "==", uid)
-    .where("status", "==", "approved")
-    .get()
-  return payments.docs.some((doc) => {
-    const courses = doc.data()?.courses
-    return Array.isArray(courses) && courses.some((course) => course?.id === courseId)
-  })
-}
-
 function sendError(res, statusCode, message) {
   if (!res.headersSent) res.status(statusCode).json({ error: message })
   else res.end()
@@ -395,24 +378,11 @@ export default async function offlineVideoHandler(req, res) {
     let downloadToken
 
     if (req.query?.options === "1") {
-      const { decodedToken, userProfile, db } = await requireAuthenticatedUser(req)
-      const classSnapshot = await db.collection("classes").doc(classId).get()
-      if (!classSnapshot.exists) return sendError(res, 404, "Class not found")
-
-      const classData = classSnapshot.data() || {}
-      const courseId = String(classData.courseId || "")
-      videoUrl = String(classData.videoURL || classData.youtubeLink || "")
-      if (!courseId || !parseRumbleUrl(videoUrl)) {
-        return sendError(res, 400, "Offline download is available only for Rumble videos")
+      const decodedToken = await requireVerifiedUser(req)
+      videoUrl = String(req.query?.videoUrl || "")
+      if (!parseRumbleUrl(videoUrl)) {
+        return sendError(res, 400, "A valid Rumble video URL is required")
       }
-
-      const canDownload = await hasCourseAccess({
-        db,
-        uid: decodedToken.uid,
-        userProfile,
-        courseId,
-      })
-      if (!canDownload) return sendError(res, 403, "Course access required")
 
       downloadToken = signDownloadToken({
         classId,

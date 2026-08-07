@@ -54,6 +54,26 @@ export function getAdminServices() {
   }
 }
 
+export async function requireVerifiedUser(req) {
+  const authorization = req.headers.authorization || ""
+  const match = authorization.match(/^Bearer\s+(.+)$/i)
+
+  if (!match) {
+    const error = new Error("Authentication required")
+    error.statusCode = 401
+    throw error
+  }
+
+  const { auth } = getAdminServices()
+  try {
+    return await auth.verifyIdToken(match[1])
+  } catch {
+    const error = new Error("Invalid or expired authentication token")
+    error.statusCode = 401
+    throw error
+  }
+}
+
 export async function requireAuthenticatedUser(req) {
   const authorization = req.headers.authorization || ""
   const match = authorization.match(/^Bearer\s+(.+)$/i)
