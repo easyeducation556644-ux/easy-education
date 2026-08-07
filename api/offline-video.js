@@ -1,4 +1,4 @@
-import { Readable } from "node:stream"
+import { createHmac, timingSafeEqual } from "node:crypto"\nimport { Readable } from "node:stream"
 import {
   isFullAdminProfile,
   requireAuthenticatedUser,
@@ -11,6 +11,63 @@ const RUMBLE_HOST_PATTERN = /(^|\.)rumble\.com$/i
 const REQUEST_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
   Accept: "*/*",
+}
+
+function getTokenSecret() {
+  const secret = process.env.OFFLINE_VIDEO_SECRET
+    || process.env.FIREBASE_PRIVATE_KEY
+    || process.env.FIREBASE_SERVICE_ACCOUNT
+  if (!secret) {
+    const error = new Error("Offline video signing secret is not configured")
+    error.statusCode = 503
+    throw error
+  }
+  return secret
+}
+
+function signDownloadToken(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url")
+  const signature = createHmac("sha256", getTokenSecret()).update(encoded).digest("base64url")
+  return `${encoded}.${signature}`
+}
+
+function verifyDownloadToken(token, classId) {
+  const [encoded, signature] = String(token || "").split(".")
+  if (!encoded || !signature) {
+    const error = new Error("A valid offline download token is required")
+    error.statusCode = 401
+    throw error
+  }
+
+  const expected = createHmac("sha256", getTokenSecret()).update(encoded).digest("base64url")
+  const actualBuffer = Buffer.from(signature)
+  const expectedBuffer = Buffer.from(expected)
+  if (
+    actualBuffer.length !== expectedBuffer.length
+    || !timingSafeEqual(actualBuffer, expectedBuffer)
+  ) {
+    const error = new Error("Invalid offline download token")
+    error.statusCode = 401
+    throw error
+  }
+
+  let payload
+  try {
+    payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))
+  } catch {
+    payload = null
+  }
+  if (
+    !payload
+    || payload.classId !== classId
+    || !payload.videoUrl
+    || Number(payload.expiresAt) < Date.now()
+  ) {
+    const error = new Error("Offline download token has expired")
+    error.statusCode = 401
+    throw error
+  }
+  return payload
 }
 
 function parseHeight(value) {
@@ -229,24 +286,39 @@ export default async function offlineVideoHandler(req, res) {
     const classId = String(req.query?.classId || "").trim()
     if (!classId) return sendError(res, 400, "classId is required")
 
-    const { decodedToken, userProfile, db } = await requireAuthenticatedUser(req)
-    const classSnapshot = await db.collection("classes").doc(classId).get()
-    if (!classSnapshot.exists) return sendError(res, 404, "Class not found")
+    let videoUrl
+    let downloadToken
 
-    const classData = classSnapshot.data() || {}
-    const courseId = String(classData.courseId || "")
-    const videoUrl = String(classData.videoURL || classData.youtubeLink || "")
-    if (!courseId || !parseRumbleUrl(videoUrl)) {
-      return sendError(res, 400, "Offline download is available only for Rumble videos")
+    if (req.query?.options === "1") {
+      const { decodedToken, userProfile, db } = await requireAuthenticatedUser(req)
+      const classSnapshot = await db.collection("classes").doc(classId).get()
+      if (!classSnapshot.exists) return sendError(res, 404, "Class not found")
+
+      const classData = classSnapshot.data() || {}
+      const courseId = String(classData.courseId || "")
+      videoUrl = String(classData.videoURL || classData.youtubeLink || "")
+      if (!courseId || !parseRumbleUrl(videoUrl)) {
+        return sendError(res, 400, "Offline download is available only for Rumble videos")
+      }
+
+      const canDownload = await hasCourseAccess({
+        db,
+        uid: decodedToken.uid,
+        userProfile,
+        courseId,
+      })
+      if (!canDownload) return sendError(res, 403, "Course access required")
+
+      downloadToken = signDownloadToken({
+        classId,
+        uid: decodedToken.uid,
+        videoUrl,
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      })
+    } else {
+      const payload = verifyDownloadToken(req.query?.downloadToken, classId)
+      videoUrl = payload.videoUrl
     }
-
-    const canDownload = await hasCourseAccess({
-      db,
-      uid: decodedToken.uid,
-      userProfile,
-      courseId,
-    })
-    if (!canDownload) return sendError(res, 403, "Course access required")
 
     const { formats } = await getRumbleInfo(videoUrl)
     const options = getOptions(formats)
@@ -259,6 +331,7 @@ export default async function offlineVideoHandler(req, res) {
         options,
         recommendedHeight: recommended?.height || null,
         chunkSize: MAX_CHUNK_BYTES,
+        downloadToken,
       })
     }
 
