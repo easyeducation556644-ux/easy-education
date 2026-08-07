@@ -427,6 +427,7 @@ export default function CourseWatch() {
       courseId: actualCourseId,
       videoUrl: currentClass.videoURL,
       height: option.height,
+      kind: option.kind,
       totalBytes: option.contentLength,
     })
     navigate("/downloads")
