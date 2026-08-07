@@ -33,6 +33,7 @@ import PaymentSuccess from "./pages/PaymentSuccess"
 import PaymentCancel from "./pages/PaymentCancel"
 import PaymentHistory from "./pages/PaymentHistory"
 import MyCourses from "./pages/MyCourses"
+import Downloads from "./pages/Downloads"
 import ExamView from "./pages/ExamView"
 import ExamList from "./pages/ExamList"
 import ExamLeaderboard from "./pages/ExamLeaderboard"
@@ -107,6 +108,14 @@ function App() {
                     element={
                       <ProtectedRoute>
                         <Dashboard />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path="/downloads"
+                    element={
+                      <ProtectedRoute>
+                        <Downloads />
                       </ProtectedRoute>
                     }
                   />
