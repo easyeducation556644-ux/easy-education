@@ -39,7 +39,7 @@ import {
   saveOfflineVideo,
 } from "../lib/offlineVideos"
 
-const RUMBLE_URL_PATTERN = /(?:^|\.)rumble\.com\//i
+const RUMBLE_URL_PATTERN = /https?:\/\/(?:www\.)?rumble\.com\//i
 
 function formatOfflineSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "সাইজ অজানা"
