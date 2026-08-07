@@ -11,6 +11,7 @@ import ProtectedRoute from "./components/ProtectedRoute"
 import PWAInstallPrompt from "./components/PWAInstallPrompt"
 import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
+import DownloadResumeAgent from "./components/DownloadResumeAgent"
 
 // Pages
 import Home from "./pages/Home"
@@ -54,6 +55,7 @@ function App() {
         <CartProvider>
           <ExamProvider>
             <SettingsLoader />
+            <DownloadResumeAgent />
             <div className="flex flex-col min-h-screen bg-background text-foreground">
               <Header />
               <main className="flex-1">
