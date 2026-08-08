@@ -9,9 +9,14 @@ import android.os.Build
 import android.os.Bundle
 import android.webkit.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -20,11 +25,32 @@ import java.net.URI
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var store: DownloadStore
+    private lateinit var googleSignInClient: GoogleSignInClient
+    private var googleReply: JavaScriptReplyProxy? = null
+    private var googleRequestId: String = ""
+
+    private val googleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val response = runCatching {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(ApiException::class.java)
+            val token = account.idToken ?: error("Google ID token was not returned")
+            JSONObject().put("ok", true).put("idToken", token)
+        }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "Google sign-in failed") }
+        response.put("requestId", googleRequestId)
+        googleReply?.postMessage(response.toString())
+        googleReply = null
+        googleRequestId = ""
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = DownloadStore(this)
+        val googleOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(getString(R.string.default_web_client_id))
+            .requestEmail()
+            .build()
+        googleSignInClient = GoogleSignIn.getClient(this, googleOptions)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 10)
         }
@@ -49,10 +75,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleMessage(raw: String, reply: JavaScriptReplyProxy) {
-        var requestId = ""
+        val request = runCatching { JSONObject(raw) }.getOrElse {
+            reply.postMessage(JSONObject().put("ok", false).put("error", "Invalid native request").toString())
+            return
+        }
+        val requestId = request.optString("requestId")
+        if (request.optString("action") == "googleSignIn") {
+            googleReply = reply
+            googleRequestId = requestId
+            googleSignInClient.signOut().addOnCompleteListener {
+                googleLauncher.launch(googleSignInClient.signInIntent)
+            }
+            return
+        }
+
         val response = runCatching {
-            val request = JSONObject(raw)
-            requestId = request.optString("requestId")
             when (request.getString("action")) {
                 "start" -> {
                     val id = request.getString("id")
