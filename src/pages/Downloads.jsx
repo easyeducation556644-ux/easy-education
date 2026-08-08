@@ -106,7 +106,7 @@ export default function Downloads() {
           <div className="space-y-4">
             {jobs.map((job) => {
               const progress = Math.max(0, Math.min(100, Number(job.progress) || 0))
-              const canWatch = progress > 0 && job.playbackUrl
+              const canWatch = job.status === "completed" && progress >= 100 && job.playbackUrl
               return (
                 <article key={job.id} className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -148,7 +148,7 @@ export default function Downloads() {
                           className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
                         >
                           <Play className="h-4 w-4" />
-                          {job.status === "completed" ? "দেখুন" : "এখন পর্যন্ত দেখুন"}
+                          ভিডিও দেখুন
                         </button>
                       )}
                       {job.status === "downloading" || job.status === "queued" ? (
