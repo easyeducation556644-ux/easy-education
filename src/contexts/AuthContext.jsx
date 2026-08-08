@@ -4,6 +4,8 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
+  signInWithCredential,
+  GoogleAuthProvider,
   signOut as firebaseSignOut,
   sendPasswordResetEmail as firebaseSendPasswordResetEmail,
 } from "firebase/auth"
@@ -13,6 +15,7 @@ import { getDeviceInfo } from "../lib/deviceTracking"
 import { BanOverlay } from "../components/BanOverlay"
 import { usePresence } from "../hooks/usePresence"
 import { removeOfflineVideosForUser } from "../lib/offlineVideos"
+import { hasNativeDownloader, nativeRequest } from "../lib/nativeAndroid"
 
 const AuthContext = createContext({})
 
@@ -391,7 +394,11 @@ export function AuthProvider({ children }) {
     try {
       loginFlowInProgressRef.current = true
       setLoginFlowComplete(false)
-      const userCredential = await signInWithPopup(auth, googleProvider)
+      const userCredential = hasNativeDownloader()
+        ? await nativeRequest("googleSignIn").then(({ idToken }) =>
+            signInWithCredential(auth, GoogleAuthProvider.credential(idToken)),
+          )
+        : await signInWithPopup(auth, googleProvider)
       const user = userCredential.user
       const userRef = doc(db, "users", user.uid)
 
