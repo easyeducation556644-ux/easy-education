@@ -4,6 +4,63 @@ const FALLBACK_CHUNK_SIZE = 8 * 1024 * 1024
 const HLS_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
 const OFFLINE_HLS_LIBRARY_URL = "/offline-assets/hls.min.js"
 
+
+const nativePending = new Map()
+let nativeRequestSequence = 0
+
+function hasNativeDownloader() {
+  return typeof window !== "undefined" && Boolean(window.EasyEducationNative?.postMessage)
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("DOMContentLoaded", () => {
+    if (!hasNativeDownloader()) return
+    window.EasyEducationNative.onmessage = (event) => {
+      const payload = JSON.parse(event.data || "{}")
+      const pending = nativePending.get(payload.requestId)
+      if (!pending) return
+      nativePending.delete(payload.requestId)
+      if (payload.ok) pending.resolve(payload)
+      else pending.reject(new Error(payload.error || "Native download failed"))
+    }
+  }, { once: true })
+}
+
+function nativeRequest(action, payload = {}) {
+  return new Promise((resolve, reject) => {
+    const requestId = `${Date.now()}-${nativeRequestSequence += 1}`
+    nativePending.set(requestId, { resolve, reject })
+    window.EasyEducationNative.postMessage(JSON.stringify({ requestId, action, ...payload }))
+    setTimeout(() => {
+      if (!nativePending.has(requestId)) return
+      nativePending.delete(requestId)
+      reject(new Error("Native downloader did not respond"))
+    }, 10000)
+  })
+}
+
+function nativeDownloadId(userId, classId) {
+  return `${userId}:${classId}`
+}
+
+async function saveNativeHlsVideo({ user, classId, option, onProgress }) {
+  const id = nativeDownloadId(user.uid, classId)
+  await nativeRequest("start", {
+    id,
+    title: `${option.height}p class video`,
+    playlistUrl: option.playlistUrl,
+    height: option.height,
+  })
+
+  while (true) {
+    const status = await nativeRequest("status", { id })
+    onProgress?.(status.progress || 0)
+    if (status.state === "completed") return status.playbackUrl
+    if (status.state === "failed") throw new Error(status.error || "Native download failed")
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+}
+
 function ensureSupport() {
   if (!("caches" in window) || !("serviceWorker" in navigator)) {
     throw new Error("Offline video is not supported in this browser")
@@ -31,6 +88,10 @@ function getHlsSegmentUrl(userId, classId, index) {
 }
 
 export async function getSavedOfflineVideoUrl(userId, classId) {
+  if (hasNativeDownloader()) {
+    const native = await nativeRequest("status", { id: nativeDownloadId(userId, classId) }).catch(() => null)
+    if (native?.state === "completed") return native.playbackUrl
+  }
   if (!("caches" in window)) return null
   const cache = await caches.open(OFFLINE_CACHE)
   const manifest = await readManifest(cache, userId, classId)
@@ -47,6 +108,10 @@ async function readManifest(cache, userId, classId) {
 }
 
 export async function hasOfflineVideo(userId, classId) {
+  if (hasNativeDownloader()) {
+    const native = await nativeRequest("status", { id: nativeDownloadId(userId, classId) }).catch(() => null)
+    if (native?.state === "completed") return true
+  }
   if (!("caches" in window)) return false
   const cache = await caches.open(OFFLINE_CACHE)
   const manifest = await readManifest(cache, userId, classId)
@@ -118,6 +183,10 @@ async function cacheHlsLibrary(cache) {
 }
 
 async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
+  if (hasNativeDownloader()) {
+    return saveNativeHlsVideo({ user, classId, option, onProgress })
+  }
+
   const playlistResponse = await fetch(option.playlistUrl, { signal })
   if (!playlistResponse.ok) throw new Error("Rumble HLS playlist download failed")
   const playlistText = await playlistResponse.text()
