@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "457903642621",
+    "project_id": "easy-education-real",
+    "storage_bucket": "easy-education-real.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:457903642621:android:cb53aaeed1f130c02ceb94",
+        "android_client_info": {
+          "package_name": "com.easyeducation.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "457903642621-21mlnng1jh273nt232q2ukt5654ii8b4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.easyeducation.app",
+            "certificate_hash": "7d5399d8adf39b3d4a731709f22051fe5cf9b9b4"
+          }
+        },
+        {
+          "client_id": "457903642621-itmroa1k594guljd821m646e3i26a530.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtn0HapkdTZkM1Cn8Xjdv9ajpCZIn8Nk0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "457903642621-itmroa1k594guljd821m646e3i26a530.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
