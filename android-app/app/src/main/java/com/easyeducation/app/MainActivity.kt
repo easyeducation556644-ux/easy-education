@@ -95,8 +95,18 @@ class MainActivity : AppCompatActivity() {
                     val id = request.getString("id")
                     val playlistUrl = request.getString("playlistUrl")
                     require(isAllowedMediaUrl(playlistUrl)) { "Unsupported media host" }
-                    store.save(DownloadTask(id, request.optString("title", "Class video"),
-                        playlistUrl, request.optInt("height", 360)))
+                    val existing = store.get(id)
+                    store.save(DownloadTask(
+                        id = id,
+                        title = request.optString("title", "Class video"),
+                        courseTitle = request.optString("courseTitle"),
+                        playlistUrl = playlistUrl,
+                        height = request.optInt("height", 360),
+                        downloadedBytes = existing?.downloadedBytes ?: 0,
+                        totalBytes = request.optLong("totalBytes"),
+                        completed = existing?.completed ?: 0,
+                        total = existing?.total ?: 0,
+                    ))
                     HlsDownloadService.start(this, id)
                     JSONObject().put("ok", true).put("id", id)
                 }
@@ -104,10 +114,25 @@ class MainActivity : AppCompatActivity() {
                     val id = request.getString("id")
                     val task = store.get(id) ?: error("Download not found")
                     val progress = if (task.total > 0) task.completed * 100 / task.total else 0
+                    val byteProgress = if (task.totalBytes > 0)
+                        task.downloadedBytes.toDouble() * 100.0 / task.totalBytes.toDouble()
+                    else progress.toDouble()
                     JSONObject().put("ok", true).put("id", id).put("state", task.state)
-                        .put("progress", progress).put("completed", task.completed).put("total", task.total)
+                        .put("progress", byteProgress).put("completed", task.completed).put("total", task.total)
+                        .put("downloadedBytes", task.downloadedBytes).put("totalBytes", task.totalBytes)
+                        .put("height", task.height).put("title", task.title).put("courseTitle", task.courseTitle)
                         .put("error", task.error)
                         .put("playbackUrl", "https://native.easyeducation.local/${Uri.encode(id)}/playlist.m3u8")
+                }
+                "pause" -> {
+                    val id = request.getString("id")
+                    HlsDownloadService.pause(this, id)
+                    JSONObject().put("ok", true).put("id", id)
+                }
+                "remove" -> {
+                    val id = request.getString("id")
+                    HlsDownloadService.remove(this, id)
+                    JSONObject().put("ok", true).put("id", id)
                 }
                 else -> error("Unknown native action")
             }
@@ -140,7 +165,12 @@ class MainActivity : AppCompatActivity() {
             val file = File(filesDir, "offline/${HlsDownloadService.safe(parts[0])}/${parts.drop(1).joinToString("/")}")
             if (!file.exists()) return WebResourceResponse("text/plain", "utf-8", 404, "Not found", emptyMap(), null)
             val mime = if (file.extension == "m3u8") "application/vnd.apple.mpegurl" else "video/mp2t"
-            return WebResourceResponse(mime, null, FileInputStream(file))
+            val headers = mapOf(
+                "Access-Control-Allow-Origin" to APP_ORIGIN,
+                "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
+                "Cache-Control" to "no-store",
+            )
+            return WebResourceResponse(mime, null, 200, "OK", headers, FileInputStream(file))
         }
     }
 

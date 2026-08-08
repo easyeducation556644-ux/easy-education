@@ -63,12 +63,20 @@ export async function startOfflineDownload({ user, job }) {
         classId: job.classId,
         videoUrl: job.videoUrl,
         height: job.height,
+        title: job.title,
+        courseTitle: job.courseTitle,
+        totalBytes: job.totalBytes,
         signal: controller.signal,
-        onProgress: (progress) => {
+        onProgress: (progress, nativeStatus) => {
+          const totalBytes = Number(nativeStatus?.totalBytes || job.totalBytes) || 0
           updateJob(id, {
             status: "downloading",
-            progress,
-            downloadedBytes: Math.round((Number(job.totalBytes) || 0) * progress / 100),
+            progress: Math.round(Number(progress) * 10) / 10,
+            downloadedBytes: Number(nativeStatus?.downloadedBytes)
+              || Math.round(totalBytes * progress / 100),
+            totalBytes,
+            height: Number(nativeStatus?.height || job.height),
+            playbackUrl: nativeStatus?.playbackUrl || job.playbackUrl,
           })
         },
       })

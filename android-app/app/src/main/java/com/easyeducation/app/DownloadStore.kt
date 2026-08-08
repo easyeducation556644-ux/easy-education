@@ -6,8 +6,11 @@ import org.json.JSONObject
 data class DownloadTask(
     val id: String,
     val title: String,
+    val courseTitle: String,
     val playlistUrl: String,
     val height: Int,
+    val downloadedBytes: Long = 0,
+    val totalBytes: Long = 0,
     val completed: Int = 0,
     val total: Int = 0,
     val state: String = "queued",
@@ -19,21 +22,33 @@ class DownloadStore(context: Context) {
 
     fun save(task: DownloadTask) {
         val json = JSONObject()
-            .put("id", task.id).put("title", task.title)
+            .put("id", task.id).put("title", task.title).put("courseTitle", task.courseTitle)
             .put("playlistUrl", task.playlistUrl).put("height", task.height)
+            .put("downloadedBytes", task.downloadedBytes).put("totalBytes", task.totalBytes)
             .put("completed", task.completed).put("total", task.total)
             .put("state", task.state).put("error", task.error)
         prefs.edit().putString(task.id, json.toString()).apply()
     }
 
     fun get(id: String): DownloadTask? = prefs.getString(id, null)?.let(::decode)
+    fun remove(id: String) { prefs.edit().remove(id).apply() }
     fun all(): List<DownloadTask> = prefs.all.values.mapNotNull { (it as? String)?.let(::decode) }
     fun pending(): List<DownloadTask> = all().filter { it.state in setOf("queued", "downloading") }
 
     private fun decode(raw: String): DownloadTask? = runCatching {
         val j = JSONObject(raw)
-        DownloadTask(j.getString("id"), j.getString("title"), j.getString("playlistUrl"),
-            j.optInt("height", 360), j.optInt("completed"), j.optInt("total"),
-            j.optString("state", "queued"), j.optString("error").ifBlank { null })
+        DownloadTask(
+            id = j.getString("id"),
+            title = j.optString("title", "Class video"),
+            courseTitle = j.optString("courseTitle"),
+            playlistUrl = j.getString("playlistUrl"),
+            height = j.optInt("height", 360),
+            downloadedBytes = j.optLong("downloadedBytes"),
+            totalBytes = j.optLong("totalBytes"),
+            completed = j.optInt("completed"),
+            total = j.optInt("total"),
+            state = j.optString("state", "queued"),
+            error = j.optString("error").ifBlank { null },
+        )
     }.getOrNull()
 }
