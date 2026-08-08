@@ -46,8 +46,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleMessage(raw: String, reply: JavaScriptReplyProxy) {
+        var requestId = ""
         val response = runCatching {
             val request = JSONObject(raw)
+            requestId = request.optString("requestId")
             when (request.getString("action")) {
                 "start" -> {
                     val id = request.getString("id")
@@ -70,6 +72,7 @@ class MainActivity : AppCompatActivity() {
                 else -> error("Unknown native action")
             }
         }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "Native error") }
+        response.put("requestId", requestId)
         reply.postMessage(response.toString())
     }
 
