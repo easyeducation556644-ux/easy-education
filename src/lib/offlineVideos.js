@@ -117,6 +117,116 @@ async function cacheHlsLibrary(cache) {
   await cache.put(OFFLINE_HLS_LIBRARY_URL, response)
 }
 
+function getBackgroundFetchId(userId, classId, height) {
+  return `easy-education-${userId}-${classId}-${height}`
+    .replace(/[^a-zA-Z0-9_-]/g, "-")
+}
+
+function getBackgroundConfigUrl(backgroundId) {
+  return `/offline-background/${encodeURIComponent(backgroundId)}/config`
+}
+
+async function waitForBackgroundHls({
+  registration,
+  cache,
+  userId,
+  classId,
+  totalBytes,
+  signal,
+  onProgress,
+}) {
+  while (true) {
+    if (signal?.aborted) {
+      await registration.abort().catch(() => false)
+      throw new DOMException("Download paused", "AbortError")
+    }
+
+    const downloaded = Number(registration.downloaded) || 0
+    onProgress?.(Math.min(99, Math.round(downloaded / totalBytes * 100)))
+
+    if (registration.result === "failure") {
+      throw new Error(
+        `Background download failed: ${registration.failureReason || "unknown reason"}`,
+      )
+    }
+    if (registration.result === "success") {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const manifest = await readManifest(cache, userId, classId)
+        if (manifest?.status === "completed") {
+          onProgress?.(100)
+          return getHlsPlaylistUrl(userId, classId)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+      throw new Error("Background download finished but offline files are still processing")
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+}
+
+async function saveHlsWithBackgroundFetch({
+  user,
+  classId,
+  option,
+  lines,
+  segmentLineIndexes,
+  segmentUrls,
+  segmentLengths,
+  totalBytes,
+  cache,
+  onProgress,
+  signal,
+}) {
+  const serviceWorkerRegistration = await navigator.serviceWorker.ready
+  if (!serviceWorkerRegistration.backgroundFetch) return null
+
+  const backgroundId = getBackgroundFetchId(user.uid, classId, option.height)
+  await cache.put(
+    getBackgroundConfigUrl(backgroundId),
+    new Response(JSON.stringify({
+      version: 1,
+      backgroundId,
+      userId: user.uid,
+      classId,
+      height: option.height,
+      totalBytes,
+      lines,
+      segmentLineIndexes,
+      segmentUrls,
+      segmentLengths,
+      savedAt: Date.now(),
+    }), { headers: { "Content-Type": "application/json" } }),
+  )
+
+  let registration = await serviceWorkerRegistration.backgroundFetch.get(backgroundId)
+  if (!registration) {
+    registration = await serviceWorkerRegistration.backgroundFetch.fetch(
+      backgroundId,
+      segmentUrls,
+      {
+        title: `${option.height}p class video`,
+        icons: [{
+          src: "/icon-192x192.png",
+          sizes: "192x192",
+          type: "image/png",
+        }],
+        downloadTotal: totalBytes,
+      },
+    )
+  }
+
+  return waitForBackgroundHls({
+    registration,
+    cache,
+    userId: user.uid,
+    classId,
+    totalBytes,
+    signal,
+    onProgress,
+  })
+}
+
 async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
   const playlistResponse = await fetch(option.playlistUrl, { signal })
   if (!playlistResponse.ok) throw new Error("Rumble HLS playlist download failed")
@@ -137,6 +247,21 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
   await ensureStorageSpace(totalBytes)
   const cache = await caches.open(OFFLINE_CACHE)
   await cacheHlsLibrary(cache)
+
+  const backgroundResult = await saveHlsWithBackgroundFetch({
+    user,
+    classId,
+    option,
+    lines,
+    segmentLineIndexes,
+    segmentUrls,
+    segmentLengths,
+    totalBytes,
+    cache,
+    onProgress,
+    signal,
+  })
+  if (backgroundResult) return backgroundResult
 
   const writeCheckpoint = async (completedSegments, status) => {
     if (completedSegments <= 0) return
