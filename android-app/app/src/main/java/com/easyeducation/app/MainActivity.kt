@@ -11,6 +11,7 @@ import android.webkit.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -34,10 +35,12 @@ class MainActivity : AppCompatActivity() {
             webChromeClient = WebChromeClient()
             webViewClient = LockedWebClient()
         }
-        WebViewCompat.addWebMessageListener(web, "EasyEducationNative", setOf(APP_ORIGIN)) {
-                _, message, sourceOrigin, isMainFrame, replyProxy ->
-            if (isMainFrame && sourceOrigin.toString() == APP_ORIGIN) {
-                message.data?.let { handleMessage(it, replyProxy) }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(web, "EasyEducationNative", setOf(APP_ORIGIN)) {
+                    _, message, sourceOrigin, isMainFrame, replyProxy ->
+                if (isMainFrame && sourceOrigin.toString().removeSuffix("/") == APP_ORIGIN) {
+                    message.data?.let { handleMessage(it, replyProxy) }
+                }
             }
         }
         setContentView(web)
