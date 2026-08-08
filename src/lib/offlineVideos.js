@@ -7,6 +7,30 @@ const HLS_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
 const OFFLINE_HLS_LIBRARY_URL = "/offline-assets/hls.min.js"
 
 
+function nativeDownloadId(userId, classId) {
+  return `${userId}:${classId}`
+}
+
+async function saveNativeHlsVideo({ user, classId, option, onProgress }) {
+  const id = nativeDownloadId(user.uid, classId)
+  await nativeRequest("start", {
+    id,
+    title: `${option.height}p class video`,
+    playlistUrl: option.playlistUrl,
+    height: option.height,
+  })
+
+  while (true) {
+    const status = await nativeRequest("status", { id })
+    onProgress?.(status.progress || 0)
+    if (status.state === "completed") return status.playbackUrl
+    if (status.state === "failed") {
+      throw new Error(status.error || "Native download failed")
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+}
+
 function ensureSupport() {
   if (!("caches" in window) || !("serviceWorker" in navigator)) {
     throw new Error("Offline video is not supported in this browser")
