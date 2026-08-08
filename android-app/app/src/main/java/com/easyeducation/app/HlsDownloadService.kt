@@ -105,8 +105,10 @@ class HlsDownloadService : Service() {
         private const val EXTRA_ID = "download_id"
         fun start(context: Context, id: String) = ContextCompat.startForegroundService(context,
             Intent(context, HlsDownloadService::class.java).putExtra(EXTRA_ID, id))
-        fun resume(context: Context) = ContextCompat.startForegroundService(context,
-            Intent(context, HlsDownloadService::class.java))
+        fun resume(context: Context) {
+            if (DownloadStore(context).pending().isEmpty()) return
+            ContextCompat.startForegroundService(context, Intent(context, HlsDownloadService::class.java))
+        }
         fun safe(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
             .joinToString("") { "%02x".format(it) }.take(32)
     }
