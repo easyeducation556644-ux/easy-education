@@ -79,7 +79,9 @@ class MainActivity : AppCompatActivity() {
     private fun isAllowedMediaUrl(value: String): Boolean = runCatching {
         val host = URI(value).host?.lowercase() ?: return false
         URI(value).scheme == "https" && (host == "rumble.com" || host.endsWith(".rumble.com") ||
-            host == "rumble.cloud" || host.endsWith(".rumble.cloud"))
+            host == "rumble.cloud" || host.endsWith(".rumble.cloud") ||
+            host == "rmbl.ws" || host.endsWith(".rmbl.ws") ||
+            host == "1a-1791.com" || host.endsWith(".1a-1791.com"))
     }.getOrDefault(false)
 
     private inner class LockedWebClient : WebViewClient() {
