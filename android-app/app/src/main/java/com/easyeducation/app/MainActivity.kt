@@ -36,7 +36,9 @@ class MainActivity : AppCompatActivity() {
         }
         WebViewCompat.addWebMessageListener(web, "EasyEducationNative", setOf(APP_ORIGIN)) {
                 _, message, sourceOrigin, isMainFrame, replyProxy ->
-            if (isMainFrame && sourceOrigin.toString() == APP_ORIGIN) handleMessage(message.data, replyProxy)
+            if (isMainFrame && sourceOrigin.toString() == APP_ORIGIN) {
+                message.data?.let { handleMessage(it, replyProxy) }
+            }
         }
         setContentView(web)
         web.loadUrl(APP_ORIGIN)
