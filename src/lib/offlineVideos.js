@@ -247,6 +247,11 @@ async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
   await ensureStorageSpace(totalBytes)
   const cache = await caches.open(OFFLINE_CACHE)
   await cacheHlsLibrary(cache)
+  const existingManifest = await readManifest(cache, user.uid, classId)
+  if (existingManifest?.status === "completed") {
+    onProgress?.(100)
+    return getHlsPlaylistUrl(user.uid, classId)
+  }
 
   const backgroundResult = await saveHlsWithBackgroundFetch({
     user,
