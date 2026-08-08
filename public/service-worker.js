@@ -1,5 +1,5 @@
-const CACHE_VERSION = 'v10';
-const APP_VERSION = 'v10.0';
+const CACHE_VERSION = 'v11';
+const APP_VERSION = 'v11.0';
 const CACHE_NAME = `easy-education-${CACHE_VERSION}`;
 const OFFLINE_VIDEO_CACHE = 'easy-education-offline-v2';
 const OFFLINE_VIDEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -242,6 +242,112 @@ async function serveOfflineVideo(request, url) {
   if (partial) headers.set('Content-Range', `bytes ${start}-${end}/${total}`);
   return new Response(body, { status: partial ? 206 : 200, headers });
 }
+
+function backgroundConfigUrl(backgroundId) {
+  return `/offline-background/${encodeURIComponent(backgroundId)}/config`;
+}
+
+function offlineVideoBase(userId, classId) {
+  return `/offline-media/${encodeURIComponent(userId)}/${encodeURIComponent(classId)}`;
+}
+
+async function notifyDownloadClients(message) {
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  windows.forEach((client) => client.postMessage(message));
+}
+
+self.addEventListener('backgroundfetchsuccess', (event) => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(OFFLINE_VIDEO_CACHE);
+    const configResponse = await cache.match(backgroundConfigUrl(event.registration.id));
+    const config = await configResponse?.json().catch(() => null);
+    if (!config) throw new Error('Background download config was not found');
+
+    const records = await event.registration.matchAll();
+    const indexes = new Map(config.segmentUrls.map((url, index) => [url, index]));
+    const basePath = offlineVideoBase(config.userId, config.classId);
+
+    for (const record of records) {
+      const response = await record.responseReady;
+      if (!response.ok) throw new Error(`Background segment returned HTTP ${response.status}`);
+      const index = indexes.get(record.request.url);
+      if (!Number.isInteger(index)) continue;
+      const bytes = await response.arrayBuffer();
+      await cache.put(
+        `${basePath}/segments/${index}.ts`,
+        new Response(bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': response.headers.get('content-type') || 'video/mp2t',
+            'Content-Length': String(bytes.byteLength)
+          }
+        })
+      );
+    }
+
+    let segmentIndex = 0;
+    const playlist = config.lines.map((line) => {
+      if (!line || line.startsWith('#')) return line;
+      const localUrl = `${basePath}/segments/${segmentIndex}.ts`;
+      segmentIndex += 1;
+      return localUrl;
+    }).join('\n');
+
+    const savedAt = Date.now();
+    await Promise.all([
+      cache.put(
+        `${basePath}/playlist.m3u8`,
+        new Response(playlist, {
+          headers: { 'Content-Type': 'application/vnd.apple.mpegurl' }
+        })
+      ),
+      cache.put(
+        `${basePath}/manifest`,
+        new Response(JSON.stringify({
+          version: 5,
+          kind: 'hls',
+          status: 'completed',
+          progress: 100,
+          savedAt,
+          userId: config.userId,
+          classId: config.classId,
+          height: config.height,
+          contentLength: config.totalBytes,
+          contentType: 'application/vnd.apple.mpegurl',
+          totalChunks: config.segmentUrls.length,
+          completedChunks: config.segmentUrls.length
+        }), {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Offline-Saved-At': String(savedAt)
+          }
+        })
+      )
+    ]);
+    await cache.delete(backgroundConfigUrl(event.registration.id));
+    await notifyDownloadClients({
+      type: 'BACKGROUND_DOWNLOAD_COMPLETE',
+      userId: config.userId,
+      classId: config.classId,
+      playbackUrl: `${basePath}/playlist.m3u8`
+    });
+  })());
+});
+
+self.addEventListener('backgroundfetchfail', (event) => {
+  event.waitUntil(notifyDownloadClients({
+    type: 'BACKGROUND_DOWNLOAD_FAILED',
+    backgroundId: event.registration.id,
+    reason: event.registration.failureReason || 'unknown'
+  }));
+});
+
+self.addEventListener('backgroundfetchabort', (event) => {
+  event.waitUntil(notifyDownloadClients({
+    type: 'BACKGROUND_DOWNLOAD_ABORTED',
+    backgroundId: event.registration.id
+  }));
+});
 
 self.addEventListener('activate', (event) => {
   const cacheWhitelist = [CACHE_NAME];
