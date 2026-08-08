@@ -11,19 +11,26 @@ function nativeDownloadId(userId, classId) {
   return `${userId}:${classId}`
 }
 
-async function saveNativeHlsVideo({ user, classId, option, onProgress }) {
+async function saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal }) {
   const id = nativeDownloadId(user.uid, classId)
   await nativeRequest("start", {
     id,
-    title: `${option.height}p class video`,
+    title: title || "Class video",
+    courseTitle: courseTitle || "",
     playlistUrl: option.playlistUrl,
     height: option.height,
+    totalBytes: Number(totalBytes || option.contentLength) || 0,
   })
 
   while (true) {
+    if (signal?.aborted) {
+      await nativeRequest("pause", { id }).catch(() => null)
+      throw new DOMException("Download paused", "AbortError")
+    }
     const status = await nativeRequest("status", { id })
-    onProgress?.(status.progress || 0)
+    onProgress?.(status.progress || 0, status)
     if (status.state === "completed") return status.playbackUrl
+    if (status.state === "paused") throw new DOMException("Download paused", "AbortError")
     if (status.state === "failed") {
       throw new Error(status.error || "Native download failed")
     }
@@ -94,6 +101,9 @@ export async function hasOfflineVideo(userId, classId) {
 }
 
 export async function removeOfflineVideo(userId, classId) {
+  if (hasNativeDownloader()) {
+    await nativeRequest("remove", { id: nativeDownloadId(userId, classId) }).catch(() => null)
+  }
   if (!("caches" in window)) return false
   const cache = await caches.open(OFFLINE_CACHE)
   const prefix = `${window.location.origin}${getOfflineVideoUrl(userId, classId)}/`
@@ -152,9 +162,9 @@ async function cacheHlsLibrary(cache) {
   await cache.put(OFFLINE_HLS_LIBRARY_URL, response)
 }
 
-async function saveHlsVideo({ user, classId, option, onProgress, signal }) {
+async function saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal }) {
   if (hasNativeDownloader()) {
-    return saveNativeHlsVideo({ user, classId, option, onProgress })
+    return saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal })
   }
 
   const playlistResponse = await fetch(option.playlistUrl, { signal })
@@ -269,6 +279,9 @@ export async function saveOfflineVideo({
   classId,
   videoUrl,
   height = 360,
+  title,
+  courseTitle,
+  totalBytes,
   onProgress,
   signal,
 }) {
@@ -279,7 +292,7 @@ export async function saveOfflineVideo({
     || metadata.options?.[0]
   if (!option?.contentLength) throw new Error("Selected quality size is unavailable")
   if (option.kind === "hls" && option.playlistUrl) {
-    return saveHlsVideo({ user, classId, option, onProgress, signal })
+    return saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal })
   }
 
   const totalBytes = Number(option.contentLength)
