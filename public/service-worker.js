@@ -244,19 +244,23 @@ async function serveOfflineVideo(request, url) {
 }
 
 self.addEventListener('activate', (event) => {
-  const cacheWhitelist = [CACHE_NAME];
-  event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (cacheWhitelist.indexOf(cacheName) === -1 && cacheName !== OFFLINE_VIDEO_CACHE) {
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    })
-  );
-  self.clients.claim();
+  event.waitUntil((async () => {
+    if (self.registration.backgroundFetch) {
+      const ids = await self.registration.backgroundFetch.getIds().catch(() => []);
+      await Promise.all(ids.map(async (id) => {
+        const registration = await self.registration.backgroundFetch.get(id).catch(() => null);
+        return registration?.abort().catch(() => false);
+      }));
+    }
+
+    const cacheNames = await caches.keys();
+    await Promise.all(cacheNames.map((cacheName) => {
+      if (cacheName !== CACHE_NAME && cacheName !== OFFLINE_VIDEO_CACHE) {
+        return caches.delete(cacheName);
+      }
+    }));
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener('message', (event) => {
