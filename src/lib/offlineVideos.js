@@ -162,9 +162,9 @@ async function cacheHlsLibrary(cache) {
   await cache.put(OFFLINE_HLS_LIBRARY_URL, response)
 }
 
-async function saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal }) {
+async function saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal }) {
   if (hasNativeDownloader()) {
-    return saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal })
+    return saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal })
   }
 
   const playlistResponse = await fetch(option.playlistUrl, { signal })
@@ -281,7 +281,7 @@ export async function saveOfflineVideo({
   height = 360,
   title,
   courseTitle,
-  totalBytes,
+  totalBytes: requestedTotalBytes,
   onProgress,
   signal,
 }) {
@@ -292,7 +292,7 @@ export async function saveOfflineVideo({
     || metadata.options?.[0]
   if (!option?.contentLength) throw new Error("Selected quality size is unavailable")
   if (option.kind === "hls" && option.playlistUrl) {
-    return saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal })
+    return saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal })
   }
 
   const totalBytes = Number(option.contentLength)
