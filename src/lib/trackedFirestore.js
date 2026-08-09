@@ -180,8 +180,12 @@ export async function flushUsage() {
   return flushInFlight
 }
 
+function isServerReadSnapshot(snapshot) {
+  return !snapshot?.metadata?.fromCache && !snapshot?.metadata?.hasPendingWrites
+}
+
 function countQuerySnapshot(snapshot, operation, source, state) {
-  if (snapshot?.metadata?.fromCache) return
+  if (!isServerReadSnapshot(snapshot)) return
 
   if (!state.serverInitialRecorded) {
     state.serverInitialRecorded = true
@@ -211,7 +215,7 @@ function wrapObserver(observer, operation, source, state) {
 
 export async function getDoc(ref) {
   const snapshot = await firestore.getDoc(ref)
-  if (!snapshot?.metadata?.fromCache) queueRead({ operation: "getDoc", source: describeSource(ref), reads: 1 })
+  if (isServerReadSnapshot(snapshot)) queueRead({ operation: "getDoc", source: describeSource(ref), reads: 1 })
   return snapshot
 }
 
@@ -223,7 +227,7 @@ export async function getDocFromServer(ref) {
 
 export async function getDocs(ref) {
   const snapshot = await firestore.getDocs(ref)
-  if (!snapshot?.metadata?.fromCache) {
+  if (isServerReadSnapshot(snapshot)) {
     queueRead({ operation: "getDocs", source: describeSource(ref), reads: Math.max(1, snapshot.size) })
   }
   return snapshot
@@ -289,7 +293,7 @@ export async function getCountFromServer(ref) {
 
 if (typeof window !== "undefined" && !window.__eeFirestoreReadTrackerStarted) {
   window.__eeFirestoreReadTrackerStarted = true
-  window.setInterval(() => flushUsage().catch(() => {}), 30000)
+  window.setInterval(() => flushUsage().catch(() => {}), 60000)
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) flushUsage().catch(() => {})
   })
