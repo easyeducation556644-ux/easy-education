@@ -7,17 +7,18 @@ const SHARD_COUNT = 32
 const COLLECTION = 'firestoreReadUsageDaily'
 
 function ensureAdminApp() {
-  if (getApps().length === 0) {
+  let app = getApps().find((item) => item.name === 'read-usage')
+  if (!app) {
     const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
       ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
       : null
 
-    initializeApp({
+    app = initializeApp({
       credential: serviceAccount ? cert(serviceAccount) : applicationDefault(),
       projectId: serviceAccount?.project_id || 'easy-education-real',
-    })
+    }, 'read-usage')
   }
-  return { db: getFirestore(), adminAuth: getAuth() }
+  return { db: getFirestore(app), adminAuth: getAuth(app) }
 }
 
 function hash(value = '') {
@@ -182,7 +183,9 @@ async function requireAdmin(req, adminAuth, db) {
   const decoded = await decodeOptionalUser(req, adminAuth)
   if (!decoded?.uid) return null
   const userDoc = await db.collection('users').doc(decoded.uid).get()
-  if (!userDoc.exists || userDoc.data()?.role !== 'admin') return null
+  if (!userDoc.exists) return null
+  const profile = userDoc.data()
+  if (profile?.role !== 'admin' || profile?.adminAccess?.mode === 'limited') return null
   return decoded
 }
 
