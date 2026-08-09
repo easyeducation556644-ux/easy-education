@@ -7,8 +7,20 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+      <div className="min-h-[45vh] px-4 py-8">
+        <div className="container mx-auto max-w-5xl animate-pulse space-y-4">
+          <div className="h-8 w-48 rounded-lg bg-muted" />
+          <div className="h-4 w-72 max-w-full rounded bg-muted" />
+          <div className="grid grid-cols-1 gap-4 pt-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((item) => (
+              <div key={item} className="space-y-3 rounded-xl border border-border bg-card p-4">
+                <div className="h-28 rounded-lg bg-muted" />
+                <div className="h-4 w-3/4 rounded bg-muted" />
+                <div className="h-3 w-1/2 rounded bg-muted" />
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     )
   }
