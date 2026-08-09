@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      EE_KEYSTORE_PATH: ${{ runner.temp }}/easy-education-release.jks
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
       EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
       EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
       EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
