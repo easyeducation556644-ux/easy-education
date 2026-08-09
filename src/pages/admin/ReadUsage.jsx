@@ -104,11 +104,6 @@ export default function ReadUsage() {
     fetchUsage()
   }, [fetchUsage])
 
-  useEffect(() => {
-    const timer = window.setInterval(fetchUsage, 60000)
-    return () => window.clearInterval(timer)
-  }, [fetchUsage])
-
   const queryRows = useMemo(() => {
     const rows = data?.sources || []
     const term = search.trim().toLowerCase()
@@ -298,7 +293,7 @@ export default function ReadUsage() {
           <h3 className="font-semibold">Hourly read activity</h3>
           <p className="text-xs text-muted-foreground">Bangladesh time; usage-day boundary remains 2:00 PM</p>
         </div>
-        <div className="grid grid-cols-12 gap-1 sm:grid-cols-24">
+        <div className="grid gap-1" style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}>
           {(data?.hours || []).map((item) => {
             const height = Math.max(4, Math.round((Number(item.reads || 0) / maxHourlyReads) * 120))
             return (
