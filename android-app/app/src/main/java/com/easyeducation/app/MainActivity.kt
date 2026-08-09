@@ -151,6 +151,10 @@ class MainActivity : AppCompatActivity() {
 
     private inner class LockedWebClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            // Embedded players (YouTube/Rumble/Drive/etc.) navigate inside iframes/subframes.
+            // They must stay inside the WebView. Only top-level external navigation is opened outside.
+            if (!request.isForMainFrame) return false
+
             val uri = request.url
             if (uri.scheme == "https" && uri.host == APP_HOST) return false
             startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -169,6 +173,7 @@ class MainActivity : AppCompatActivity() {
                 "Access-Control-Allow-Origin" to APP_ORIGIN,
                 "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
                 "Cache-Control" to "no-store",
+                "Content-Length" to file.length().toString(),
             )
             return WebResourceResponse(mime, null, 200, "OK", headers, FileInputStream(file))
         }
