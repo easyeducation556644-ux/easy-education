@@ -30,6 +30,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
 import { db } from "../../lib/firebase"
 import AdminOverview from "./AdminOverview"
+import ReadUsage from "./ReadUsage"
 import ManageUsers from "./ManageUsers"
 import ManageCourses from "./ManageCourses"
 import ManageClasses from "./ManageClasses"
@@ -107,6 +108,7 @@ export default function AdminDashboard() {
 
   const navItems = [
     { name: "Overview", path: "/admin", icon: LayoutDashboard, fullOnly: true },
+    { name: "Read Usage", path: "/admin/read-usage", icon: BarChart3, fullOnly: true },
     { name: "Administration", path: "/admin/administration", icon: ShieldCheck, fullOnly: true },
     { name: "Security Events", path: "/admin/security-events", icon: ShieldAlert, fullOnly: true },
     { name: "Notifications", path: "/admin/notifications", icon: Bell, fullOnly: true },
@@ -205,6 +207,7 @@ export default function AdminDashboard() {
           <div className="p-3 sm:p-4 lg:p-4">
             <Routes>
               <Route index element={fullAdmin ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
+              <Route path="read-usage" element={<AdminRoute fullOnly><ReadUsage /></AdminRoute>} />
               <Route path="administration" element={<AdminRoute fullOnly><ManageAdministration /></AdminRoute>} />
               <Route path="security-events" element={<AdminRoute fullOnly><ManageSecurityEvents /></AdminRoute>} />
               <Route path="notifications" element={<AdminRoute fullOnly><Notifications /></AdminRoute>} />

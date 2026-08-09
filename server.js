@@ -11,6 +11,7 @@ import dynamicManifestHandler from './api/dynamic-manifest.js';
 import versionHandler from './api/version.js';
 import securityEventsHandler from './api/security-events.js';
 import offlineVideoHandler from './api/offline-video.js';
+import firestoreReadUsageHandler from './api/firestore-read-usage.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,6 +41,10 @@ app.get('/api/version', (req, res) => {
 
 app.all('/api/security-events', (req, res) => {
   securityEventsHandler(req, res);
+});
+
+app.all('/api/firestore-read-usage', (req, res) => {
+  firestoreReadUsageHandler(req, res);
 });
 
 app.get('/api/offline-video', (req, res) => {
