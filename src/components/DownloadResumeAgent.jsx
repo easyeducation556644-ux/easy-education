@@ -6,6 +6,9 @@ import { hasNativeDownloader } from "../lib/nativeAndroid"
 
 const WEB_DOWNLOAD_STYLE_ID = "easy-education-web-download-guard"
 const WEB_DOWNLOAD_NOTE_CLASS = "easy-education-app-download-note"
+const OFFLINE_VIDEO_CACHE = "easy-education-offline-v2"
+const OFFLINE_HLS_RUNTIME = "/offline-assets/hls.min.js"
+const NATIVE_HLS_BOOTSTRAP = "/native-assets/hls.min.js"
 
 export default function DownloadResumeAgent() {
   const { currentUser } = useAuth()
@@ -17,6 +20,29 @@ export default function DownloadResumeAgent() {
   useEffect(() => {
     if (nativeApp && currentUser?.uid) resumePendingDownloads(currentUser)
   }, [nativeApp, currentUser?.uid])
+
+  useEffect(() => {
+    if (!nativeApp || !("caches" in window)) return
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const cache = await caches.open(OFFLINE_VIDEO_CACHE)
+        const existing = await cache.match(OFFLINE_HLS_RUNTIME)
+        if (existing || cancelled) return
+
+        const response = await fetch(NATIVE_HLS_BOOTSTRAP, { cache: "no-store" })
+        if (!response.ok) throw new Error(`HLS runtime returned HTTP ${response.status}`)
+        if (!cancelled) await cache.put(OFFLINE_HLS_RUNTIME, response.clone())
+      } catch (error) {
+        console.warn("Unable to prepare offline HLS playback:", error)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [nativeApp])
 
   useEffect(() => {
     document.documentElement.dataset.easyEducationNativeApp = nativeApp ? "true" : "false"
