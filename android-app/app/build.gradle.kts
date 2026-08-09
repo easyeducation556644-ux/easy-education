@@ -12,13 +12,14 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
     }
 
     buildFeatures { buildConfig = true }
     signingConfigs {
         create("release") {
+            // CI restores the configured release keystore before assembleRelease.
             val keystorePath = System.getenv("EE_KEYSTORE_PATH")
             if (!keystorePath.isNullOrBlank()) {
                 storeFile = file(keystorePath)
