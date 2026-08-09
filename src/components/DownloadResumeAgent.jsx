@@ -44,13 +44,19 @@ export default function DownloadResumeAgent() {
       document.head.appendChild(style)
     }
 
-    const syncWebDownloadNote = () => {
+    const removeNotes = () => {
       document.querySelectorAll(`.${WEB_DOWNLOAD_NOTE_CLASS}`).forEach((node) => node.remove())
-      if (nativeApp || !/\/course\/[^/]+\/watch(?:\/|$)/.test(location.pathname)) return
+    }
+
+    const syncWebDownloadNote = () => {
+      if (nativeApp || !/\/course\/[^/]+\/watch(?:\/|$)/.test(location.pathname)) {
+        removeNotes()
+        return
+      }
 
       document.querySelectorAll(".aspect-video").forEach((videoBox) => {
-        const parent = videoBox.parentElement
-        if (!parent || parent.querySelector(`.${WEB_DOWNLOAD_NOTE_CLASS}`)) return
+        const next = videoBox.nextElementSibling
+        if (next?.classList?.contains(WEB_DOWNLOAD_NOTE_CLASS)) return
         const note = document.createElement("div")
         note.className = WEB_DOWNLOAD_NOTE_CLASS
         note.textContent = "ভিডিও ডাউনলোড করতে Easy Education app ব্যবহার করুন।"
@@ -59,10 +65,13 @@ export default function DownloadResumeAgent() {
     }
 
     syncWebDownloadNote()
-    const observer = new MutationObserver(syncWebDownloadNote)
+    const observer = new MutationObserver(() => window.requestAnimationFrame(syncWebDownloadNote))
     observer.observe(document.body, { childList: true, subtree: true })
 
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      removeNotes()
+    }
   }, [nativeApp, location.pathname])
 
   useEffect(() => {
