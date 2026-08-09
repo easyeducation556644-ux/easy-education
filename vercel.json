@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/firestore-read-usage",
+      "destination": "/api/version?resource=firestore-read-usage"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/:path*"
     },
