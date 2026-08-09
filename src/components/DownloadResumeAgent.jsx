@@ -55,12 +55,19 @@ export default function DownloadResumeAgent() {
       }
 
       document.querySelectorAll(".aspect-video").forEach((videoBox) => {
-        const next = videoBox.nextElementSibling
-        if (next?.classList?.contains(WEB_DOWNLOAD_NOTE_CLASS)) return
+        const parent = videoBox.parentElement
+        if (!parent || parent.querySelector(`.${WEB_DOWNLOAD_NOTE_CLASS}`)) return
+
+        const offlinePanel = videoBox.nextElementSibling
         const note = document.createElement("div")
         note.className = WEB_DOWNLOAD_NOTE_CLASS
         note.textContent = "ভিডিও ডাউনলোড করতে Easy Education app ব্যবহার করুন।"
-        videoBox.insertAdjacentElement("afterend", note)
+
+        if (offlinePanel?.matches?.(".flex.flex-wrap.items-center.justify-between.gap-3.border-t.border-border.bg-card")) {
+          offlinePanel.insertAdjacentElement("afterend", note)
+        } else {
+          videoBox.insertAdjacentElement("afterend", note)
+        }
       })
     }
 
