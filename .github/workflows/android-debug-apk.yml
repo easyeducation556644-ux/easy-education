@@ -1,6 +1,9 @@
 name: Android signed APK
 
 on:
+  push:
+    branches: ["main"]
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
   pull_request:
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
   workflow_dispatch:
