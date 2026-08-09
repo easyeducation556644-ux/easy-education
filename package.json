@@ -7,7 +7,8 @@
     "build": "vite build",
     "dev": "node server.js",
     "lint": "eslint .",
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "node scripts/copy-hls.cjs"
   },
   "dependencies": {
     "@emotion/is-prop-valid": "^1.4.0",
@@ -53,6 +54,7 @@
     "firebase": "^12.10.0",
     "firebase-admin": "^13.7.0",
     "framer-motion": "^12.35.2",
+    "hls.js": "^1.6.17",
     "html2pdf.js": "^0.14.0",
     "input-otp": "^1.4.2",
     "jiti": "^2.6.1",
