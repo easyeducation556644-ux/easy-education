@@ -1,18 +1,19 @@
 package com.easyeducation.app
 
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.GestureDetector
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupMenu
@@ -28,21 +29,41 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 @UnstableApi
 class OfflinePlayerActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
-    private var controls: View? = null
-    private var playPauseButton: Button? = null
-    private var speedButton: Button? = null
+    private var controls: FrameLayout? = null
+    private var playPauseButton: TextView? = null
+    private var speedButton: TextView? = null
+    private var muteButton: TextView? = null
     private var timeText: TextView? = null
     private var seekBar: SeekBar? = null
+    private var bufferingText: TextView? = null
+    private var leftSeekHint: TextView? = null
+    private var rightSeekHint: TextView? = null
+    private var fastBadge: TextView? = null
+
     private var isSeeking = false
     private var controlsVisible = true
     private var currentId = ""
+    private var selectedSpeed = 1f
+
+    private var lastTapAt = 0L
+    private var lastTapSide = 0
+    private var rapidSeekSeconds = 0
+    private var downX = 0f
+    private var downY = 0f
+    private var moved = false
+    private var longPressActive = false
+    private var temporarySpeedRestore = 1f
+    private var singleTapRunnable: Runnable? = null
+    private var longPressRunnable: Runnable? = null
+    private var rapidResetRunnable: Runnable? = null
+
     private val handler = Handler(Looper.getMainLooper())
     private val hideControls = Runnable { setControlsVisible(false) }
     private val updateProgress = object : Runnable {
@@ -51,7 +72,13 @@ class OfflinePlayerActivity : AppCompatActivity() {
             if (exo != null && !isSeeking) {
                 val duration = max(0L, exo.duration.takeIf { it > 0 } ?: 0L)
                 val position = max(0L, exo.currentPosition)
-                seekBar?.progress = if (duration > 0) ((position * 1000L) / duration).toInt().coerceIn(0, 1000) else 0
+                val buffered = max(position, exo.bufferedPosition)
+                seekBar?.progress = if (duration > 0) {
+                    ((position * 1000L) / duration).toInt().coerceIn(0, 1000)
+                } else 0
+                seekBar?.secondaryProgress = if (duration > 0) {
+                    ((buffered * 1000L) / duration).toInt().coerceIn(0, 1000)
+                } else 0
                 timeText?.text = "${formatTime(position)} / ${formatTime(duration)}"
             }
             handler.postDelayed(this, 250)
@@ -76,9 +103,10 @@ class OfflinePlayerActivity : AppCompatActivity() {
             return
         }
 
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
-        }
+        val prefs = getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
+        selectedSpeed = prefs.getFloat(SPEED_KEY, 1f).coerceIn(0.25f, 4f)
+
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
 
         playerView = PlayerView(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -95,6 +123,20 @@ class OfflinePlayerActivity : AppCompatActivity() {
             )
         }
 
+        val gestureLayer = View(this).apply {
+            isClickable = true
+            isFocusable = true
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnTouchListener { view, event -> handlePlayerTouch(view, event) }
+        }
+        root.addView(
+            gestureLayer,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
         controls = buildControls(
             title = task?.title.orEmpty().ifBlank { "Downloaded video" },
             quality = task?.height?.takeIf { it > 0 }?.let { "${it}p" }.orEmpty(),
@@ -108,27 +150,26 @@ class OfflinePlayerActivity : AppCompatActivity() {
             )
         }
 
+        leftSeekHint = seekHint(Gravity.CENTER_VERTICAL or Gravity.START).also {
+            root.addView(it, FrameLayout.LayoutParams(dp(150), dp(74), Gravity.CENTER_VERTICAL or Gravity.START).apply {
+                marginStart = dp(32)
+            })
+        }
+        rightSeekHint = seekHint(Gravity.CENTER_VERTICAL or Gravity.END).also {
+            root.addView(it, FrameLayout.LayoutParams(dp(150), dp(74), Gravity.CENTER_VERTICAL or Gravity.END).apply {
+                marginEnd = dp(32)
+            })
+        }
+        fastBadge = pillText("2×").apply {
+            visibility = View.INVISIBLE
+        }.also {
+            root.addView(it, FrameLayout.LayoutParams(dp(92), dp(46), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(28)
+            })
+        }
+
         setContentView(root)
         enterImmersiveMode()
-
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
-
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                setControlsVisible(!controlsVisible)
-                return true
-            }
-
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val exo = player ?: return true
-                val delta = if (e.x < root.width / 2f) -10_000L else 10_000L
-                val duration = exo.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-                exo.seekTo((exo.currentPosition + delta).coerceIn(0L, duration))
-                showControlsTemporarily()
-                return true
-            }
-        })
-        playerView?.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
 
         player = ExoPlayer.Builder(this).build().also { exo ->
             playerView?.player = exo
@@ -139,14 +180,17 @@ class OfflinePlayerActivity : AppCompatActivity() {
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
+                    bufferingText?.visibility = if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.INVISIBLE
                     if (playbackState == Player.STATE_ENDED) {
                         setControlsVisible(true)
                         updatePlayButton(false)
+                        prefs.edit().remove(positionKey(currentId)).apply()
                     }
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
                     setControlsVisible(true)
+                    bufferingText?.visibility = View.INVISIBLE
                     Toast.makeText(
                         this@OfflinePlayerActivity,
                         "Offline video play failed: ${error.errorCodeName}",
@@ -156,8 +200,8 @@ class OfflinePlayerActivity : AppCompatActivity() {
             })
             exo.setMediaItem(MediaItem.fromUri(Uri.fromFile(video)))
             exo.prepare()
-            val savedPosition = getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
-                .getLong(positionKey(currentId), 0L)
+            exo.setPlaybackSpeed(selectedSpeed)
+            val savedPosition = prefs.getLong(positionKey(currentId), 0L)
             if (savedPosition > 0L) exo.seekTo(savedPosition)
             exo.playWhenReady = true
         }
@@ -166,80 +210,74 @@ class OfflinePlayerActivity : AppCompatActivity() {
         showControlsTemporarily()
     }
 
-    private fun buildControls(title: String, quality: String): View {
+    private fun buildControls(title: String, quality: String): FrameLayout {
         val overlay = FrameLayout(this)
 
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setBackgroundColor(Color.argb(145, 0, 0, 0))
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
         }
-        val back = Button(this).apply {
-            text = "‹"
-            textSize = 28f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
-            minWidth = dp(52)
-            minHeight = dp(46)
+        val back = iconText("‹", 32f).apply {
+            contentDescription = "Back"
             setOnClickListener { finish() }
         }
-        top.addView(back, LinearLayout.LayoutParams(dp(58), dp(48)))
+        top.addView(back, LinearLayout.LayoutParams(dp(54), dp(50)))
         top.addView(TextView(this).apply {
             text = title
-            textSize = 16f
+            textSize = 15f
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
             maxLines = 1
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            gravity = Gravity.CENTER_VERTICAL
+        }, LinearLayout.LayoutParams(0, dp(50), 1f))
         if (quality.isNotBlank()) {
-            top.addView(TextView(this).apply {
-                text = quality
-                textSize = 13f
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                setPadding(dp(10), dp(5), dp(10), dp(5))
-                setBackgroundColor(Color.argb(155, 40, 40, 40))
+            top.addView(pillText(quality), LinearLayout.LayoutParams(dp(68), dp(36)).apply {
+                marginEnd = dp(6)
             })
         }
+        val settings = iconText("⚙", 21f).apply {
+            contentDescription = "Playback settings"
+            setOnClickListener { showSpeedMenu(this) }
+        }
+        top.addView(settings, LinearLayout.LayoutParams(dp(52), dp(50)))
         overlay.addView(top, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(64),
             Gravity.TOP,
         ))
 
-        val center = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+        playPauseButton = iconText("▶", 31f, circle = true).apply {
+            contentDescription = "Play or pause"
+            setOnClickListener {
+                val exo = player ?: return@setOnClickListener
+                if (exo.isPlaying) exo.pause() else exo.play()
+                showControlsTemporarily()
+            }
         }
-        val rewind = controlButton("↶ 10") {
-            seekBy(-10_000L)
+        overlay.addView(playPauseButton, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
+
+        bufferingText = pillText("Loading…").apply {
+            visibility = View.INVISIBLE
         }
-        playPauseButton = controlButton("❚❚") {
-            val exo = player ?: return@controlButton
-            if (exo.isPlaying) exo.pause() else exo.play()
-            showControlsTemporarily()
-        }.apply { textSize = 24f }
-        val forward = controlButton("10 ↷") {
-            seekBy(10_000L)
-        }
-        center.addView(rewind, LinearLayout.LayoutParams(dp(92), dp(60)).apply { marginEnd = dp(24) })
-        center.addView(playPauseButton, LinearLayout.LayoutParams(dp(76), dp(68)))
-        center.addView(forward, LinearLayout.LayoutParams(dp(92), dp(60)).apply { marginStart = dp(24) })
-        overlay.addView(center, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER,
-        ))
+        overlay.addView(bufferingText, FrameLayout.LayoutParams(dp(110), dp(40), Gravity.CENTER).apply {
+            topMargin = dp(96)
+        })
 
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(5), dp(16), dp(8))
-            setBackgroundColor(Color.argb(155, 0, 0, 0))
+            setPadding(dp(14), dp(2), dp(14), dp(7))
+            setBackgroundColor(Color.argb(135, 0, 0, 0))
         }
         seekBar = SeekBar(this).apply {
             max = 1000
             progress = 0
+            secondaryProgress = 0
+            progressTintList = ColorStateList.valueOf(Color.rgb(255, 25, 25))
+            secondaryProgressTintList = ColorStateList.valueOf(Color.argb(210, 220, 220, 220))
+            progressBackgroundTintList = ColorStateList.valueOf(Color.argb(130, 130, 130, 130))
+            thumbTintList = ColorStateList.valueOf(Color.rgb(255, 25, 25))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {
                     isSeeking = true
@@ -266,25 +304,23 @@ class OfflinePlayerActivity : AppCompatActivity() {
         }
         bottom.addView(seekBar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(34),
+            dp(32),
         ))
 
-        val bottomRow = LinearLayout(this).apply {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         timeText = TextView(this).apply {
             text = "0:00 / 0:00"
-            textSize = 13f
+            textSize = 12.5f
             setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_VERTICAL
         }
-        bottomRow.addView(timeText, LinearLayout.LayoutParams(0, dp(42), 1f))
+        row.addView(timeText, LinearLayout.LayoutParams(0, dp(40), 1f))
 
-        val mute = Button(this).apply {
-            text = "🔊"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
+        muteButton = iconText("🔊", 17f).apply {
+            contentDescription = "Mute"
             setOnClickListener {
                 val exo = player ?: return@setOnClickListener
                 exo.volume = if (exo.volume > 0f) 0f else 1f
@@ -292,33 +328,120 @@ class OfflinePlayerActivity : AppCompatActivity() {
                 showControlsTemporarily()
             }
         }
-        bottomRow.addView(mute, LinearLayout.LayoutParams(dp(60), dp(42)))
+        row.addView(muteButton, LinearLayout.LayoutParams(dp(54), dp(40)))
 
-        speedButton = Button(this).apply {
-            text = "1×"
-            textSize = 14f
+        speedButton = TextView(this).apply {
+            text = speedLabel(selectedSpeed)
+            textSize = 13f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.TRANSPARENT)
+            gravity = Gravity.CENTER
+            setTypeface(typeface, Typeface.BOLD)
             setOnClickListener { showSpeedMenu(this) }
         }
-        bottomRow.addView(speedButton, LinearLayout.LayoutParams(dp(70), dp(42)))
-        bottom.addView(bottomRow)
+        row.addView(speedButton, LinearLayout.LayoutParams(dp(62), dp(40)))
+        bottom.addView(row)
 
         overlay.addView(bottom, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(92),
+            dp(82),
             Gravity.BOTTOM,
         ))
         return overlay
     }
 
-    private fun controlButton(label: String, action: () -> Unit) = Button(this).apply {
-        text = label
-        textSize = 16f
-        setTextColor(Color.WHITE)
-        setTypeface(typeface, Typeface.BOLD)
-        setBackgroundColor(Color.argb(130, 20, 20, 20))
-        setOnClickListener { action() }
+    private fun handlePlayerTouch(view: View, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                moved = false
+                longPressActive = false
+                longPressRunnable?.let(handler::removeCallbacks)
+                longPressRunnable = Runnable {
+                    if (moved) return@Runnable
+                    val exo = player ?: return@Runnable
+                    longPressActive = true
+                    temporarySpeedRestore = exo.playbackParameters.speed
+                    val fastSpeed = max(2f, temporarySpeedRestore)
+                    exo.setPlaybackSpeed(fastSpeed)
+                    fastBadge?.text = "${speedLabel(fastSpeed)}  Hold"
+                    fastBadge?.visibility = View.VISIBLE
+                    handler.removeCallbacks(hideControls)
+                }.also { handler.postDelayed(it, LONG_PRESS_MS) }
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (abs(event.x - downX) > dp(18) || abs(event.y - downY) > dp(18)) {
+                    moved = true
+                    longPressRunnable?.let(handler::removeCallbacks)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                longPressRunnable?.let(handler::removeCallbacks)
+                finishTemporarySpeed()
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                longPressRunnable?.let(handler::removeCallbacks)
+                if (longPressActive) {
+                    finishTemporarySpeed()
+                    return true
+                }
+                if (moved) return true
+
+                val now = SystemClock.uptimeMillis()
+                val side = if (event.x < view.width / 2f) -1 else 1
+                if (now - lastTapAt <= RAPID_TAP_WINDOW_MS && side == lastTapSide) {
+                    singleTapRunnable?.let(handler::removeCallbacks)
+                    rapidSeekSeconds += 10
+                    seekBy(side * 10_000L, showControls = false)
+                    showRapidSeek(side, rapidSeekSeconds)
+                    lastTapAt = now
+                    lastTapSide = side
+                } else {
+                    rapidSeekSeconds = 0
+                    lastTapAt = now
+                    lastTapSide = side
+                    singleTapRunnable?.let(handler::removeCallbacks)
+                    singleTapRunnable = Runnable {
+                        if (SystemClock.uptimeMillis() - lastTapAt >= RAPID_TAP_WINDOW_MS) {
+                            setControlsVisible(!controlsVisible)
+                        }
+                    }.also { handler.postDelayed(it, RAPID_TAP_WINDOW_MS) }
+                }
+                view.performClick()
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun showRapidSeek(side: Int, seconds: Int) {
+        val hint = if (side < 0) leftSeekHint else rightSeekHint
+        val other = if (side < 0) rightSeekHint else leftSeekHint
+        other?.visibility = View.INVISIBLE
+        hint?.text = if (side < 0) "↶  $seconds seconds" else "$seconds seconds  ↷"
+        hint?.visibility = View.VISIBLE
+        hint?.alpha = 1f
+        rapidResetRunnable?.let(handler::removeCallbacks)
+        rapidResetRunnable = Runnable {
+            hint?.animate()?.alpha(0f)?.setDuration(140)?.withEndAction {
+                hint.visibility = View.INVISIBLE
+            }?.start()
+            rapidSeekSeconds = 0
+        }.also { handler.postDelayed(it, RAPID_RESET_MS) }
+    }
+
+    private fun finishTemporarySpeed() {
+        if (!longPressActive) return
+        longPressActive = false
+        player?.setPlaybackSpeed(temporarySpeedRestore)
+        fastBadge?.visibility = View.INVISIBLE
+        scheduleHide()
     }
 
     private fun showSpeedMenu(anchor: View) {
@@ -326,12 +449,18 @@ class OfflinePlayerActivity : AppCompatActivity() {
         val speeds = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 3.5f, 4f)
         PopupMenu(this, anchor).apply {
             speeds.forEachIndexed { index, speed ->
-                menu.add(0, index, index, speedLabel(speed))
+                val marker = if (speed == selectedSpeed) "✓ " else ""
+                menu.add(0, index, index, "$marker${speedLabel(speed)}")
             }
             setOnMenuItemClickListener { item ->
                 val speed = speeds.getOrNull(item.itemId) ?: return@setOnMenuItemClickListener false
+                selectedSpeed = speed
                 player?.setPlaybackSpeed(speed)
                 speedButton?.text = speedLabel(speed)
+                getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putFloat(SPEED_KEY, speed)
+                    .apply()
                 showControlsTemporarily()
                 true
             }
@@ -340,16 +469,11 @@ class OfflinePlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun speedLabel(speed: Float): String {
-        val raw = if (speed % 1f == 0f) speed.toInt().toString() else speed.toString().trimEnd('0')
-        return "${raw}×"
-    }
-
-    private fun seekBy(deltaMs: Long) {
+    private fun seekBy(deltaMs: Long, showControls: Boolean = true) {
         val exo = player ?: return
         val duration = exo.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
         exo.seekTo((exo.currentPosition + deltaMs).coerceIn(0L, duration))
-        showControlsTemporarily()
+        if (showControls) showControlsTemporarily()
     }
 
     private fun updatePlayButton(isPlaying: Boolean) {
@@ -363,21 +487,66 @@ class OfflinePlayerActivity : AppCompatActivity() {
 
     private fun scheduleHide() {
         handler.removeCallbacks(hideControls)
-        if (player?.isPlaying == true) handler.postDelayed(hideControls, 3000)
+        if (player?.isPlaying == true && !isSeeking && !longPressActive) {
+            handler.postDelayed(hideControls, 2600)
+        }
     }
 
     private fun setControlsVisible(visible: Boolean) {
         controlsVisible = visible
         controls?.animate()?.cancel()
-        controls?.animate()
-            ?.alpha(if (visible) 1f else 0f)
-            ?.setDuration(150)
-            ?.withEndAction {
-                controls?.visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            }
-            ?.start()
-        if (visible) controls?.visibility = View.VISIBLE
-        if (visible) scheduleHide() else handler.removeCallbacks(hideControls)
+        if (visible) {
+            controls?.visibility = View.VISIBLE
+            controls?.animate()?.alpha(1f)?.setDuration(120)?.start()
+            scheduleHide()
+        } else {
+            controls?.animate()?.alpha(0f)?.setDuration(140)?.withEndAction {
+                controls?.visibility = View.INVISIBLE
+            }?.start()
+            handler.removeCallbacks(hideControls)
+        }
+    }
+
+    private fun iconText(label: String, size: Float, circle: Boolean = false) = TextView(this).apply {
+        text = label
+        textSize = size
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        isClickable = true
+        isFocusable = true
+        if (circle) background = roundedBackground(Color.argb(145, 20, 20, 20), 999f)
+        else setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    private fun pillText(label: String) = TextView(this).apply {
+        text = label
+        textSize = 12.5f
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        setPadding(dp(9), dp(4), dp(9), dp(4))
+        background = roundedBackground(Color.argb(155, 35, 35, 35), 12f)
+    }
+
+    private fun seekHint(gravityValue: Int) = TextView(this).apply {
+        gravity = Gravity.CENTER
+        textSize = 14f
+        setTextColor(Color.WHITE)
+        setTypeface(typeface, Typeface.BOLD)
+        background = roundedBackground(Color.argb(175, 20, 20, 20), 40f)
+        visibility = View.INVISIBLE
+        contentDescription = if (gravityValue and Gravity.START == Gravity.START) "Rewind" else "Forward"
+    }
+
+    private fun roundedBackground(color: Int, radiusDp: Float) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        setColor(color)
+        cornerRadius = dp(radiusDp.toInt()).toFloat()
+    }
+
+    private fun speedLabel(speed: Float): String {
+        val raw = if (speed % 1f == 0f) speed.toInt().toString() else speed.toString().trimEnd('0')
+        return "${raw}×"
     }
 
     private fun formatTime(valueMs: Long): String {
@@ -408,6 +577,9 @@ class OfflinePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        singleTapRunnable?.let(handler::removeCallbacks)
+        longPressRunnable?.let(handler::removeCallbacks)
+        rapidResetRunnable?.let(handler::removeCallbacks)
         handler.removeCallbacksAndMessages(null)
         playerView?.player = null
         player?.release()
@@ -432,6 +604,10 @@ class OfflinePlayerActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_ID = "offline_download_id"
         private const val PLAYER_PREFS = "offline_player_state"
+        private const val SPEED_KEY = "playback_speed"
+        private const val RAPID_TAP_WINDOW_MS = 330L
+        private const val RAPID_RESET_MS = 720L
+        private const val LONG_PRESS_MS = 460L
         private fun positionKey(id: String) = "position:$id"
     }
 }
