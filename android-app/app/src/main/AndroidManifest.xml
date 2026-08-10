@@ -8,6 +8,8 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/ic_easy_education"
+        android:roundIcon="@drawable/ic_easy_education"
         android:label="Easy Education"
         android:theme="@style/Theme.EasyEducation"
         android:usesCleartextTraffic="false">
