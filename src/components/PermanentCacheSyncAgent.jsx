@@ -28,8 +28,9 @@ async function applyFeed(feed, storageKey) {
   const feedSeq = Number(feed.seq || 0)
   let lastSeq = readSeq(storageKey)
 
-  // First run of this cache schema starts from a clean baseline. Queries that have
-  // never been loaded will fetch once normally; future changes are targeted.
+  // If this device first sees an already-populated feed, its v3 permanent queries
+  // have not been established yet, so baseline to current and let each query load once.
+  // If it previously saw an empty feed, storageKey is already 0 and the first event runs.
   if (lastSeq === null) {
     writeSeq(storageKey, feedSeq)
     return
@@ -56,8 +57,6 @@ async function applyFeed(feed, storageKey) {
           },
         }))
       } catch (error) {
-        // Do not advance past a transient targeted-read failure. The same ring event
-        // will be retried on the next snapshot/reopen without refetching the parent query.
         console.warn("Targeted permanent-cache sync failed:", collection, docId, error)
         break
       }
@@ -74,9 +73,14 @@ export default function PermanentCacheSyncAgent() {
   const userWork = useRef(Promise.resolve())
 
   useEffect(() => {
+    navigator.storage?.persist?.().catch(() => false)
+
     const syncRef = doc(db, "settings", "contentSync")
     const unsubscribe = onSnapshot(syncRef, (snapshot) => {
-      if (!snapshot.exists()) return
+      if (!snapshot.exists()) {
+        if (readSeq(PUBLIC_SEQ_KEY) === null) writeSeq(PUBLIC_SEQ_KEY, 0)
+        return
+      }
       const feed = snapshot.data()
       publicWork.current = publicWork.current
         .then(() => applyFeed(feed, PUBLIC_SEQ_KEY))
@@ -89,8 +93,13 @@ export default function PermanentCacheSyncAgent() {
   }, [])
 
   useEffect(() => {
-    if (!currentUser?.uid || !userProfile?.syncFeed) return
+    if (!currentUser?.uid) return
     const key = `${USER_SEQ_PREFIX}${currentUser.uid}`
+    if (!userProfile?.syncFeed) {
+      if (readSeq(key) === null) writeSeq(key, 0)
+      return
+    }
+
     userWork.current = userWork.current
       .then(() => applyFeed(userProfile.syncFeed, key))
       .catch((error) => console.warn("User cache sync failed:", error))
