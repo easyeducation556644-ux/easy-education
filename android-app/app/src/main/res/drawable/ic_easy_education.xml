@@ -8,5 +8,5 @@
     <path android:fillColor="#3B82F6" android:pathData="M0,0h108l-108,108z"/>
     <path android:fillColor="#FFFFFF" android:pathData="M25,29c11,-4 20,-2.5 29,3v48c-8,-5 -18,-6 -29,-2z"/>
     <path android:fillColor="#FFFFFF" android:pathData="M83,29c-11,-4 -20,-2.5 -29,3v48c8,-5 18,-6 29,-2z"/>
-    <path android:strokeColor="#4F46E5" android:strokeWidth="4" android:strokeLineCap="round" android:fillColor="@android:color/transparent" android:pathData="M34,42h11M34,52h11M63,42h11M63,52h11"/>
+    <path android:strokeColor="#4F46E5" android:strokeWidth="4" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M34,42h11M34,52h11M63,42h11M63,52h11"/>
 </vector>
