@@ -63,6 +63,9 @@ class MainActivity : AppCompatActivity() {
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+            settings.cacheMode = WebSettings.LOAD_DEFAULT
+            settings.loadsImagesAutomatically = true
             settings.mediaPlaybackRequiresUserGesture = false
             webChromeClient = chrome
             webViewClient = LockedWebClient()

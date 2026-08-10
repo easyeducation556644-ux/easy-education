@@ -2,13 +2,17 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 function firestoreReadTrackerPlugin() {
-  const trackedModule = '/src/lib/trackedFirestore.js'
+  const trackedModule = '/src/lib/nativeCachedFirestore.js'
 
   return {
     name: 'easy-education-firestore-read-tracker',
     enforce: 'pre',
     transform(code, id) {
-      if (!id.includes('/src/') || id.endsWith('/src/lib/trackedFirestore.js')) return null
+      if (!id.includes('/src/')) return null
+      if (
+        id.endsWith('/src/lib/trackedFirestore.js') ||
+        id.endsWith('/src/lib/nativeCachedFirestore.js')
+      ) return null
       if (!code.includes('firebase/firestore')) return null
 
       const transformed = code
