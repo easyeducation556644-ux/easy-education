@@ -13,6 +13,7 @@ import securityEventsHandler from './api/security-events.js';
 import offlineVideoHandler from './api/offline-video.js';
 import firestoreReadUsageHandler from './api/_firestore-read-usage.js';
 import syncEventHandler from './api/_sync-event.js';
+import learningPushHandler from './api/_learning-push.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -50,6 +51,10 @@ app.all('/api/firestore-read-usage', (req, res) => {
 
 app.post('/api/sync-event', (req, res) => {
   syncEventHandler(req, res);
+});
+
+app.post('/api/learning-push', (req, res) => {
+  learningPushHandler(req, res);
 });
 
 app.get('/api/offline-video', (req, res) => {
