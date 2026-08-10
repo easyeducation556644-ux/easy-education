@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom"
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom"
 import { AuthProvider } from "./contexts/AuthContext"
 import { CartProvider } from "./contexts/CartContext"
 import { ExamProvider } from "./contexts/ExamContext"
@@ -57,6 +57,7 @@ function App() {
             <SettingsLoader />
             <DownloadResumeAgent />
             <NativeHlsBootstrap />
+            {!nativeApp && <style>{'a[href="/downloads"]{display:none!important}'}</style>}
             <div className="flex min-h-screen flex-col bg-background text-foreground">
               {nativeApp ? <NativeAppTopBar /> : <Header />}
               <main className={`flex-1 ${nativeApp ? "pb-20" : ""}`}>
@@ -85,7 +86,7 @@ function App() {
                   <Route path="/community" element={<Community />} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                   <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-                  <Route path="/downloads" element={<ProtectedRoute><Downloads /></ProtectedRoute>} />
+                  <Route path="/downloads" element={nativeApp ? <ProtectedRoute><Downloads /></ProtectedRoute> : <Navigate to="/courses" replace />} />
                   <Route path="/my-courses" element={<ProtectedRoute><MyCourses /></ProtectedRoute>} />
                   <Route path="/course/:courseId/exams" element={<ProtectedRoute><ExamList /></ProtectedRoute>} />
                   <Route path="/exam/:examId" element={<ProtectedRoute><ExamView /></ProtectedRoute>} />
