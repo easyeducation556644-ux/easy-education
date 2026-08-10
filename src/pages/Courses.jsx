@@ -1,24 +1,37 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
-import { Search, Filter, BookOpen } from "lucide-react"
+import { Search, Filter, BookOpen, ChevronLeft, ChevronRight } from "lucide-react"
 import CourseCard from "../components/CourseCard"
-import { collection, query, orderBy, getDocs, where } from "firebase/firestore"
+import {
+  collection,
+  query,
+  orderBy,
+  getDocs,
+  where,
+  limit,
+  startAfter,
+} from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { getCourseCategories } from "../lib/courseCategories"
+
+const COURSES_PER_PAGE = 10
 
 export default function Courses() {
   const location = useLocation()
   const { isAdmin, currentUser } = useAuth()
   const [courses, setCourses] = useState([])
-  const [filteredCourses, setFilteredCourses] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [sortBy, setSortBy] = useState("newest")
   const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [pageCursors, setPageCursors] = useState([null])
+  const [lastVisible, setLastVisible] = useState(null)
+  const [hasNextPage, setHasNextPage] = useState(false)
   const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(new Set())
 
   useEffect(() => {
@@ -29,33 +42,45 @@ export default function Courses() {
   useEffect(() => {
     let cancelled = false
 
-    const loadPublicCourses = async () => {
+    const loadCoursesPage = async () => {
       setLoading(true)
       try {
-        const coursesQuery = query(collection(db, "courses"), orderBy("createdAt", "desc"))
-        const coursesSnapshot = await getDocs(coursesQuery)
+        const cursor = pageCursors[pageCursors.length - 1]
+        const sortField = sortBy === "title" ? "title" : "createdAt"
+        const sortDirection = sortBy === "oldest" || sortBy === "title" ? "asc" : "desc"
+        const constraints = [orderBy(sortField, sortDirection)]
+        if (cursor) constraints.push(startAfter(cursor))
+        constraints.push(limit(COURSES_PER_PAGE + 1))
+
+        const snapshot = await getDocs(query(collection(db, "courses"), ...constraints))
         if (cancelled) return
 
-        let coursesData = coursesSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
+        const rawDocs = snapshot.docs
+        const visibleDocs = rawDocs.slice(0, COURSES_PER_PAGE)
+        let pageCourses = visibleDocs.map((doc) => ({ id: doc.id, ...doc.data() }))
 
         if (!isAdmin) {
-          coursesData = coursesData.filter((course) => course.publishStatus !== "draft")
+          pageCourses = pageCourses.filter((course) => course.publishStatus !== "draft")
         }
 
-        setCourses(coursesData)
+        setCourses(pageCourses)
+        setLastVisible(visibleDocs.at(-1) || null)
+        setHasNextPage(rawDocs.length > COURSES_PER_PAGE)
       } catch (error) {
-        console.error("Error fetching courses:", error)
+        console.error("Error fetching courses page:", error)
+        if (!cancelled) {
+          setCourses([])
+          setHasNextPage(false)
+          setLastVisible(null)
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
 
-    loadPublicCourses()
+    loadCoursesPage()
     return () => { cancelled = true }
-  }, [isAdmin])
+  }, [isAdmin, sortBy, pageCursors])
 
   useEffect(() => {
     let cancelled = false
@@ -90,8 +115,8 @@ export default function Courses() {
     return () => { cancelled = true }
   }, [currentUser?.uid])
 
-  useEffect(() => {
-    let filtered = courses ? [...courses] : []
+  const filteredCourses = useMemo(() => {
+    let filtered = [...courses]
 
     if (purchasedBundleCourses.size > 0) {
       filtered = filtered.filter((course) =>
@@ -119,18 +144,30 @@ export default function Courses() {
       filtered = filtered.filter((course) => getCourseCategories(course).includes(categoryFilter))
     }
 
-    if (sortBy === "newest") {
-      filtered.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
-    } else if (sortBy === "oldest") {
-      filtered.sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
-    } else if (sortBy === "title") {
-      filtered.sort((a, b) => (a.title || "").localeCompare(b.title || ""))
-    }
-
-    setFilteredCourses(filtered)
-  }, [courses, searchQuery, categoryFilter, sortBy, purchasedBundleCourses])
+    return filtered
+  }, [courses, searchQuery, categoryFilter, purchasedBundleCourses])
 
   const categories = ["all", ...new Set(courses.flatMap(getCourseCategories))]
+
+  const resetPagination = (nextSort = sortBy) => {
+    setPage(1)
+    setPageCursors([null])
+    if (nextSort !== sortBy) setSortBy(nextSort)
+  }
+
+  const goNext = () => {
+    if (!hasNextPage || !lastVisible || loading) return
+    setPage((current) => current + 1)
+    setPageCursors((current) => [...current, lastVisible])
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  const goPrevious = () => {
+    if (page <= 1 || loading) return
+    setPage((current) => Math.max(1, current - 1))
+    setPageCursors((current) => current.slice(0, -1))
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
 
   return (
     <div className="min-h-screen py-8 md:py-12 px-4 md:px-6">
@@ -150,7 +187,7 @@ export default function Courses() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by title, instructor, or description..."
+                  placeholder="Search in this page..."
                   className="w-full pl-10 pr-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm smooth-transition"
                 />
               </div>
@@ -179,7 +216,7 @@ export default function Courses() {
               {["newest", "oldest", "title"].map((option) => (
                 <button
                   key={option}
-                  onClick={() => setSortBy(option)}
+                  onClick={() => resetPagination(option)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium smooth-transition ${sortBy === option ? "bg-primary text-primary-foreground" : "bg-muted text-foreground hover:bg-muted/80"}`}
                 >
                   {option.charAt(0).toUpperCase() + option.slice(1)}
@@ -190,8 +227,9 @@ export default function Courses() {
         </div>
 
         {!loading && (
-          <div className="mb-6 text-sm text-muted-foreground">
-            Showing {filteredCourses.length} {filteredCourses.length === 1 ? "course" : "courses"}
+          <div className="mb-6 flex items-center justify-between gap-3 text-sm text-muted-foreground">
+            <span>Page {page} · Showing {filteredCourses.length} of up to {COURSES_PER_PAGE}</span>
+            <span>{COURSES_PER_PAGE} courses per page</span>
           </div>
         )}
 
@@ -206,16 +244,58 @@ export default function Courses() {
             ))}
           </div>
         ) : filteredCourses.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredCourses.map((course) => (
-              <CourseCard key={course.id} course={course} showMinimal={true} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredCourses.map((course) => (
+                <CourseCard key={course.id} course={course} showMinimal={true} />
+              ))}
+            </div>
+
+            <div className="mt-8 flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={goPrevious}
+                disabled={page <= 1 || loading}
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous
+              </button>
+              <span className="min-w-20 text-center text-sm font-semibold">Page {page}</span>
+              <button
+                type="button"
+                onClick={goNext}
+                disabled={!hasNextPage || loading}
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </>
         ) : (
           <div className="text-center py-12">
             <BookOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">No courses found</h3>
-            <p className="text-muted-foreground">Try adjusting your search or filters</p>
+            <h3 className="text-lg font-semibold mb-2">No courses found on this page</h3>
+            <p className="text-muted-foreground">Try another page or adjust your search and filters</p>
+            <div className="mt-6 flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={goPrevious}
+                disabled={page <= 1 || loading}
+                className="rounded-xl border border-border px-4 py-2 text-sm disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={goNext}
+                disabled={!hasNextPage || loading}
+                className="rounded-xl border border-border px-4 py-2 text-sm disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
           </div>
         )}
       </div>

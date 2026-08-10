@@ -88,8 +88,10 @@ export async function getDocs(ref) {
   if (shouldUseCacheFirst(ref) && isWarm(ref, "query")) {
     try {
       const cached = await tracked.getDocsFromCache(ref)
-      refreshDocs(ref)
-      return cached
+      if (!cached.empty) {
+        refreshDocs(ref)
+        return cached
+      }
     } catch (_) {
       // Cache miss: fall back to normal tracked read.
     }
