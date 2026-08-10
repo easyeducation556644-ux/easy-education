@@ -9,7 +9,11 @@ const SAFE_CACHE_FIRST_COLLECTIONS = new Set([
   "chapters",
   "settings",
 ])
-const WARM_TTL_MS = 24 * 60 * 60 * 1000
+
+// Public course structure does not need a server read on every route visit.
+// For 15 minutes after a successful server read, serve Firestore's persistent
+// local cache directly. After that window, the next visit refreshes from server.
+const CACHE_FRESH_MS = 15 * 60 * 1000
 
 function collectionName(ref) {
   try {
@@ -27,77 +31,51 @@ function routeKey() {
   return `${window.location.pathname}${window.location.search}`
 }
 
-function warmKey(ref, kind) {
-  return `ee_firestore_warm:${kind}:${collectionName(ref)}:${routeKey()}`
+function freshKey(ref, kind) {
+  return `ee_firestore_fresh:${kind}:${collectionName(ref)}:${routeKey()}`
 }
 
-function isWarm(ref, kind) {
+function isFresh(ref, kind) {
   if (typeof localStorage === "undefined") return false
-  const value = Number(localStorage.getItem(warmKey(ref, kind)) || 0)
-  return value > 0 && Date.now() - value < WARM_TTL_MS
+  const value = Number(localStorage.getItem(freshKey(ref, kind)) || 0)
+  return value > 0 && Date.now() - value < CACHE_FRESH_MS
 }
 
-function markWarm(ref, kind) {
+function markFresh(ref, kind) {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(warmKey(ref, kind), String(Date.now()))
+  localStorage.setItem(freshKey(ref, kind), String(Date.now()))
 }
 
 function shouldUseCacheFirst(ref) {
   return SAFE_CACHE_FIRST_COLLECTIONS.has(collectionName(ref))
 }
 
-async function refreshDoc(ref) {
-  try {
-    const snapshot = await tracked.getDocFromServer(ref)
-    markWarm(ref, "doc")
-    return snapshot
-  } catch (_) {
-    return null
-  }
-}
-
-async function refreshDocs(ref) {
-  try {
-    const snapshot = await tracked.getDocsFromServer(ref)
-    markWarm(ref, "query")
-    return snapshot
-  } catch (_) {
-    return null
-  }
-}
-
 export async function getDoc(ref) {
-  if (shouldUseCacheFirst(ref) && isWarm(ref, "doc")) {
+  if (shouldUseCacheFirst(ref) && isFresh(ref, "doc")) {
     try {
       const cached = await tracked.getDocFromCache(ref)
-      if (cached.exists()) {
-        refreshDoc(ref)
-        return cached
-      }
+      if (cached.exists()) return cached
     } catch (_) {
-      // Cache miss: fall back to normal tracked read.
+      // Cache miss: fall through to server-backed read.
     }
   }
 
   const snapshot = await tracked.getDoc(ref)
-  if (shouldUseCacheFirst(ref) && snapshot.exists()) markWarm(ref, "doc")
+  if (shouldUseCacheFirst(ref) && snapshot.exists()) markFresh(ref, "doc")
   return snapshot
 }
 
 export async function getDocs(ref) {
-  if (shouldUseCacheFirst(ref) && isWarm(ref, "query")) {
+  if (shouldUseCacheFirst(ref) && isFresh(ref, "query")) {
     try {
       const cached = await tracked.getDocsFromCache(ref)
-      if (!cached.empty) {
-        refreshDocs(ref)
-        return cached
-      }
+      if (!cached.empty) return cached
     } catch (_) {
-      // Cache miss: fall back to normal tracked read.
+      // Cache miss: fall through to server-backed read.
     }
   }
 
   const snapshot = await tracked.getDocs(ref)
-  if (shouldUseCacheFirst(ref)) markWarm(ref, "query")
+  if (shouldUseCacheFirst(ref)) markFresh(ref, "query")
   return snapshot
 }
