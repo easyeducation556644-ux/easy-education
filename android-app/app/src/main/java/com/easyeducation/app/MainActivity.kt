@@ -4,13 +4,18 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.webkit.JavaScriptReplyProxy
@@ -27,6 +32,8 @@ import java.net.URI
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
+    private lateinit var root: FrameLayout
+    private var splashView: View? = null
     private lateinit var store: DownloadStore
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var chrome: AppWebChromeClient
@@ -80,10 +87,66 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        setContentView(web)
+        root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(11, 16, 32)) }
+        root.addView(web, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+
         val restored = savedInstanceState?.let { web.restoreState(it) }
-        if (restored == null) web.loadUrl(APP_ORIGIN)
+        if (restored == null) {
+            web.visibility = View.INVISIBLE
+            splashView = buildSplashView().also {
+                root.addView(it, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ))
+            }
+        }
+        setContentView(root)
+
+        if (restored == null) web.loadUrl(APP_ORIGIN) else revealWeb()
         HlsDownloadService.resume(this)
+    }
+
+    private fun buildSplashView(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(48, 48, 48, 48)
+            setBackgroundColor(Color.rgb(11, 16, 32))
+
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_easy_education)
+                contentDescription = "Easy Education"
+            }, LinearLayout.LayoutParams(112, 112).apply { bottomMargin = 28 })
+
+            addView(TextView(this@MainActivity).apply {
+                text = "Easy Education"
+                setTextColor(Color.WHITE)
+                textSize = 25f
+                gravity = Gravity.CENTER
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            })
+
+            addView(TextView(this@MainActivity).apply {
+                text = "Learn • Grow • Succeed"
+                setTextColor(Color.rgb(160, 174, 205))
+                textSize = 13f
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = 8 })
+        }
+    }
+
+    private fun revealWeb() {
+        web.visibility = View.VISIBLE
+        splashView?.animate()?.alpha(0f)?.setDuration(180)?.withEndAction {
+            splashView?.let { root.removeView(it) }
+            splashView = null
+        }?.start()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -218,6 +281,11 @@ class MainActivity : AppCompatActivity() {
             return true
         }
 
+        override fun onPageCommitVisible(view: WebView?, url: String?) {
+            super.onPageCommitVisible(view, url)
+            revealWeb()
+        }
+
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? {
             val uri = request.url
             if (uri.host != "native.easyeducation.local") return super.shouldInterceptRequest(view, request)
@@ -225,10 +293,17 @@ class MainActivity : AppCompatActivity() {
             if (parts.size < 2) return null
             val file = File(filesDir, "offline/${HlsDownloadService.safe(parts[0])}/${parts.drop(1).joinToString("/")}")
             if (!file.exists()) return WebResourceResponse("text/plain", "utf-8", 404, "Not found", emptyMap(), null)
-            val mime = if (file.extension == "m3u8") "application/vnd.apple.mpegurl" else "video/mp2t"
+
+            val mime = when (file.extension.lowercase()) {
+                "m3u8" -> "application/vnd.apple.mpegurl"
+                "m4s", "mp4" -> "video/mp4"
+                else -> "video/mp2t"
+            }
             val headers = mapOf(
                 "Access-Control-Allow-Origin" to APP_ORIGIN,
                 "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers" to "Range, Origin, Accept, Content-Type",
+                "Accept-Ranges" to "bytes",
                 "Cache-Control" to "no-store",
                 "Content-Length" to file.length().toString(),
             )

@@ -7,12 +7,9 @@ const SAFE_CACHE_FIRST_COLLECTIONS = new Set([
   "classes",
   "subjects",
   "chapters",
+  "settings",
 ])
 const WARM_TTL_MS = 24 * 60 * 60 * 1000
-
-function isNativeApp() {
-  return typeof window !== "undefined" && Boolean(window.EasyEducationNative?.postMessage)
-}
 
 function collectionName(ref) {
   try {
@@ -31,7 +28,7 @@ function routeKey() {
 }
 
 function warmKey(ref, kind) {
-  return `ee_native_firestore_warm:${kind}:${collectionName(ref)}:${routeKey()}`
+  return `ee_firestore_warm:${kind}:${collectionName(ref)}:${routeKey()}`
 }
 
 function isWarm(ref, kind) {
@@ -46,7 +43,7 @@ function markWarm(ref, kind) {
 }
 
 function shouldUseCacheFirst(ref) {
-  return isNativeApp() && SAFE_CACHE_FIRST_COLLECTIONS.has(collectionName(ref))
+  return SAFE_CACHE_FIRST_COLLECTIONS.has(collectionName(ref))
 }
 
 async function refreshDoc(ref) {
