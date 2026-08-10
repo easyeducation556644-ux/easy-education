@@ -1,6 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore"
 import { getMessaging } from "firebase-admin/messaging"
-import { getAdminServices, requireAuthenticatedUser } from "./utils/firebase-admin.js"
+import { requireAuthenticatedUser } from "./utils/firebase-admin.js"
 
 const MAX_TOKENS_PER_MESSAGE = 500
 const TOKEN_PATTERN = /^[A-Za-z0-9_:\-\.]{20,4096}$/
@@ -35,6 +35,24 @@ async function registerDevice(req, res) {
 
   if (!TOKEN_PATTERN.test(token)) return sendError(res, 400, "Invalid push token")
   if (!ID_PATTERN.test(deviceId)) return sendError(res, 400, "Invalid device id")
+
+  // One FCM token belongs to the currently signed-in account on this device.
+  // Account switching removes the token from older user subscriptions first.
+  const existingOwners = await db.collection("pushSubscriptions")
+    .where("tokens", "array-contains", token)
+    .get()
+  const ownerBatch = db.batch()
+  let ownerChanges = 0
+  existingOwners.docs.forEach((snapshot) => {
+    if (snapshot.id === decodedToken.uid) return
+    ownerBatch.set(snapshot.ref, {
+      tokens: FieldValue.arrayRemove(token),
+      deviceIds: FieldValue.arrayRemove(deviceId),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true })
+    ownerChanges += 1
+  })
+  if (ownerChanges > 0) await ownerBatch.commit()
 
   const enrollments = await db.collection("userCourses")
     .where("userId", "==", decodedToken.uid)
@@ -118,7 +136,7 @@ async function notifyClassCreated(req, res) {
   if (!courseId) return sendError(res, 422, "Class course is missing")
   if (!canNotifyCourse(userProfile, courseId)) return sendError(res, 403, "Course notification permission denied")
 
-  // Strict eligibility check: only users with a live userCourses enrollment for this exact course.
+  // Strict eligibility: only live userCourses records for this exact course count.
   const enrollments = await db.collection("userCourses")
     .where("courseId", "==", courseId)
     .get()
