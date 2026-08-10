@@ -24,6 +24,8 @@ const PERMANENT_CACHE_COLLECTIONS = new Set([
   "cqSubmissions",
 ])
 const CACHE_SCHEMA = "v3"
+const CACHE_UPDATED_EVENT = "easy-education-cache-updated"
+const LEARNING_PUSH_EVENT = "easy-education-learning-push-result"
 
 function hashString(value = "") {
   let hash = 2166136261
@@ -45,8 +47,22 @@ function collectionName(ref) {
   return ""
 }
 
+function isCommunityPublicUserRead(ref) {
+  if (typeof window === "undefined") return false
+  if (collectionName(ref) !== "users") return false
+  return window.location.pathname === "/community"
+}
+
 function shouldUsePermanentCache(ref) {
-  return PERMANENT_CACHE_COLLECTIONS.has(collectionName(ref))
+  return PERMANENT_CACHE_COLLECTIONS.has(collectionName(ref)) || isCommunityPublicUserRead(ref)
+}
+
+function shouldUseCacheOnlyListener(ref) {
+  const collection = collectionName(ref)
+  if (!PERMANENT_CACHE_COLLECTIONS.has(collection)) return false
+  // The sync-feed document must stay live so targeted invalidations can arrive.
+  if (ref?.path === "settings/contentSync") return false
+  return true
 }
 
 function canonicalField(field) {
@@ -125,6 +141,20 @@ function clearMarker(ref, kind) {
   localStorage.removeItem(cacheMarker(ref, kind))
 }
 
+function emitCacheUpdated(ref, action = "changed") {
+  if (typeof window === "undefined") return
+  const collection = collectionName(ref)
+  if (!collection) return
+  window.dispatchEvent(new CustomEvent(CACHE_UPDATED_EVENT, {
+    detail: {
+      collection,
+      docId: String(ref?.id || ""),
+      action,
+      local: true,
+    },
+  }))
+}
+
 function isArchivedClassData(data) {
   if (data?.isArchived === true) return true
   const subjects = Array.isArray(data?.subject) ? data.subject : [data?.subject]
@@ -132,10 +162,15 @@ function isArchivedClassData(data) {
   return subjects.includes("archive") || chapters.includes("archive")
 }
 
-async function notifyCreatedClass(classId) {
+function emitLearningPush(detail) {
   if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent(LEARNING_PUSH_EVENT, { detail }))
+}
+
+async function notifyCreatedClass(classId) {
+  if (typeof window === "undefined") return null
   const user = getAuth().currentUser
-  if (!user) return
+  if (!user) return null
   try {
     const token = await user.getIdToken()
     const response = await fetch("/api/learning-push", {
@@ -147,12 +182,16 @@ async function notifyCreatedClass(classId) {
       body: JSON.stringify({ action: "class-created", classId }),
       keepalive: true,
     })
-    if (!response.ok) {
-      const body = await response.json().catch(() => null)
+    const body = await response.json().catch(() => null)
+    if (!response.ok || !body?.success) {
       throw new Error(body?.error || `Class notification failed: ${response.status}`)
     }
+    emitLearningPush({ ok: true, classId, ...body })
+    return body
   } catch (error) {
     console.warn("Class was created, but enrolled-user push notification failed:", error)
+    emitLearningPush({ ok: false, classId, error: error?.message || "Notification failed" })
+    return null
   }
 }
 
@@ -165,8 +204,6 @@ export function hasSeenPermanentCollection(collection) {
 export async function getDoc(ref) {
   if (!shouldUsePermanentCache(ref)) return tracked.getDoc(ref)
 
-  // A document can already be present because a parent query cached it. Reuse that
-  // exact document even if this specific getDoc call has never run before.
   try {
     const cached = await tracked.getDocFromCache(ref)
     if (cached.exists() || hasMarker(ref, "doc")) {
@@ -185,8 +222,6 @@ export async function getDoc(ref) {
 export async function getDocs(ref) {
   if (!shouldUsePermanentCache(ref)) return tracked.getDocs(ref)
 
-  // Queries need their own permanent marker. Firestore may have a few matching docs
-  // from another query, but that does not prove this exact query was fully loaded.
   if (hasMarker(ref, "query")) {
     try {
       return await tracked.getDocsFromCache(ref)
@@ -200,17 +235,95 @@ export async function getDocs(ref) {
   return snapshot
 }
 
+function observerForArgs(args) {
+  let index = 0
+  if (args[index] && typeof args[index] === "object" && typeof args[index].next !== "function") {
+    index += 1
+  }
+  const observer = args[index]
+  if (observer && typeof observer === "object" && typeof observer.next === "function") {
+    return {
+      next: observer.next.bind(observer),
+      error: typeof observer.error === "function" ? observer.error.bind(observer) : null,
+    }
+  }
+  return {
+    next: typeof args[index] === "function" ? args[index] : null,
+    error: typeof args[index + 1] === "function" ? args[index + 1] : null,
+  }
+}
+
+async function readPermanentListenerSnapshot(ref, initial = false) {
+  const isDocument = Boolean(ref?.path && !ref?._query)
+  if (initial) return isDocument ? getDoc(ref) : getDocs(ref)
+  return isDocument ? tracked.getDocFromCache(ref) : tracked.getDocsFromCache(ref)
+}
+
+export function onSnapshot(ref, ...args) {
+  if (!shouldUseCacheOnlyListener(ref) || typeof window === "undefined") {
+    return tracked.onSnapshot(ref, ...args)
+  }
+
+  const observer = observerForArgs(args)
+  let active = true
+  let work = Promise.resolve()
+  const deliver = (initial = false) => {
+    work = work.then(async () => {
+      if (!active) return
+      try {
+        const snapshot = await readPermanentListenerSnapshot(ref, initial)
+        if (active) observer.next?.(snapshot)
+      } catch (error) {
+        if (active) observer.error?.(error)
+      }
+    })
+  }
+
+  deliver(true)
+  const collection = collectionName(ref)
+  const onCacheUpdated = (event) => {
+    if (event?.detail?.collection !== collection) return
+    deliver(false)
+  }
+  window.addEventListener(CACHE_UPDATED_EVENT, onCacheUpdated)
+
+  return () => {
+    active = false
+    window.removeEventListener(CACHE_UPDATED_EVENT, onCacheUpdated)
+  }
+}
+
 export async function addDoc(collectionRef, data) {
   const result = await tracked.addDoc(collectionRef, data)
+  emitCacheUpdated(result, "changed")
   if (collectionName(collectionRef) === "classes" && !isArchivedClassData(data)) {
     notifyCreatedClass(result.id).catch(() => {})
   }
   return result
 }
 
-// This is the only automatic refresh path for permanent-cache collections.
-// It reads one changed document, not the parent query/collection. Firestore then
-// updates its persistent IndexedDB cache so future route reads remain cache-only.
+export async function setDoc(ref, data, options) {
+  const result = options === undefined
+    ? await tracked.setDoc(ref, data)
+    : await tracked.setDoc(ref, data, options)
+  emitCacheUpdated(ref, "changed")
+  return result
+}
+
+export async function updateDoc(ref, ...args) {
+  const result = await tracked.updateDoc(ref, ...args)
+  emitCacheUpdated(ref, "changed")
+  return result
+}
+
+export async function deleteDoc(ref) {
+  const result = await tracked.deleteDoc(ref)
+  emitCacheUpdated(ref, "deleted")
+  return result
+}
+
+// The sync feed is the only automatic server refresh path for permanent data.
+// A change causes exactly one affected document read; parent queries remain cache-only.
 export async function syncChangedDocument(collectionPath, documentId) {
   if (!PERMANENT_CACHE_COLLECTIONS.has(collectionPath)) {
     throw new Error(`Unsupported permanent-cache collection: ${collectionPath}`)

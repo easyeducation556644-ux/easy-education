@@ -15,6 +15,7 @@ import DownloadResumeAgent from "./components/DownloadResumeAgent"
 import NativeHlsBootstrap from "./components/NativeHlsBootstrap"
 import PermanentCacheSyncAgent from "./components/PermanentCacheSyncAgent"
 import NativePushRegistrationAgent from "./components/NativePushRegistrationAgent"
+import LearningPushFeedbackAgent from "./components/LearningPushFeedbackAgent"
 import { NativeAppTopBar, NativeBottomNav } from "./components/NativeAppChrome"
 import { hasNativeDownloader } from "./lib/nativeAndroid"
 
@@ -59,6 +60,7 @@ function App() {
             <SettingsLoader />
             <PermanentCacheSyncAgent />
             <NativePushRegistrationAgent />
+            <LearningPushFeedbackAgent />
             <DownloadResumeAgent />
             <NativeHlsBootstrap />
             {!nativeApp && <style>{'a[href="/downloads"]{display:none!important}'}</style>}

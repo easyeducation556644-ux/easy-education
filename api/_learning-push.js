@@ -36,8 +36,6 @@ async function registerDevice(req, res) {
   if (!TOKEN_PATTERN.test(token)) return sendError(res, 400, "Invalid push token")
   if (!ID_PATTERN.test(deviceId)) return sendError(res, 400, "Invalid device id")
 
-  // One FCM token belongs to the currently signed-in account on this device.
-  // Account switching removes the token from older user subscriptions first.
   const existingOwners = await db.collection("pushSubscriptions")
     .where("tokens", "array-contains", token)
     .get()
@@ -65,10 +63,15 @@ async function registerDevice(req, res) {
     tokens: FieldValue.arrayUnion(token),
     deviceIds: FieldValue.arrayUnion(deviceId),
     courseIds,
+    platform: "android",
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true })
 
-  return res.status(200).json({ success: true, courseCount: courseIds.length })
+  return res.status(200).json({
+    success: true,
+    registered: true,
+    courseCount: courseIds.length,
+  })
 }
 
 async function resolveNames(db, classData) {
@@ -100,6 +103,7 @@ async function sendInChunks(messaging, tokens, data) {
   let successCount = 0
   let failureCount = 0
   const invalidTokens = []
+  const failureCodes = {}
 
   for (let index = 0; index < tokens.length; index += MAX_TOKENS_PER_MESSAGE) {
     const chunk = tokens.slice(index, index + MAX_TOKENS_PER_MESSAGE)
@@ -112,7 +116,8 @@ async function sendInChunks(messaging, tokens, data) {
     failureCount += response.failureCount
     response.responses.forEach((result, responseIndex) => {
       if (result.success) return
-      const code = result.error?.code || ""
+      const code = result.error?.code || "messaging/unknown"
+      failureCodes[code] = (failureCodes[code] || 0) + 1
       if (
         code.includes("registration-token-not-registered") ||
         code.includes("invalid-registration-token") ||
@@ -121,11 +126,11 @@ async function sendInChunks(messaging, tokens, data) {
     })
   }
 
-  return { successCount, failureCount, invalidTokens }
+  return { successCount, failureCount, invalidTokens, failureCodes }
 }
 
 async function notifyClassCreated(req, res) {
-  const { userProfile, db } = await requireAuthenticatedUser(req)
+  const { app, userProfile, db } = await requireAuthenticatedUser(req)
   const classId = text(req.body?.classId)
   if (!ID_PATTERN.test(classId)) return sendError(res, 400, "Invalid class id")
 
@@ -136,13 +141,18 @@ async function notifyClassCreated(req, res) {
   if (!courseId) return sendError(res, 422, "Class course is missing")
   if (!canNotifyCourse(userProfile, courseId)) return sendError(res, 403, "Course notification permission denied")
 
-  // Strict eligibility: only live userCourses records for this exact course count.
   const enrollments = await db.collection("userCourses")
     .where("courseId", "==", courseId)
     .get()
   const eligibleUserIds = unique(enrollments.docs.map((item) => text(item.data()?.userId)))
   if (eligibleUserIds.length === 0) {
-    return res.status(200).json({ success: true, eligibleUsers: 0, delivered: 0 })
+    return res.status(200).json({
+      success: true,
+      eligibleUsers: 0,
+      registeredDevices: 0,
+      delivered: 0,
+      failed: 0,
+    })
   }
 
   const subscriptionRefs = eligibleUserIds.map((uid) => db.collection("pushSubscriptions").doc(uid))
@@ -160,10 +170,16 @@ async function notifyClassCreated(req, res) {
   const classTitle = text(classData.title || classData.topic, "New class")
   const url = `/course/${encodeURIComponent(courseId)}/watch/${encodeURIComponent(classId)}`
   if (tokens.length === 0) {
-    return res.status(200).json({ success: true, eligibleUsers: eligibleUserIds.length, delivered: 0 })
+    return res.status(200).json({
+      success: true,
+      eligibleUsers: eligibleUserIds.length,
+      registeredDevices: 0,
+      delivered: 0,
+      failed: 0,
+    })
   }
 
-  const messaging = getMessaging()
+  const messaging = getMessaging(app)
   const result = await sendInChunks(messaging, tokens, {
     type: "new_class",
     title: classTitle,
@@ -199,6 +215,7 @@ async function notifyClassCreated(req, res) {
     registeredDevices: tokens.length,
     delivered: result.successCount,
     failed: result.failureCount,
+    failureCodes: result.failureCodes,
   })
 }
 
