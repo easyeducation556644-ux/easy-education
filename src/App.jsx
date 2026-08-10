@@ -13,6 +13,7 @@ import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
 import DownloadResumeAgent from "./components/DownloadResumeAgent"
 import NativeHlsBootstrap from "./components/NativeHlsBootstrap"
+import PermanentCacheSyncAgent from "./components/PermanentCacheSyncAgent"
 import { NativeAppTopBar, NativeBottomNav } from "./components/NativeAppChrome"
 import { hasNativeDownloader } from "./lib/nativeAndroid"
 
@@ -55,6 +56,7 @@ function App() {
         <CartProvider>
           <ExamProvider>
             <SettingsLoader />
+            <PermanentCacheSyncAgent />
             <DownloadResumeAgent />
             <NativeHlsBootstrap />
             {!nativeApp && <style>{'a[href="/downloads"]{display:none!important}'}</style>}

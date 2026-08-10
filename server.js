@@ -12,6 +12,7 @@ import versionHandler from './api/version.js';
 import securityEventsHandler from './api/security-events.js';
 import offlineVideoHandler from './api/offline-video.js';
 import firestoreReadUsageHandler from './api/_firestore-read-usage.js';
+import syncEventHandler from './api/_sync-event.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -45,6 +46,10 @@ app.all('/api/security-events', (req, res) => {
 
 app.all('/api/firestore-read-usage', (req, res) => {
   firestoreReadUsageHandler(req, res);
+});
+
+app.post('/api/sync-event', (req, res) => {
+  syncEventHandler(req, res);
 });
 
 app.get('/api/offline-video', (req, res) => {

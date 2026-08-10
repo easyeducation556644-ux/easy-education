@@ -5,6 +5,10 @@
       "destination": "/api/version?resource=firestore-read-usage"
     },
     {
+      "source": "/api/sync-event",
+      "destination": "/api/version?resource=sync-event"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/:path*"
     },

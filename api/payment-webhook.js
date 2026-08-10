@@ -2,30 +2,42 @@
  * RupantorPay Payment Webhook Handler
  * Receives payment notifications from RupantorPay and processes enrollment
  * Official Docs: https://rupantorpay.com/developers/docs
- * 
- * CRITICAL FIXES according to official documentation:
- * 1. Webhook receives: transactionId, paymentMethod, paymentAmount, paymentFee, currency, status
- * 2. Status can be: PENDING, COMPLETED, or ERROR
- * 3. Must verify payment with API before processing
  */
 
 import { processPaymentAndEnrollUser } from './utils/process-payment.js';
+import { getAdminServices } from './utils/firebase-admin.js';
+import { publishEnrollmentSync } from './_sync-event.js';
 
 const RUPANTORPAY_API_KEY = process.env.RUPANTORPAY_API_KEY;
 const VERIFY_API_URL = 'https://payment.rupantorpay.com/api/payment/verify-payment';
 
+async function syncEnrollmentCache(userId, transactionId, result) {
+  if (!result?.success) return;
+  try {
+    const { db } = getAdminServices();
+    await publishEnrollmentSync({
+      db,
+      userId,
+      transactionId,
+      enrolledCourseIds: result.enrollmentDetails?.enrolledCourses || [],
+    });
+  } catch (error) {
+    console.error('Failed to publish webhook enrollment cache sync:', error);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
-    return res.status(405).json({ 
-      success: false, 
-      error: "Method Not Allowed" 
+    return res.status(405).json({
+      success: false,
+      error: "Method Not Allowed"
     });
   }
 
   try {
     const webhookData = req.body;
-    
+
     console.log('RupantorPay webhook received:', {
       transactionId: webhookData.transactionId,
       status: webhookData.status,
@@ -33,17 +45,16 @@ export default async function handler(req, res) {
       paymentMethod: webhookData.paymentMethod
     });
 
-    // Only process completed payments
     if (webhookData.status !== 'COMPLETED') {
       console.log(`Webhook received with status: ${webhookData.status}, not processing`);
-      return res.status(200).json({ 
-        success: true, 
-        message: "Webhook received but payment not completed" 
+      return res.status(200).json({
+        success: true,
+        message: "Webhook received but payment not completed"
       });
     }
 
     const transactionId = webhookData.transactionId;
-    
+
     if (!transactionId) {
       console.error('❌ No transaction ID in webhook data');
       return res.status(400).json({
@@ -52,7 +63,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Verify payment with RupantorPay to prevent fraud
     const verifyResponse = await fetch(VERIFY_API_URL, {
       method: 'POST',
       headers: {
@@ -66,9 +76,9 @@ export default async function handler(req, res) {
 
     if (paymentData.status !== 'COMPLETED') {
       console.log('Payment verification failed or not completed:', paymentData.status);
-      return res.status(200).json({ 
-        success: true, 
-        message: "Webhook received but payment not completed" 
+      return res.status(200).json({
+        success: true,
+        message: "Webhook received but payment not completed"
       });
     }
 
@@ -76,7 +86,6 @@ export default async function handler(req, res) {
     console.log('Transaction ID:', paymentData.transaction_id);
     console.log('Amount:', paymentData.amount);
 
-    // Parse metadata - may be JSON string or object
     let metadata = {};
     if (paymentData.metadata) {
       if (typeof paymentData.metadata === 'string') {
@@ -100,13 +109,12 @@ export default async function handler(req, res) {
 
     if (!userId) {
       console.error('❌ No userId in payment metadata:', metadata);
-      return res.status(200).json({ 
-        success: true, 
-        message: "Webhook received but no user ID in metadata" 
+      return res.status(200).json({
+        success: true,
+        message: "Webhook received but no user ID in metadata"
       });
     }
 
-    // Process payment and enroll user in courses
     const result = await processPaymentAndEnrollUser({
       userId,
       userName: paymentData.fullname || metadata.fullname || 'N/A',
@@ -124,11 +132,12 @@ export default async function handler(req, res) {
     });
 
     if (result.success) {
+      await syncEnrollmentCache(userId, paymentData.transaction_id, result);
       console.log('Webhook processed successfully:', result.message);
-      return res.status(200).json({ 
-        success: true, 
+      return res.status(200).json({
+        success: true,
         message: result.message,
-        alreadyProcessed: result.alreadyProcessed 
+        alreadyProcessed: result.alreadyProcessed
       });
     } else {
       console.error('Error processing webhook payment:', result.error);
