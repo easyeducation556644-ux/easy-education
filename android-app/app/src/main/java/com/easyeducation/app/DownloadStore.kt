@@ -7,7 +7,9 @@ data class DownloadTask(
     val id: String,
     val title: String,
     val courseTitle: String,
-    val playlistUrl: String,
+    val playlistUrl: String = "",
+    val downloadUrlBase: String = "",
+    val kind: String = "hls",
     val height: Int,
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
@@ -22,18 +24,26 @@ class DownloadStore(context: Context) {
 
     fun save(task: DownloadTask) {
         val json = JSONObject()
-            .put("id", task.id).put("title", task.title).put("courseTitle", task.courseTitle)
-            .put("playlistUrl", task.playlistUrl).put("height", task.height)
-            .put("downloadedBytes", task.downloadedBytes).put("totalBytes", task.totalBytes)
-            .put("completed", task.completed).put("total", task.total)
-            .put("state", task.state).put("error", task.error)
+            .put("id", task.id)
+            .put("title", task.title)
+            .put("courseTitle", task.courseTitle)
+            .put("playlistUrl", task.playlistUrl)
+            .put("downloadUrlBase", task.downloadUrlBase)
+            .put("kind", task.kind)
+            .put("height", task.height)
+            .put("downloadedBytes", task.downloadedBytes)
+            .put("totalBytes", task.totalBytes)
+            .put("completed", task.completed)
+            .put("total", task.total)
+            .put("state", task.state)
+            .put("error", task.error)
         prefs.edit().putString(task.id, json.toString()).apply()
     }
 
     fun get(id: String): DownloadTask? = prefs.getString(id, null)?.let(::decode)
     fun remove(id: String) { prefs.edit().remove(id).apply() }
     fun all(): List<DownloadTask> = prefs.all.values.mapNotNull { (it as? String)?.let(::decode) }
-    fun pending(): List<DownloadTask> = all().filter { it.state in setOf("queued", "downloading") }
+    fun pending(): List<DownloadTask> = all().filter { it.state in setOf("queued", "downloading", "converting") }
 
     private fun decode(raw: String): DownloadTask? = runCatching {
         val j = JSONObject(raw)
@@ -41,7 +51,9 @@ class DownloadStore(context: Context) {
             id = j.getString("id"),
             title = j.optString("title", "Class video"),
             courseTitle = j.optString("courseTitle"),
-            playlistUrl = j.getString("playlistUrl"),
+            playlistUrl = j.optString("playlistUrl"),
+            downloadUrlBase = j.optString("downloadUrlBase"),
+            kind = j.optString("kind", if (j.optString("playlistUrl").isNotBlank()) "hls" else "mp4"),
             height = j.optInt("height", 360),
             downloadedBytes = j.optLong("downloadedBytes"),
             totalBytes = j.optLong("totalBytes"),

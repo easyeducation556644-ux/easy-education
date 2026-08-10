@@ -6,39 +6,74 @@ const FALLBACK_CHUNK_SIZE = 8 * 1024 * 1024
 const HLS_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
 const OFFLINE_HLS_LIBRARY_URL = "/offline-assets/hls.min.js"
 
-
 function nativeDownloadId(userId, classId) {
   return `${userId}:${classId}`
 }
 
-async function saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes, onProgress, signal }) {
-  const id = nativeDownloadId(user.uid, classId)
-  await nativeRequest("start", {
-    id,
-    title: title || "Class video",
-    courseTitle: courseTitle || "",
-    playlistUrl: option.playlistUrl,
-    height: option.height,
-    totalBytes: Number(totalBytes || option.contentLength) || 0,
-  })
-
+async function waitForNativeDownload({ id, onProgress, signal }) {
   while (true) {
     if (signal?.aborted) {
       await nativeRequest("pause", { id }).catch(() => null)
       throw new DOMException("Download paused", "AbortError")
     }
+
     const status = await nativeRequest("status", { id })
     onProgress?.(status.progress || 0, status)
-    if (status.state === "completed") return status.playbackUrl
-    if (status.state === "paused") throw new DOMException("Download paused", "AbortError")
+
+    if (status.state === "completed" && status.playbackUrl) {
+      return status.playbackUrl
+    }
+    if (status.state === "paused") {
+      throw new DOMException("Download paused", "AbortError")
+    }
     if (status.state === "failed") {
       throw new Error(status.error || "Native download failed")
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await new Promise((resolve) => setTimeout(resolve, 700))
   }
 }
 
+async function saveNativeVideo({
+  user,
+  classId,
+  option,
+  title,
+  courseTitle,
+  totalBytes,
+  downloadToken,
+  onProgress,
+  signal,
+}) {
+  const id = nativeDownloadId(user.uid, classId)
+  const kind = option.kind === "hls" ? "hls" : "mp4"
+  const total = Number(totalBytes || option.contentLength) || 0
+  const payload = {
+    id,
+    kind,
+    title: title || "Class video",
+    courseTitle: courseTitle || "",
+    height: Number(option.height) || 360,
+    totalBytes: total,
+  }
+
+  if (kind === "hls") {
+    if (!option.playlistUrl) throw new Error("HLS playlist URL is unavailable")
+    payload.playlistUrl = option.playlistUrl
+  } else {
+    if (!downloadToken) throw new Error("MP4 download token is unavailable")
+    const url = new URL("/api/offline-video", window.location.origin)
+    url.searchParams.set("classId", classId)
+    url.searchParams.set("height", String(option.height))
+    url.searchParams.set("downloadToken", downloadToken)
+    payload.downloadUrlBase = url.toString()
+  }
+
+  await nativeRequest("start", payload)
+  return waitForNativeDownload({ id, onProgress, signal })
+}
+
 function ensureSupport() {
+  if (hasNativeDownloader()) return
   if (!("caches" in window) || !("serviceWorker" in navigator)) {
     throw new Error("Offline video is not supported in this browser")
   }
@@ -67,7 +102,8 @@ function getHlsSegmentUrl(userId, classId, index) {
 export async function getSavedOfflineVideoUrl(userId, classId) {
   if (hasNativeDownloader()) {
     const native = await nativeRequest("status", { id: nativeDownloadId(userId, classId) }).catch(() => null)
-    if (native?.state === "completed") return native.playbackUrl
+    if (native?.state === "completed" && native.playbackUrl) return native.playbackUrl
+    return null
   }
   if (!("caches" in window)) return null
   const cache = await caches.open(OFFLINE_CACHE)
@@ -87,7 +123,7 @@ async function readManifest(cache, userId, classId) {
 export async function hasOfflineVideo(userId, classId) {
   if (hasNativeDownloader()) {
     const native = await nativeRequest("status", { id: nativeDownloadId(userId, classId) }).catch(() => null)
-    if (native?.state === "completed") return true
+    return native?.state === "completed" && Boolean(native.playbackUrl)
   }
   if (!("caches" in window)) return false
   const cache = await caches.open(OFFLINE_CACHE)
@@ -103,6 +139,7 @@ export async function hasOfflineVideo(userId, classId) {
 export async function removeOfflineVideo(userId, classId) {
   if (hasNativeDownloader()) {
     await nativeRequest("remove", { id: nativeDownloadId(userId, classId) }).catch(() => null)
+    return true
   }
   if (!("caches" in window)) return false
   const cache = await caches.open(OFFLINE_CACHE)
@@ -163,10 +200,6 @@ async function cacheHlsLibrary(cache) {
 }
 
 async function saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal }) {
-  if (hasNativeDownloader()) {
-    return saveNativeHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal })
-  }
-
   const playlistResponse = await fetch(option.playlistUrl, { signal })
   if (!playlistResponse.ok) throw new Error("Rumble HLS playlist download failed")
   const playlistText = await playlistResponse.text()
@@ -291,6 +324,21 @@ export async function saveOfflineVideo({
     || metadata.options?.filter((item) => item.height <= height).at(-1)
     || metadata.options?.[0]
   if (!option?.contentLength) throw new Error("Selected quality size is unavailable")
+
+  if (hasNativeDownloader()) {
+    return saveNativeVideo({
+      user,
+      classId,
+      option,
+      title,
+      courseTitle,
+      totalBytes: requestedTotalBytes || option.contentLength,
+      downloadToken: metadata.downloadToken,
+      onProgress,
+      signal,
+    })
+  }
+
   if (option.kind === "hls" && option.playlistUrl) {
     return saveHlsVideo({ user, classId, option, title, courseTitle, totalBytes: requestedTotalBytes, onProgress, signal })
   }
@@ -364,6 +412,7 @@ async function removeByPrefix(prefix) {
 }
 
 export async function removeOfflineVideosForOtherUsers(currentUserId) {
+  if (hasNativeDownloader()) return
   const root = `${window.location.origin}/offline-media/`
   const own = `${root}${encodeURIComponent(currentUserId)}/`
   if (!("caches" in window)) return
@@ -377,6 +426,7 @@ export async function removeOfflineVideosForOtherUsers(currentUserId) {
 
 export async function removeOfflineVideosForUser(userId) {
   if (!userId) return
+  if (hasNativeDownloader()) return
   await removeByPrefix(`${window.location.origin}/offline-media/${encodeURIComponent(userId)}/`)
 }
 
