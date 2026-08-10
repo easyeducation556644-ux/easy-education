@@ -3,6 +3,7 @@ import { getAuth } from "firebase-admin/auth"
 import { getFirestore } from "firebase-admin/firestore"
 
 const DEFAULT_PROJECT_ID = "easy-education-real"
+const DEFAULT_APP_NAME = "[DEFAULT]"
 
 function getServiceAccount() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -25,11 +26,13 @@ function getServiceAccount() {
 }
 
 function ensureAdminApp() {
-  if (getApps().length > 0) return getApps()[0]
+  const existingDefault = getApps().find((app) => app.name === DEFAULT_APP_NAME)
+  if (existingDefault) return existingDefault
 
   const serviceAccount = getServiceAccount()
   const projectId =
     serviceAccount?.projectId ||
+    serviceAccount?.project_id ||
     process.env.FIREBASE_PROJECT_ID ||
     DEFAULT_PROJECT_ID
 
@@ -49,6 +52,7 @@ function ensureAdminApp() {
 export function getAdminServices() {
   const app = ensureAdminApp()
   return {
+    app,
     auth: getAuth(app),
     db: getFirestore(app),
   }
@@ -84,7 +88,7 @@ export async function requireAuthenticatedUser(req) {
     throw error
   }
 
-  const { auth, db } = getAdminServices()
+  const { app, auth, db } = getAdminServices()
   let decodedToken
 
   try {
@@ -99,6 +103,7 @@ export async function requireAuthenticatedUser(req) {
   const userProfile = userSnapshot.exists ? userSnapshot.data() : {}
 
   return {
+    app,
     decodedToken,
     userProfile,
     db,
