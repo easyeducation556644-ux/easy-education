@@ -9,6 +9,10 @@
       "destination": "/api/version?resource=sync-event"
     },
     {
+      "source": "/api/learning-push",
+      "destination": "/api/version?resource=learning-push"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/:path*"
     },

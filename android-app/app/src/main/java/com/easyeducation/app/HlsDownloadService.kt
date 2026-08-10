@@ -45,7 +45,7 @@ class HlsDownloadService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = DownloadStore(this)
-        createChannel()
+        createChannels()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -418,10 +418,12 @@ class HlsDownloadService : Service() {
             task.total > 0 -> (task.completed * 100 / task.total).coerceIn(0, 100)
             else -> 0
         }
-        val open = PendingIntent.getActivity(
+        val openDownloads = PendingIntent.getActivity(
             this,
-            0,
-            Intent(this, MainActivity::class.java),
+            notificationId(task.id),
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_OPEN_PATH, "/downloads")
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val detail = buildString {
@@ -432,25 +434,50 @@ class HlsDownloadService : Service() {
             }
             if (task.courseTitle.isNotBlank()) append(" • ${task.courseTitle}")
         }
+
+        if (task.state == "completed") {
+            val play = PendingIntent.getActivity(
+                this,
+                notificationId(task.id) xor 0x4A17,
+                Intent(this, OfflinePlayerActivity::class.java)
+                    .putExtra(OfflinePlayerActivity.EXTRA_ID, task.id),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val completedText = buildString {
+                append(task.title)
+                if (task.courseTitle.isNotBlank()) append(" • ${task.courseTitle}")
+                append(" • ${task.height}p")
+            }
+            return NotificationCompat.Builder(this, COMPLETE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("Download completed")
+                .setContentText(completedText)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(completedText))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .setOnlyAlertOnce(false)
+                .setContentIntent(openDownloads)
+                .addAction(android.R.drawable.ic_media_play, "Play", play)
+                .build()
+        }
+
         val status = when (task.state) {
-            "completed" -> "Download complete"
             "converting" -> "Preparing MP4 video"
             "paused" -> "Download paused"
             "failed" -> "Download failed"
             else -> "${progress}%"
         }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(
-                if (task.state == "completed") android.R.drawable.stat_sys_download_done
-                else android.R.drawable.stat_sys_download,
-            )
+        return NotificationCompat.Builder(this, PROGRESS_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(task.title)
             .setContentText("$status • $detail")
             .setStyle(NotificationCompat.BigTextStyle().bigText("$status • $detail"))
             .setProgress(100, progress, task.totalBytes <= 0 && task.total <= 0)
             .setOngoing(task.state in setOf("downloading", "converting"))
             .setOnlyAlertOnce(true)
-            .setContentIntent(open)
+            .setAutoCancel(task.state in setOf("paused", "failed"))
+            .setContentIntent(openDownloads)
             .build()
     }
 
@@ -482,14 +509,19 @@ class HlsDownloadService : Service() {
         return !File(dir, MP4_NAME).exists() && File(dir, PLAYLIST_NAME).exists()
     }
 
-    private fun createChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Video downloads", NotificationManager.IMPORTANCE_LOW),
+    private fun createChannels() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(PROGRESS_CHANNEL_ID, "Video downloads", NotificationManager.IMPORTANCE_LOW),
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(COMPLETE_CHANNEL_ID, "Completed downloads", NotificationManager.IMPORTANCE_DEFAULT),
         )
     }
 
     companion object {
-        private const val CHANNEL_ID = "video_downloads"
+        private const val PROGRESS_CHANNEL_ID = "video_downloads"
+        private const val COMPLETE_CHANNEL_ID = "video_download_complete"
         private const val EXTRA_ID = "download_id"
         private const val MP4_NAME = "video.mp4"
         private const val PLAYLIST_NAME = "playlist.m3u8"
@@ -520,6 +552,7 @@ class HlsDownloadService : Service() {
             pause(context, id)
             offlineDir(context, id).deleteRecursively()
             DownloadStore(context).remove(id)
+            context.getSystemService(NotificationManager::class.java).cancel(notificationId(id))
         }
 
         fun safe(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())

@@ -1,5 +1,6 @@
 import firestoreReadUsageHandler from './_firestore-read-usage.js'
 import syncEventHandler from './_sync-event.js'
+import learningPushHandler from './_learning-push.js'
 
 const APP_VERSION = 'v9.0';
 
@@ -10,6 +11,10 @@ export default async function versionHandler(req, res) {
 
   if (req.query?.resource === 'sync-event') {
     return syncEventHandler(req, res)
+  }
+
+  if (req.query?.resource === 'learning-push') {
+    return learningPushHandler(req, res)
   }
 
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

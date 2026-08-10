@@ -32,6 +32,13 @@
             android:name=".HlsDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".EasyEducationMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

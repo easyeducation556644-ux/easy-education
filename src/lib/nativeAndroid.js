@@ -26,10 +26,15 @@ export function nativeRequest(action, payload = {}) {
     const requestId = `${Date.now()}-${sequence += 1}`
     pending.set(requestId, { resolve, reject })
     window.EasyEducationNative.postMessage(JSON.stringify({ requestId, action, ...payload }))
+    const timeout = action === "googleSignIn"
+      ? 120000
+      : action === "pushToken"
+        ? 30000
+        : 10000
     setTimeout(() => {
       if (!pending.has(requestId)) return
       pending.delete(requestId)
       reject(new Error("Native Android app did not respond"))
-    }, action === "googleSignIn" ? 120000 : 10000)
+    }, timeout)
   })
 }
