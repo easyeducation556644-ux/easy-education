@@ -229,6 +229,16 @@ class MainActivity : AppCompatActivity() {
                         .put("playbackUrl", if (mp4.exists() && mp4.length() > 0)
                             "https://native.easyeducation.local/${Uri.encode(id)}/video.mp4" else JSONObject.NULL)
                 }
+                "play" -> {
+                    val id = request.getString("id")
+                    val mp4 = mp4File(id)
+                    require(mp4.exists() && mp4.length() > 0) { "Downloaded MP4 is not ready" }
+                    startActivity(
+                        Intent(this, OfflinePlayerActivity::class.java)
+                            .putExtra(OfflinePlayerActivity.EXTRA_ID, id),
+                    )
+                    JSONObject().put("ok", true).put("id", id)
+                }
                 "pause" -> {
                     val id = request.getString("id")
                     HlsDownloadService.pause(this, id)
