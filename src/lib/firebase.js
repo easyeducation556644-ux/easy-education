@@ -1,6 +1,11 @@
 import { initializeApp } from "firebase/app"
 import { getAuth, GoogleAuthProvider } from "firebase/auth"
-import { getFirestore } from "firebase/firestore"
+import {
+  initializeFirestore,
+  memoryLocalCache,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from "firebase/firestore"
 import { getMessaging, isSupported } from "firebase/messaging"
 
 console.log(" Initializing Firebase...")
@@ -25,7 +30,20 @@ try {
   app = initializeApp(firebaseConfig)
 
   auth = getAuth(app)
-  db = getFirestore(app)
+
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        cacheSizeBytes: 100 * 1024 * 1024,
+        tabManager: persistentMultipleTabManager(),
+      }),
+    })
+    console.log(" Firestore persistent cache enabled")
+  } catch (cacheError) {
+    console.warn(" Persistent Firestore cache unavailable; falling back to memory cache", cacheError)
+    db = initializeFirestore(app, { localCache: memoryLocalCache() })
+  }
+
   googleProvider = new GoogleAuthProvider()
   googleProvider.setCustomParameters({
     prompt: 'select_account'
