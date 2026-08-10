@@ -28,6 +28,7 @@ import com.google.android.gms.common.api.ApiException
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
 import java.net.URI
 
 class MainActivity : AppCompatActivity() {
@@ -173,19 +174,35 @@ class MainActivity : AppCompatActivity() {
             when (request.getString("action")) {
                 "start" -> {
                     val id = request.getString("id")
-                    val playlistUrl = request.getString("playlistUrl")
-                    require(isAllowedMediaUrl(playlistUrl)) { "Unsupported media host" }
+                    val kind = request.optString("kind", "hls")
+                    val playlistUrl = request.optString("playlistUrl")
+                    val downloadUrlBase = request.optString("downloadUrlBase")
+                    if (kind == "mp4") {
+                        require(isAllowedAppDownloadUrl(downloadUrlBase)) { "Unsupported MP4 download source" }
+                    } else {
+                        require(isAllowedMediaUrl(playlistUrl)) { "Unsupported media host" }
+                    }
+
                     val existing = store.get(id)
+                    val sameSource = existing != null && existing.kind == kind && (
+                        (kind == "mp4" && existing.downloadUrlBase == downloadUrlBase) ||
+                            (kind != "mp4" && existing.playlistUrl == playlistUrl)
+                        )
+                    if (!sameSource) HlsDownloadService.offlineDir(this, id).deleteRecursively()
+
                     store.save(DownloadTask(
                         id = id,
                         title = request.optString("title", "Class video"),
                         courseTitle = request.optString("courseTitle"),
                         playlistUrl = playlistUrl,
+                        downloadUrlBase = downloadUrlBase,
+                        kind = kind,
                         height = request.optInt("height", 360),
-                        downloadedBytes = existing?.downloadedBytes ?: 0,
+                        downloadedBytes = if (sameSource) existing?.downloadedBytes ?: 0 else 0,
                         totalBytes = request.optLong("totalBytes"),
-                        completed = existing?.completed ?: 0,
-                        total = existing?.total ?: 0,
+                        completed = if (sameSource) existing?.completed ?: 0 else 0,
+                        total = if (sameSource) existing?.total ?: 0 else 0,
+                        state = if (sameSource && existing?.state == "completed" && mp4File(id).exists()) "completed" else "queued",
                     ))
                     HlsDownloadService.start(this, id)
                     JSONObject().put("ok", true).put("id", id)
@@ -193,16 +210,24 @@ class MainActivity : AppCompatActivity() {
                 "status" -> {
                     val id = request.getString("id")
                     val task = store.get(id) ?: error("Download not found")
+                    val mp4 = mp4File(id)
+                    var state = task.state
+                    if (state == "completed" && !mp4.exists() && task.kind == "hls") {
+                        state = "converting"
+                        HlsDownloadService.start(this, id)
+                    }
                     val progress = if (task.total > 0) task.completed * 100 / task.total else 0
                     val byteProgress = if (task.totalBytes > 0)
                         task.downloadedBytes.toDouble() * 100.0 / task.totalBytes.toDouble()
                     else progress.toDouble()
-                    JSONObject().put("ok", true).put("id", id).put("state", task.state)
-                        .put("progress", byteProgress).put("completed", task.completed).put("total", task.total)
+                    JSONObject().put("ok", true).put("id", id).put("state", state)
+                        .put("progress", byteProgress.coerceIn(0.0, 100.0))
+                        .put("completed", task.completed).put("total", task.total)
                         .put("downloadedBytes", task.downloadedBytes).put("totalBytes", task.totalBytes)
                         .put("height", task.height).put("title", task.title).put("courseTitle", task.courseTitle)
                         .put("error", task.error)
-                        .put("playbackUrl", "https://native.easyeducation.local/${Uri.encode(id)}/playlist.m3u8")
+                        .put("playbackUrl", if (mp4.exists() && mp4.length() > 0)
+                            "https://native.easyeducation.local/${Uri.encode(id)}/video.mp4" else JSONObject.NULL)
                 }
                 "pause" -> {
                     val id = request.getString("id")
@@ -221,12 +246,20 @@ class MainActivity : AppCompatActivity() {
         reply.postMessage(response.toString())
     }
 
+    private fun mp4File(id: String) = File(HlsDownloadService.offlineDir(this, id), "video.mp4")
+
     private fun isAllowedMediaUrl(value: String): Boolean = runCatching {
-        val host = URI(value).host?.lowercase() ?: return false
-        URI(value).scheme == "https" && (host == "rumble.com" || host.endsWith(".rumble.com") ||
+        val uri = URI(value)
+        val host = uri.host?.lowercase() ?: return false
+        uri.scheme == "https" && (host == "rumble.com" || host.endsWith(".rumble.com") ||
             host == "rumble.cloud" || host.endsWith(".rumble.cloud") ||
             host == "rmbl.ws" || host.endsWith(".rmbl.ws") ||
             host == "1a-1791.com" || host.endsWith(".1a-1791.com"))
+    }.getOrDefault(false)
+
+    private fun isAllowedAppDownloadUrl(value: String): Boolean = runCatching {
+        val uri = URI(value)
+        uri.scheme == "https" && uri.host == APP_HOST && uri.path == "/api/offline-video"
     }.getOrDefault(false)
 
     private inner class AppWebChromeClient : WebChromeClient() {
@@ -290,25 +323,123 @@ class MainActivity : AppCompatActivity() {
             val uri = request.url
             if (uri.host != "native.easyeducation.local") return super.shouldInterceptRequest(view, request)
             val parts = uri.pathSegments
-            if (parts.size < 2) return null
-            val file = File(filesDir, "offline/${HlsDownloadService.safe(parts[0])}/${parts.drop(1).joinToString("/")}")
-            if (!file.exists()) return WebResourceResponse("text/plain", "utf-8", 404, "Not found", emptyMap(), null)
-
-            val mime = when (file.extension.lowercase()) {
-                "m3u8" -> "application/vnd.apple.mpegurl"
-                "m4s", "mp4" -> "video/mp4"
-                else -> "video/mp2t"
-            }
-            val headers = mapOf(
-                "Access-Control-Allow-Origin" to APP_ORIGIN,
-                "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
-                "Access-Control-Allow-Headers" to "Range, Origin, Accept, Content-Type",
-                "Accept-Ranges" to "bytes",
-                "Cache-Control" to "no-store",
-                "Content-Length" to file.length().toString(),
+            if (parts.size < 2) return notFoundResponse()
+            val file = File(
+                filesDir,
+                "offline/${HlsDownloadService.safe(parts[0])}/${parts.drop(1).joinToString("/")}",
             )
-            return WebResourceResponse(mime, null, 200, "OK", headers, FileInputStream(file))
+            if (!file.exists() || !file.isFile) return notFoundResponse()
+            return serveLocalFile(request, file)
         }
+    }
+
+    private fun notFoundResponse() = WebResourceResponse(
+        "text/plain",
+        "utf-8",
+        404,
+        "Not found",
+        mapOf("Access-Control-Allow-Origin" to APP_ORIGIN),
+        null,
+    )
+
+    private fun serveLocalFile(request: WebResourceRequest, file: File): WebResourceResponse {
+        val mime = when (file.extension.lowercase()) {
+            "mp4", "m4s" -> "video/mp4"
+            "m3u8" -> "application/vnd.apple.mpegurl"
+            else -> "application/octet-stream"
+        }
+        val length = file.length()
+        val rangeHeader = request.requestHeaders.entries
+            .firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
+        val range = parseByteRange(rangeHeader, length)
+        val isHead = request.method.equals("HEAD", ignoreCase = true)
+
+        if (rangeHeader != null && range == null) {
+            return WebResourceResponse(
+                mime,
+                null,
+                416,
+                "Range Not Satisfiable",
+                mapOf(
+                    "Access-Control-Allow-Origin" to APP_ORIGIN,
+                    "Content-Range" to "bytes */$length",
+                    "Accept-Ranges" to "bytes",
+                ),
+                null,
+            )
+        }
+
+        val (start, end) = range ?: (0L to (length - 1).coerceAtLeast(0))
+        val responseLength = if (length > 0) end - start + 1 else 0
+        val headers = linkedMapOf(
+            "Access-Control-Allow-Origin" to APP_ORIGIN,
+            "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers" to "Range, Origin, Accept, Content-Type",
+            "Access-Control-Expose-Headers" to "Content-Length, Content-Range, Accept-Ranges",
+            "Accept-Ranges" to "bytes",
+            "Cache-Control" to "private, max-age=31536000, immutable",
+            "Content-Length" to responseLength.toString(),
+        )
+        if (range != null) headers["Content-Range"] = "bytes $start-$end/$length"
+
+        val body: InputStream? = if (isHead || request.method.equals("OPTIONS", ignoreCase = true)) {
+            null
+        } else {
+            val input = FileInputStream(file)
+            input.channel.position(start)
+            LimitedInputStream(input, responseLength)
+        }
+
+        return WebResourceResponse(
+            mime,
+            null,
+            if (range != null) 206 else 200,
+            if (range != null) "Partial Content" else "OK",
+            headers,
+            body,
+        )
+    }
+
+    private fun parseByteRange(value: String?, length: Long): Pair<Long, Long>? {
+        if (value.isNullOrBlank() || !value.startsWith("bytes=")) return null
+        if (length <= 0) return null
+        val raw = value.removePrefix("bytes=").substringBefore(',').trim()
+        val parts = raw.split('-', limit = 2)
+        if (parts.size != 2) return null
+        val start = parts[0].toLongOrNull()
+        val end = parts[1].toLongOrNull()
+        return when {
+            start != null -> {
+                if (start >= length) null
+                else start to minOf(end ?: (length - 1), length - 1)
+            }
+            end != null && end > 0 -> maxOf(0, length - end) to (length - 1)
+            else -> null
+        }
+    }
+
+    private class LimitedInputStream(
+        private val source: InputStream,
+        length: Long,
+    ) : InputStream() {
+        private var remaining = length
+
+        override fun read(): Int {
+            if (remaining <= 0) return -1
+            val value = source.read()
+            if (value >= 0) remaining -= 1
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (remaining <= 0) return -1
+            val allowed = minOf(length.toLong(), remaining).toInt()
+            val count = source.read(buffer, offset, allowed)
+            if (count > 0) remaining -= count
+            return count
+        }
+
+        override fun close() = source.close()
     }
 
     @Deprecated("Deprecated in Java")

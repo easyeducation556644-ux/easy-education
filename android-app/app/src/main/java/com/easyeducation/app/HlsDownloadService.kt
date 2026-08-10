@@ -3,77 +3,217 @@ package com.easyeducation.app
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 private class DownloadPaused : Exception()
+
+private data class SegmentSpec(
+    val sourceUrl: String,
+    val fileName: String,
+)
 
 class HlsDownloadService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     private val http = OkHttpClient.Builder().retryOnConnectionFailure(true).build()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var store: DownloadStore
     private var lastUiUpdate = 0L
+    @Volatile private var activeTransformer: Transformer? = null
 
-    override fun onCreate() { super.onCreate(); store = DownloadStore(this); createChannel() }
+    override fun onCreate() {
+        super.onCreate()
+        store = DownloadStore(this)
+        createChannel()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val id = intent?.getStringExtra(EXTRA_ID)
-        val tasks = if (id != null) listOfNotNull(store.get(id)) else store.pending()
-        if (tasks.isEmpty()) { stopSelf(); return START_NOT_STICKY }
+        val tasks = if (id != null) {
+            listOfNotNull(store.get(id))
+        } else {
+            store.all().filter { task ->
+                task.state in setOf("queued", "downloading", "converting") || needsLegacyConversion(task)
+            }
+        }
+        if (tasks.isEmpty()) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         startForeground(notificationId(tasks.first().id), notification(tasks.first()))
         executor.execute {
-            tasks.forEach { download(it) }
+            tasks.forEach { downloadOrConvert(it) }
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
         return START_STICKY
     }
 
-    private fun download(initial: DownloadTask) {
+    private fun downloadOrConvert(initial: DownloadTask) {
+        val dir = offlineDir(initial.id).apply { mkdirs() }
+        val mp4 = File(dir, MP4_NAME)
+        if (mp4.exists() && mp4.length() > 0) {
+            val completed = initial.copy(
+                downloadedBytes = initial.totalBytes.takeIf { it > 0 } ?: mp4.length(),
+                state = "completed",
+                error = null,
+            )
+            store.save(completed)
+            updateUi(completed, force = true)
+            return
+        }
+
+        if (initial.kind == "mp4") {
+            downloadMp4(initial, dir)
+        } else {
+            downloadHlsAndConvert(initial, dir)
+        }
+    }
+
+    private fun downloadMp4(initial: DownloadTask, dir: File) {
         var task = initial.copy(state = "downloading", error = null)
         store.save(task)
         try {
-            val playlist = getBytes(initial.playlistUrl).decodeToString()
-            val lines = playlist.lines()
+            require(initial.downloadUrlBase.isNotBlank()) { "MP4 download source is missing" }
+            require(initial.totalBytes > 0) { "MP4 size is unavailable" }
+
+            val output = File(dir, MP4_NAME)
+            val temp = File(dir, "$MP4_NAME.part")
+            if (output.exists()) output.delete()
+            if (temp.length() > initial.totalBytes) temp.delete()
+
+            var completedBytes = temp.length()
+            task = task.copy(
+                downloadedBytes = completedBytes,
+                totalBytes = initial.totalBytes,
+                state = "downloading",
+            )
+            store.save(task)
+            updateUi(task, force = true)
+
+            FileOutputStream(temp, true).use { fileOut ->
+                while (completedBytes < initial.totalBytes) {
+                    ensureRunning(task.id)
+                    val start = completedBytes
+                    val end = minOf(initial.totalBytes - 1, start + MP4_CHUNK_BYTES - 1)
+                    val chunkUrl = appendRange(initial.downloadUrlBase, start, end)
+                    http.newCall(Request.Builder().url(chunkUrl).build()).execute().use { response ->
+                        check(response.isSuccessful) { "MP4 chunk returned HTTP ${response.code}" }
+                        val body = response.body ?: error("MP4 chunk was empty")
+                        val expected = end - start + 1
+                        var chunkBytes = 0L
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                ensureRunning(task.id)
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                fileOut.write(buffer, 0, count)
+                                chunkBytes += count
+                                task = task.copy(downloadedBytes = start + chunkBytes)
+                                updateUi(task)
+                            }
+                        }
+                        check(chunkBytes == expected) {
+                            "MP4 chunk was incomplete (${chunkBytes}/${expected} bytes)"
+                        }
+                    }
+                    completedBytes = end + 1
+                    fileOut.flush()
+                    task = task.copy(downloadedBytes = completedBytes)
+                    updateUi(task, force = true)
+                }
+            }
+
+            check(temp.length() == initial.totalBytes) { "Downloaded MP4 size did not match" }
+            check(temp.renameTo(output)) { "Could not finalize MP4 file" }
+            cleanupExceptMp4(dir)
+            task = task.copy(
+                downloadedBytes = initial.totalBytes,
+                completed = 1,
+                total = 1,
+                state = "completed",
+                error = null,
+            )
+            store.save(task)
+            updateUi(task, force = true)
+        } catch (_: DownloadPaused) {
+            task = task.copy(state = "paused")
+            store.save(task)
+            updateUi(task, force = true)
+        } catch (error: Throwable) {
+            task = task.copy(state = "failed", error = error.message ?: "MP4 download failed")
+            store.save(task)
+            updateUi(task, force = true)
+        }
+    }
+
+    private fun downloadHlsAndConvert(initial: DownloadTask, dir: File) {
+        var task = initial.copy(state = if (needsLegacyConversion(initial)) "converting" else "downloading", error = null)
+        store.save(task)
+        try {
+            require(initial.playlistUrl.isNotBlank()) { "HLS playlist source is missing" }
+            val playlistText = getBytes(initial.playlistUrl).decodeToString()
+            val lines = playlistText.lines()
             val segmentLineIndexes = lines.mapIndexedNotNull { index, line ->
                 index.takeIf { line.isNotBlank() && !line.startsWith("#") }
             }
             val urls = segmentLineIndexes.map { URI(initial.playlistUrl).resolve(lines[it]).toString() }
             require(urls.isNotEmpty()) { "Playlist has no media segments" }
+            val specs = urls.mapIndexed { index, url ->
+                SegmentSpec(url, localSegmentName(index, url))
+            }
 
-            val dir = offlineDir(initial.id).apply { mkdirs() }
-            val start = (0 until urls.size)
-                .firstOrNull { !segmentFile(dir, it).exists() } ?: urls.size
-            var completedBytes = (0 until start).sumOf { segmentFile(dir, it).length() }
+            migrateLegacySegments(dir, specs)
+            val start = specs.indexOfFirst { !File(dir, it.fileName).exists() }
+                .let { if (it < 0) specs.size else it }
+            var completedBytes = specs.take(start).sumOf { File(dir, it.fileName).length() }
             val estimatedTotal = urls.sumOf(::rangeLength)
             val totalBytes = initial.totalBytes.takeIf { it > 0 } ?: estimatedTotal
 
-            task = task.copy(
-                downloadedBytes = completedBytes,
-                totalBytes = totalBytes,
-                completed = start,
-                total = urls.size,
-                state = "downloading",
-            )
-            store.save(task)
-            if (start > 0) writePlaylist(lines, segmentLineIndexes, start, dir)
-            updateUi(task, force = true)
+            if (start < specs.size) {
+                task = task.copy(
+                    downloadedBytes = completedBytes,
+                    totalBytes = totalBytes,
+                    completed = start,
+                    total = specs.size,
+                    state = "downloading",
+                )
+                store.save(task)
+                updateUi(task, force = true)
+            }
 
-            for (index in start until urls.size) {
+            for (index in start until specs.size) {
                 ensureRunning(task.id)
-                val target = segmentFile(dir, index)
+                val target = File(dir, specs[index].fileName)
                 val temp = File(dir, target.name + ".part")
                 if (temp.exists()) temp.delete()
 
-                http.newCall(Request.Builder().url(urls[index]).build()).execute().use { response ->
+                http.newCall(Request.Builder().url(specs[index].sourceUrl).build()).execute().use { response ->
                     check(response.isSuccessful) { "Segment ${index + 1} returned HTTP ${response.code}" }
                     val body = response.body ?: error("Segment ${index + 1} was empty")
                     body.byteStream().use { input ->
@@ -102,28 +242,106 @@ class HlsDownloadService : Service() {
                     downloadedBytes = completedBytes,
                     totalBytes = totalBytes,
                     completed = index + 1,
-                    total = urls.size,
+                    total = specs.size,
                 )
-                writePlaylist(lines, segmentLineIndexes, index + 1, dir)
                 updateUi(task, force = true)
             }
 
+            val localizedLines = localizeAuxiliaryUris(lines, initial.playlistUrl, dir)
+            writeFinalPlaylist(localizedLines, segmentLineIndexes, specs, dir)
+
             task = task.copy(
-                downloadedBytes = if (totalBytes > 0) totalBytes else completedBytes,
-                completed = urls.size,
-                total = urls.size,
+                downloadedBytes = totalBytes.takeIf { it > 0 } ?: completedBytes,
+                completed = specs.size,
+                total = specs.size,
+                state = "converting",
+                error = null,
+            )
+            store.save(task)
+            updateUi(task, force = true)
+
+            convertLocalHlsToMp4(task, dir)
+            val mp4 = File(dir, MP4_NAME)
+            check(mp4.exists() && mp4.length() > 0) { "MP4 conversion produced no video" }
+            cleanupExceptMp4(dir)
+
+            task = task.copy(
                 state = "completed",
+                error = null,
+                downloadedBytes = totalBytes.takeIf { it > 0 } ?: mp4.length(),
             )
             store.save(task)
             updateUi(task, force = true)
         } catch (_: DownloadPaused) {
+            cancelTransformer()
             task = task.copy(state = "paused")
             store.save(task)
             updateUi(task, force = true)
         } catch (error: Throwable) {
-            task = task.copy(state = "failed", error = error.message ?: "Download failed")
+            cancelTransformer()
+            task = task.copy(state = "failed", error = error.message ?: "Download or MP4 conversion failed")
             store.save(task)
             updateUi(task, force = true)
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun convertLocalHlsToMp4(task: DownloadTask, dir: File) {
+        val playlist = File(dir, PLAYLIST_NAME)
+        require(playlist.exists()) { "Local HLS playlist is missing" }
+        val output = File(dir, MP4_NAME)
+        val temp = File(dir, "$MP4_NAME.export")
+        if (output.exists()) output.delete()
+        if (temp.exists()) temp.delete()
+
+        val done = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>(null)
+        mainHandler.post {
+            try {
+                val mediaItem = MediaItem.Builder()
+                    .setUri(Uri.fromFile(playlist))
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build()
+                val transformer = Transformer.Builder(this)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                            activeTransformer = null
+                            done.countDown()
+                        }
+
+                        override fun onError(
+                            composition: Composition,
+                            exportResult: ExportResult,
+                            exportException: ExportException,
+                        ) {
+                            failure.set(exportException)
+                            activeTransformer = null
+                            done.countDown()
+                        }
+                    })
+                    .build()
+                activeTransformer = transformer
+                transformer.start(mediaItem, temp.absolutePath)
+            } catch (error: Throwable) {
+                failure.set(error)
+                activeTransformer = null
+                done.countDown()
+            }
+        }
+
+        while (!done.await(500, TimeUnit.MILLISECONDS)) {
+            ensureRunning(task.id)
+        }
+        failure.get()?.let { throw it }
+        check(temp.exists() && temp.length() > 0) { "MP4 export failed" }
+        check(temp.renameTo(output)) { "Could not finalize converted MP4" }
+    }
+
+    private fun cancelTransformer() {
+        val transformer = activeTransformer ?: return
+        mainHandler.post {
+            runCatching { transformer.cancel() }
+            if (activeTransformer === transformer) activeTransformer = null
         }
     }
 
@@ -133,30 +351,59 @@ class HlsDownloadService : Service() {
 
     private fun updateUi(task: DownloadTask, force: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (!force && now - lastUiUpdate < 400) return
+        if (!force && now - lastUiUpdate < 250) return
         lastUiUpdate = now
         store.save(task)
         getSystemService(NotificationManager::class.java)
             .notify(notificationId(task.id), notification(task))
     }
 
-    private fun writePlaylist(
+    private fun writeFinalPlaylist(
         lines: List<String>,
         segmentLineIndexes: List<Int>,
-        completed: Int,
+        specs: List<SegmentSpec>,
         dir: File,
     ) {
-        if (completed <= 0) return
-        val cutoff = segmentLineIndexes[completed - 1] + 1
-        var segment = 0
-        val partial = lines.take(cutoff)
-            .filter { it != "#EXT-X-ENDLIST" }
-            .joinToString("\n") { line ->
-                if (line.isBlank() || line.startsWith("#")) line
-                else "segment-%06d.ts".format(segment++)
-            }
-        File(dir, "playlist.m3u8").writeText("${partial}\n#EXT-X-ENDLIST\n")
+        val byLine = segmentLineIndexes.mapIndexed { index, line -> line to specs[index].fileName }.toMap()
+        val local = lines.mapIndexed { index, line -> byLine[index] ?: line }
+        File(dir, PLAYLIST_NAME).writeText(local.joinToString("\n"))
     }
+
+    private fun localizeAuxiliaryUris(lines: List<String>, playlistUrl: String, dir: File): List<String> {
+        val uriRegex = Regex("URI=\"([^\"]+)\"")
+        return lines.map { line ->
+            if (!line.startsWith("#EXT-X-MAP:") && !line.startsWith("#EXT-X-KEY:")) return@map line
+            val match = uriRegex.find(line) ?: return@map line
+            val raw = match.groupValues[1]
+            if (raw.isBlank()) return@map line
+            val source = URI(playlistUrl).resolve(raw).toString()
+            val ext = extensionForUrl(source, "bin")
+            val localName = "aux-${safe(source).take(16)}.$ext"
+            val target = File(dir, localName)
+            if (!target.exists()) target.writeBytes(getBytes(source))
+            line.replaceRange(match.range, "URI=\"$localName\"")
+        }
+    }
+
+    private fun migrateLegacySegments(dir: File, specs: List<SegmentSpec>) {
+        specs.forEachIndexed { index, spec ->
+            val target = File(dir, spec.fileName)
+            if (target.exists()) return@forEachIndexed
+            val legacy = legacySegmentFile(dir, index)
+            if (legacy.exists() && legacy.length() > 0) {
+                if (!legacy.renameTo(target)) legacy.copyTo(target, overwrite = true)
+            }
+        }
+    }
+
+    private fun localSegmentName(index: Int, url: String): String =
+        "segment-%06d.%s".format(index, extensionForUrl(url, "ts"))
+
+    private fun extensionForUrl(url: String, fallback: String): String = runCatching {
+        val path = URI(url).path ?: ""
+        val ext = path.substringAfterLast('.', "").lowercase()
+        if (ext.matches(Regex("[a-z0-9]{1,5}"))) ext else fallback
+    }.getOrDefault(fallback)
 
     private fun getBytes(url: String): ByteArray {
         http.newCall(Request.Builder().url(url).build()).execute().use { response ->
@@ -171,8 +418,12 @@ class HlsDownloadService : Service() {
             task.total > 0 -> (task.completed * 100 / task.total).coerceIn(0, 100)
             else -> 0
         }
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val detail = buildString {
             append("${task.height}p")
             if (task.downloadedBytes > 0 || task.totalBytes > 0) {
@@ -181,16 +432,31 @@ class HlsDownloadService : Service() {
             }
             if (task.courseTitle.isNotBlank()) append(" • ${task.courseTitle}")
         }
+        val status = when (task.state) {
+            "completed" -> "Download complete"
+            "converting" -> "Preparing MP4 video"
+            "paused" -> "Download paused"
+            "failed" -> "Download failed"
+            else -> "${progress}%"
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(if (task.state == "completed") android.R.drawable.stat_sys_download_done else android.R.drawable.stat_sys_download)
+            .setSmallIcon(
+                if (task.state == "completed") android.R.drawable.stat_sys_download_done
+                else android.R.drawable.stat_sys_download,
+            )
             .setContentTitle(task.title)
-            .setContentText(if (task.state == "completed") "Download complete • ${detail}" else "${progress}% • ${detail}")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentText("$status • $detail")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$status • $detail"))
             .setProgress(100, progress, task.totalBytes <= 0 && task.total <= 0)
-            .setOngoing(task.state == "downloading")
+            .setOngoing(task.state in setOf("downloading", "converting"))
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .build()
+    }
+
+    private fun appendRange(base: String, start: Long, end: Long): String {
+        val separator = if (base.contains('?')) '&' else '?'
+        return "$base${separator}start=$start&end=$end"
     }
 
     private fun formatBytes(bytes: Long): String = when {
@@ -206,20 +472,42 @@ class HlsDownloadService : Service() {
         parts[1] - parts[0] + 1
     }.getOrDefault(0)
 
+    private fun cleanupExceptMp4(dir: File) {
+        dir.listFiles()?.forEach { if (it.name != MP4_NAME) it.deleteRecursively() }
+    }
+
+    private fun needsLegacyConversion(task: DownloadTask): Boolean {
+        if (task.kind != "hls" || task.state != "completed") return false
+        val dir = offlineDir(task.id)
+        return !File(dir, MP4_NAME).exists() && File(dir, PLAYLIST_NAME).exists()
+    }
+
     private fun createChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Video downloads", NotificationManager.IMPORTANCE_LOW))
+            NotificationChannel(CHANNEL_ID, "Video downloads", NotificationManager.IMPORTANCE_LOW),
+        )
     }
 
     companion object {
         private const val CHANNEL_ID = "video_downloads"
         private const val EXTRA_ID = "download_id"
+        private const val MP4_NAME = "video.mp4"
+        private const val PLAYLIST_NAME = "playlist.m3u8"
+        private const val MP4_CHUNK_BYTES = 8L * 1024 * 1024
 
-        fun start(context: Context, id: String) = ContextCompat.startForegroundService(context,
-            Intent(context, HlsDownloadService::class.java).putExtra(EXTRA_ID, id))
+        fun start(context: Context, id: String) = ContextCompat.startForegroundService(
+            context,
+            Intent(context, HlsDownloadService::class.java).putExtra(EXTRA_ID, id),
+        )
 
         fun resume(context: Context) {
-            if (DownloadStore(context).pending().isEmpty()) return
+            val store = DownloadStore(context)
+            val hasWork = store.pending().isNotEmpty() || store.all().any { task ->
+                task.kind == "hls" && task.state == "completed" &&
+                    !File(offlineDir(context, task.id), MP4_NAME).exists() &&
+                    File(offlineDir(context, task.id), PLAYLIST_NAME).exists()
+            }
+            if (!hasWork) return
             ContextCompat.startForegroundService(context, Intent(context, HlsDownloadService::class.java))
         }
 
@@ -239,10 +527,10 @@ class HlsDownloadService : Service() {
 
         fun offlineDir(context: Context, id: String) = File(context.filesDir, "offline/${safe(id)}")
         fun notificationId(id: String) = safe(id).hashCode()
-        fun segmentFile(dir: File, index: Int) = File(dir, "segment-%06d.ts".format(index))
+        fun legacySegmentFile(dir: File, index: Int) = File(dir, "segment-%06d.ts".format(index))
     }
 
     private fun offlineDir(id: String) = offlineDir(this, id)
-    private fun segmentFile(dir: File, index: Int) = Companion.segmentFile(dir, index)
+    private fun legacySegmentFile(dir: File, index: Int) = Companion.legacySegmentFile(dir, index)
     private fun notificationId(id: String) = Companion.notificationId(id)
 }
