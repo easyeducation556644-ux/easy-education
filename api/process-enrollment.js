@@ -2,16 +2,35 @@
  * Manual Payment Enrollment Processing
  * Used when webhook fails or for manual verification
  * Official Docs: https://rupantorpay.com/developers/docs
- * 
+ *
  * CRITICAL FIXES according to official documentation:
  * 1. Verify endpoint returns direct payment object (not wrapped)
  * 2. Status is string: "COMPLETED", "PENDING", or "ERROR"
  */
 
 import { processPaymentAndEnrollUser } from './utils/process-payment.js';
+import { getAdminServices } from './utils/firebase-admin.js';
+import { publishEnrollmentSync } from './_sync-event.js';
 
 const RUPANTORPAY_API_KEY = process.env.RUPANTORPAY_API_KEY;
 const VERIFY_API_URL = 'https://payment.rupantorpay.com/api/payment/verify-payment';
+
+async function syncEnrollmentCache(userId, transactionId, result) {
+  if (!result?.success) return;
+  try {
+    const { db } = getAdminServices();
+    await publishEnrollmentSync({
+      db,
+      userId,
+      transactionId,
+      enrolledCourseIds: result.enrollmentDetails?.enrolledCourses || [],
+    });
+  } catch (error) {
+    // Enrollment has already succeeded. Cache invalidation is best-effort and can be
+    // republished by another successful verification/webhook call using stable IDs.
+    console.error('Failed to publish enrollment cache sync:', error);
+  }
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -21,21 +40,20 @@ export default async function handler(req, res) {
       error: "Method Not Allowed"
     });
   }
-  
+
   const { transaction_id, userId, skipPaymentVerification, userName, userEmail, mobileNumber, courses: requestCourses, subtotal, discount, couponCode, finalAmount, paymentMethod } = req.body;
-  
+
   if (!userId) {
     return res.status(400).json({
       success: false,
       error: "Missing userId in request body."
     });
   }
-  
-  // Handle free enrollment (100% discount coupon)
+
   if (skipPaymentVerification && finalAmount === 0) {
     try {
       console.log('Processing free enrollment for userId:', userId);
-      
+
       const result = await processPaymentAndEnrollUser({
         userId,
         userName: userName || 'N/A',
@@ -52,8 +70,9 @@ export default async function handler(req, res) {
         finalAmount: 0,
         currency: 'BDT'
       });
-      
+
       if (result.success) {
+        await syncEnrollmentCache(userId, transaction_id, result);
         return res.status(200).json({
           success: true,
           verified: true,
@@ -88,15 +107,14 @@ export default async function handler(req, res) {
       });
     }
   }
-  
-  // Regular payment processing
+
   if (!transaction_id) {
     return res.status(400).json({
       success: false,
       error: "Missing transaction_id in request body."
     });
   }
-  
+
   if (!RUPANTORPAY_API_KEY) {
     console.error("RUPANTORPAY_API_KEY is missing!");
     return res.status(500).json({
@@ -104,11 +122,10 @@ export default async function handler(req, res) {
       error: "Server configuration error"
     });
   }
-  
+
   try {
     console.log('Processing enrollment for transaction_id:', transaction_id, 'userId:', userId);
-    
-    // Verify payment with RupantorPay
+
     const verifyResponse = await fetch(VERIFY_API_URL, {
       method: 'POST',
       headers: {
@@ -117,10 +134,10 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({ transaction_id })
     });
-    
+
     const paymentData = await verifyResponse.json();
     console.log('RupantorPay verification response:', JSON.stringify(paymentData, null, 2));
-    
+
     if (paymentData.status !== 'COMPLETED') {
       return res.status(400).json({
         success: false,
@@ -128,8 +145,7 @@ export default async function handler(req, res) {
         error: paymentData.message || "Payment verification failed or not completed"
       });
     }
-    
-    // Parse metadata - may be JSON string or object
+
     let metadata = {};
     if (paymentData.metadata) {
       if (typeof paymentData.metadata === 'string') {
@@ -145,29 +161,27 @@ export default async function handler(req, res) {
         console.log('✅ Metadata is already object');
       }
     }
-    
+
     console.log('Parsed metadata:', metadata);
-    
+
     const courses = metadata.courses || [];
     const metadataUserId = metadata.userId;
     const metadataMobileNumber = metadata.mobileNumber || '';
-    
-    // Validate user ID matches
+
     if (!metadataUserId) {
       return res.status(400).json({
         success: false,
         error: "No userId found in payment metadata. Please ensure metadata was sent during payment creation."
       });
     }
-    
+
     if (metadataUserId !== userId) {
       return res.status(403).json({
         success: false,
         error: "User ID mismatch - this payment belongs to a different user"
       });
     }
-    
-    // Process enrollment
+
     const result = await processPaymentAndEnrollUser({
       userId: metadataUserId,
       userName: paymentData.fullname || metadata.fullname || 'N/A',
@@ -184,8 +198,9 @@ export default async function handler(req, res) {
       finalAmount: parseFloat(paymentData.amount),
       currency: paymentData.currency || 'BDT'
     });
-    
+
     if (result.success) {
+      await syncEnrollmentCache(metadataUserId, paymentData.transaction_id, result);
       return res.status(200).json({
         success: true,
         verified: true,
@@ -207,7 +222,7 @@ export default async function handler(req, res) {
         details: result.details
       });
     }
-    
+
   } catch (error) {
     console.error("Error processing enrollment:", error);
     return res.status(500).json({

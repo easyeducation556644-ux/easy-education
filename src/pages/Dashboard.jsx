@@ -1,242 +1,243 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Link, Navigate } from "react-router-dom"
 import {
-  ThumbsUp,
-  TrendingUp,
-  Download,
+  BookOpen,
   CreditCard,
   CheckCircle,
   Clock,
   XCircle,
-  Zap,
-  Award,
-  Target,
-  BookOpen,
   GraduationCap,
-  Star,
+  User,
+  ArrowRight,
+  ReceiptText,
 } from "lucide-react"
 import { collection, query, where, getDocs } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
-import DashboardLayout from "../components/DashboardLayout"
+import { readViewSnapshot, writeViewSnapshot } from "../lib/viewSnapshotCache"
+
+function viewKey(uid) {
+  return `dashboard:${uid || "anonymous"}`
+}
+
+function paymentDate(value) {
+  try {
+    if (value?.toDate) return value.toDate().toLocaleDateString()
+    if (Number.isFinite(value?.seconds)) return new Date(value.seconds * 1000).toLocaleDateString()
+    if (value) return new Date(value).toLocaleDateString()
+  } catch (_) {
+    // Fall through.
+  }
+  return "N/A"
+}
+
+function statusStyle(status) {
+  if (status === "approved") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+  if (status === "pending") return "bg-amber-500/10 text-amber-600 border-amber-500/20"
+  if (status === "rejected") return "bg-rose-500/10 text-rose-600 border-rose-500/20"
+  return "bg-muted text-muted-foreground border-border"
+}
+
+function StatusIcon({ status }) {
+  if (status === "approved") return <CheckCircle className="h-3.5 w-3.5" />
+  if (status === "pending") return <Clock className="h-3.5 w-3.5" />
+  if (status === "rejected") return <XCircle className="h-3.5 w-3.5" />
+  return null
+}
 
 export default function Dashboard() {
-  const { currentUser, userProfile, isAdmin } = useAuth()
-  const [stats, setStats] = useState({
-    votesGiven: 0,
+  const { currentUser, userProfile } = useAuth()
+  const initialRef = useRef(readViewSnapshot(viewKey(currentUser?.uid)))
+  const [stats, setStats] = useState(() => initialRef.current?.stats || {
     coursesEnrolled: 0,
     pendingPayments: 0,
     approvedPayments: 0,
+    totalPayments: 0,
   })
-  const [recentPayments, setRecentPayments] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [recentPayments, setRecentPayments] = useState(() => initialRef.current?.recentPayments || [])
+  const [loading, setLoading] = useState(() => !initialRef.current)
+  const [cacheRevision, setCacheRevision] = useState(0)
 
   useEffect(() => {
-    if (currentUser) {
-      fetchUserStats()
+    const handler = (event) => {
+      if (["payments", "userCourses"].includes(event.detail?.collection)) {
+        setCacheRevision((value) => value + 1)
+      }
     }
-  }, [currentUser])
+    window.addEventListener("easy-education-cache-updated", handler)
+    return () => window.removeEventListener("easy-education-cache-updated", handler)
+  }, [])
 
-  const fetchUserStats = async () => {
-    try {
-      const votesQuery = query(collection(db, "votes"), where("userId", "==", currentUser.uid))
-      const votesSnapshot = await getDocs(votesQuery)
+  useEffect(() => {
+    if (!currentUser?.uid) return
+    let cancelled = false
 
-      const paymentsQuery = query(collection(db, "payments"), where("userId", "==", currentUser.uid))
-      const paymentsSnapshot = await getDocs(paymentsQuery)
-      const paymentsData = paymentsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+    const loadDashboard = async () => {
+      const key = viewKey(currentUser.uid)
+      const saved = readViewSnapshot(key)
+      if (saved) {
+        setStats(saved.stats || stats)
+        setRecentPayments(saved.recentPayments || [])
+        setLoading(false)
+      } else {
+        setLoading(true)
+      }
 
-      paymentsData.sort((a, b) => {
-        const dateA = a.submittedAt?.toDate?.() || new Date(0)
-        const dateB = b.submittedAt?.toDate?.() || new Date(0)
-        return dateB - dateA
-      })
+      try {
+        const [paymentsSnapshot, userCoursesSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "payments"), where("userId", "==", currentUser.uid))),
+          getDocs(query(collection(db, "userCourses"), where("userId", "==", currentUser.uid))),
+        ])
+        if (cancelled) return
 
-      const approvedPayments = paymentsData.filter((p) => p.status === "approved")
-      const pendingPayments = paymentsData.filter((p) => p.status === "pending")
+        const payments = paymentsSnapshot.docs.map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
+        payments.sort((a, b) => {
+          const aSeconds = a.submittedAt?.seconds || 0
+          const bSeconds = b.submittedAt?.seconds || 0
+          return bSeconds - aSeconds
+        })
 
-      setRecentPayments(paymentsData.slice(0, 5))
-      setStats({
-        votesGiven: votesSnapshot.size,
-        coursesEnrolled: approvedPayments.length,
-        pendingPayments: pendingPayments.length,
-        approvedPayments: approvedPayments.length,
-      })
-    } catch (error) {
-      console.error("Error fetching user stats:", error)
-    } finally {
-      setLoading(false)
+        const uniqueCourses = new Set()
+        userCoursesSnapshot.docs.forEach((snapshot) => {
+          const enrollment = snapshot.data()
+          if (enrollment.courseId && !enrollment.isBundle) uniqueCourses.add(enrollment.courseId)
+        })
+
+        const nextStats = {
+          coursesEnrolled: uniqueCourses.size,
+          pendingPayments: payments.filter((item) => item.status === "pending").length,
+          approvedPayments: payments.filter((item) => item.status === "approved").length,
+          totalPayments: payments.length,
+        }
+        const nextRecent = payments.slice(0, 5)
+
+        setStats(nextStats)
+        setRecentPayments(nextRecent)
+        writeViewSnapshot(key, { stats: nextStats, recentPayments: nextRecent })
+      } catch (error) {
+        console.error("Error loading cached dashboard:", error)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-  }
 
-  if (!currentUser) {
-    return <Navigate to="/login" />
-  }
+    loadDashboard()
+    return () => { cancelled = true }
+  }, [currentUser?.uid, cacheRevision])
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case "approved":
-        return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
-      case "pending":
-        return "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
-      case "rejected":
-        return "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/20"
-      default:
-        return "bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20"
-    }
-  }
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case "approved":
-        return <CheckCircle className="w-4 h-4" />
-      case "pending":
-        return <Clock className="w-4 h-4" />
-      case "rejected":
-        return <XCircle className="w-4 h-4" />
-      default:
-        return null
-    }
-  }
+  if (!currentUser) return <Navigate to="/login" />
 
   return (
-    <DashboardLayout>
-      <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-accent/5 py-8 px-4">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-4xl md:text-5xl font-bold mb-3 bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
-              Welcome back, {userProfile?.name || "Student"}!
+    <div className="min-h-screen bg-background px-4 py-8 md:px-6 md:py-12">
+      <div className="mx-auto max-w-5xl">
+        <div className="mb-8 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="mb-1 text-sm font-medium text-primary">Student Dashboard</p>
+            <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
+              Welcome back, {userProfile?.name || "Student"}
             </h1>
-            <p className="text-muted-foreground text-lg">Here's your learning journey at a glance</p>
+            <p className="mt-2 text-muted-foreground">Continue learning and manage your account from one place.</p>
           </div>
+          <Link
+            to="/my-courses"
+            className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground sm:mt-0"
+          >
+            Continue learning <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <div className="animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-accent"></div>
+        {loading && !initialRef.current ? (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+              {[0, 1, 2, 3].map((item) => <div key={item} className="h-28 animate-pulse rounded-2xl bg-muted" />)}
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-3 bg-blue-500/10 rounded-xl group-hover:bg-blue-500/20 transition-colors">
-                      <BookOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-                    </div>
-                    <TrendingUp className="w-5 h-5 text-blue-600/50" />
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="h-64 animate-pulse rounded-2xl bg-muted" />
+              <div className="h-64 animate-pulse rounded-2xl bg-muted" />
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mb-8 grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+              {[
+                { label: "My Courses", value: stats.coursesEnrolled, icon: GraduationCap },
+                { label: "Approved", value: stats.approvedPayments, icon: CheckCircle },
+                { label: "Pending", value: stats.pendingPayments, icon: Clock },
+                { label: "Payments", value: stats.totalPayments, icon: ReceiptText },
+              ].map((item) => (
+                <div key={item.label} className="rounded-2xl border border-border bg-card p-4 md:p-5">
+                  <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <item.icon className="h-5 w-5" />
                   </div>
-                  <p className="text-3xl font-bold mb-1 text-blue-700 dark:text-blue-400">{stats.coursesEnrolled}</p>
-                  <p className="text-sm text-muted-foreground font-medium">Courses Enrolled</p>
+                  <p className="text-2xl font-bold md:text-3xl">{item.value}</p>
+                  <p className="mt-1 text-xs font-medium text-muted-foreground md:text-sm">{item.label}</p>
                 </div>
+              ))}
+            </div>
 
-                <div className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border border-purple-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-3 bg-purple-500/10 rounded-xl group-hover:bg-purple-500/20 transition-colors">
-                      <ThumbsUp className="w-6 h-6 text-purple-600 dark:text-purple-400" />
-                    </div>
-                    <Star className="w-5 h-5 text-purple-600/50" />
-                  </div>
-                  <p className="text-3xl font-bold mb-1 text-purple-700 dark:text-purple-400">{stats.votesGiven}</p>
-                  <p className="text-sm text-muted-foreground font-medium">Votes Given</p>
+            <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+              <section className="rounded-2xl border border-border bg-card p-5 md:p-6">
+                <div className="mb-5">
+                  <h2 className="text-xl font-semibold">Quick actions</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Everything you use most often.</p>
                 </div>
-
-                <div className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-3 bg-amber-500/10 rounded-xl group-hover:bg-amber-500/20 transition-colors">
-                      <Clock className="w-6 h-6 text-amber-600 dark:text-amber-400" />
-                    </div>
-                    <Zap className="w-5 h-5 text-amber-600/50" />
-                  </div>
-                  <p className="text-3xl font-bold mb-1 text-amber-700 dark:text-amber-400">{stats.pendingPayments}</p>
-                  <p className="text-sm text-muted-foreground font-medium">Pending Payments</p>
-                </div>
-
-                <div className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 rounded-2xl p-6 hover:shadow-xl transition-all duration-300 group">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-3 bg-emerald-500/10 rounded-xl group-hover:bg-emerald-500/20 transition-colors">
-                      <CheckCircle className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-                    </div>
-                    <Award className="w-5 h-5 text-emerald-600/50" />
-                  </div>
-                  <p className="text-3xl font-bold mb-1 text-emerald-700 dark:text-emerald-400">{stats.approvedPayments}</p>
-                  <p className="text-sm text-muted-foreground font-medium">Approved Payments</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                <div className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow">
-                  <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-xl font-bold">Quick Actions</h2>
-                    <Target className="w-5 h-5 text-primary" />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <Link to="/my-courses">
-                      <button className="w-full p-4 bg-gradient-to-br from-primary/10 to-accent/10 hover:from-primary/20 hover:to-accent/20 border border-primary/20 rounded-xl transition-all text-left group">
-                        <GraduationCap className="w-6 h-6 text-primary mb-2 group-hover:scale-110 transition-transform" />
-                        <p className="font-semibold text-sm">My Courses</p>
-                        <p className="text-xs text-muted-foreground">Continue learning</p>
-                      </button>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { to: "/my-courses", label: "My Courses", note: "Continue classes", icon: BookOpen },
+                    { to: "/courses", label: "Browse", note: "Find a course", icon: GraduationCap },
+                    { to: "/payment-history", label: "Payments", note: "Transactions", icon: CreditCard },
+                    { to: "/profile", label: "Profile", note: "Account details", icon: User },
+                  ].map((action) => (
+                    <Link
+                      key={action.to}
+                      to={action.to}
+                      className="rounded-xl border border-border bg-background p-4 transition-colors hover:border-primary/40 hover:bg-primary/5"
+                    >
+                      <action.icon className="mb-3 h-5 w-5 text-primary" />
+                      <p className="text-sm font-semibold">{action.label}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{action.note}</p>
                     </Link>
-                    <Link to="/payment-history">
-                      <button className="w-full p-4 bg-gradient-to-br from-primary/10 to-accent/10 hover:from-primary/20 hover:to-accent/20 border border-primary/20 rounded-xl transition-all text-left group">
-                        <CreditCard className="w-6 h-6 text-primary mb-2 group-hover:scale-110 transition-transform" />
-                        <p className="font-semibold text-sm">Payment History</p>
-                        <p className="text-xs text-muted-foreground">View transactions</p>
-                      </button>
-                    </Link>
-                    <Link to="/courses">
-                      <button className="w-full p-4 bg-gradient-to-br from-primary/10 to-accent/10 hover:from-primary/20 hover:to-accent/20 border border-primary/20 rounded-xl transition-all text-left group">
-                        <BookOpen className="w-6 h-6 text-primary mb-2 group-hover:scale-110 transition-transform" />
-                        <p className="font-semibold text-sm">Browse Courses</p>
-                        <p className="text-xs text-muted-foreground">Explore new content</p>
-                      </button>
-                    </Link>
-                    <Link to="/profile">
-                      <button className="w-full p-4 bg-gradient-to-br from-primary/10 to-accent/10 hover:from-primary/20 hover:to-accent/20 border border-primary/20 rounded-xl transition-all text-left group">
-                        <Award className="w-6 h-6 text-primary mb-2 group-hover:scale-110 transition-transform" />
-                        <p className="font-semibold text-sm">My Profile</p>
-                        <p className="text-xs text-muted-foreground">Update info</p>
-                      </button>
-                    </Link>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-border bg-card p-5 md:p-6">
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-semibold">Recent payments</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">Your latest transactions.</p>
                   </div>
+                  <Link to="/payment-history" className="text-sm font-medium text-primary hover:underline">View all</Link>
                 </div>
 
-                <div className="bg-card border border-border rounded-2xl p-6 shadow-lg hover:shadow-xl transition-shadow">
-                  <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-xl font-bold">Recent Payments</h2>
-                    <CreditCard className="w-5 h-5 text-primary" />
-                  </div>
-                  {recentPayments.length > 0 ? (
-                    <div className="space-y-3">
-                      {recentPayments.map((payment, index) => (
-                        <div
-                          key={payment.id}
-                          className="p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors"
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <p className="font-medium text-sm">৳{payment.finalAmount}</p>
-                            <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${getStatusColor(payment.status)}`}>
-                              {getStatusIcon(payment.status)}
-                              {payment.status}
-                            </span>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {payment.courses?.length || 0} course(s) • {payment.submittedAt?.toDate?.()?.toLocaleDateString() || "N/A"}
+                {recentPayments.length > 0 ? (
+                  <div className="divide-y divide-border">
+                    {recentPayments.map((payment) => (
+                      <div key={payment.id} className="flex items-center justify-between gap-4 py-4 first:pt-0 last:pb-0">
+                        <div className="min-w-0">
+                          <p className="font-semibold">৳{payment.finalAmount ?? 0}</p>
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            {payment.courses?.length || 0} course(s) · {paymentDate(payment.submittedAt)}
                           </p>
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <CreditCard className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-                      <p className="text-muted-foreground">No payments yet</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${statusStyle(payment.status)}`}>
+                          <StatusIcon status={payment.status} /> {payment.status || "unknown"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border py-10 text-center">
+                    <CreditCard className="mx-auto mb-3 h-10 w-10 text-muted-foreground/40" />
+                    <p className="text-sm font-medium">No payments yet</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Your transactions will appear here.</p>
+                  </div>
+                )}
+              </section>
+            </div>
+          </>
+        )}
       </div>
-    </DashboardLayout>
+    </div>
   )
 }

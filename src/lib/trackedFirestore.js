@@ -6,6 +6,32 @@ export * from "firebase/firestore"
 const pending = new Map()
 let flushInFlight = null
 
+const PUBLIC_SYNC_COLLECTIONS = new Set([
+  "courses",
+  "classes",
+  "subjects",
+  "chapters",
+  "settings",
+  "categories",
+  "teachers",
+  "announcements",
+  "exams",
+  "examQuestions",
+])
+const USER_SYNC_COLLECTIONS = new Set([
+  "payments",
+  "userCourses",
+  "watched",
+  "userProgress",
+  "votes",
+  "examResults",
+  "examAttempts",
+  "cqSubmissions",
+])
+const SYNC_QUEUE_KEY = "ee_targeted_sync_queue_v1"
+let syncQueueFlushInFlight = null
+let syncQueueTimer = null
+
 function hashString(value = "") {
   let hash = 2166136261
   for (let i = 0; i < value.length; i += 1) {
@@ -37,6 +63,17 @@ function normalizeDynamicPath(path = "/") {
 function normalizeFirestorePath(path = "unknown") {
   const parts = String(path).split("/").filter(Boolean)
   return parts.map((part, index) => (index % 2 === 1 ? "{doc}" : part)).join("/") || "unknown"
+}
+
+function rawCollectionName(ref) {
+  try {
+    if (ref?.path) return String(ref.path).split("/").filter(Boolean)[0] || ""
+    const queryPath = ref?._query?.path?.canonicalString?.()
+    if (queryPath) return String(queryPath).split("/").filter(Boolean)[0] || ""
+  } catch (_) {
+    // Fall through.
+  }
+  return ""
 }
 
 function describeSource(ref) {
@@ -213,6 +250,132 @@ function wrapObserver(observer, operation, source, state) {
   }
 }
 
+function syncedCollection(ref) {
+  const collection = rawCollectionName(ref)
+  return PUBLIC_SYNC_COLLECTIONS.has(collection) || USER_SYNC_COLLECTIONS.has(collection)
+    ? collection
+    : ""
+}
+
+function makeSyncEventId(collection, docId) {
+  const random = globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)
+  return `${collection}:${String(docId).slice(0, 80)}:${Date.now().toString(36)}:${random}`.slice(0, 220)
+}
+
+function loadSyncQueue() {
+  if (typeof window === "undefined") return []
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) || "[]")
+    return Array.isArray(parsed) ? parsed : []
+  } catch (_) {
+    return []
+  }
+}
+
+function saveSyncQueue(events) {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(events.slice(-200)))
+  } catch (_) {
+    // If local storage is unavailable, the source Firestore mutation still succeeded.
+  }
+}
+
+function scheduleSyncQueueFlush(delay = 0) {
+  if (typeof window === "undefined" || syncQueueTimer) return
+  syncQueueTimer = window.setTimeout(() => {
+    syncQueueTimer = null
+    flushTargetedSyncQueue().catch(() => {})
+  }, delay)
+}
+
+function enqueueTargetedSync(event) {
+  if (typeof window === "undefined") return
+  const queue = loadSyncQueue()
+  if (!queue.some((item) => item.eventId === event.eventId)) queue.push(event)
+  saveSyncQueue(queue)
+  scheduleSyncQueueFlush(0)
+}
+
+async function cachedOwnerId(ref) {
+  if (!USER_SYNC_COLLECTIONS.has(rawCollectionName(ref))) return ""
+  try {
+    const snapshot = await firestore.getDocFromCache(ref)
+    const data = snapshot.exists() ? snapshot.data() : null
+    return String(data?.userId || data?.uid || "")
+  } catch (_) {
+    return ""
+  }
+}
+
+function hintForRef(ref, action = "changed", userId = "") {
+  const collection = syncedCollection(ref)
+  const docId = String(ref?.id || "")
+  if (!collection || !docId) return null
+  if (collection === "settings" && docId === "contentSync") return null
+  return {
+    eventId: makeSyncEventId(collection, docId),
+    collection,
+    docId,
+    action: action === "deleted" ? "deleted" : "changed",
+    ...(userId ? { userId } : {}),
+  }
+}
+
+export async function flushTargetedSyncQueue() {
+  if (typeof window === "undefined") return
+  if (syncQueueFlushInFlight) return syncQueueFlushInFlight
+
+  syncQueueFlushInFlight = (async () => {
+    const user = getAuth().currentUser
+    if (!user) return
+
+    while (true) {
+      const queue = loadSyncQueue()
+      const event = queue[0]
+      if (!event) return
+
+      const token = await user.getIdToken()
+      const response = await fetch("/api/sync-event", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(event),
+        keepalive: true,
+      })
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null)
+        const message = body?.error || `Sync hint failed: ${response.status}`
+        if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+          saveSyncQueue(queue.slice(1))
+          console.warn("Dropping rejected targeted sync hint:", message)
+          continue
+        }
+        throw new Error(message)
+      }
+
+      const latest = loadSyncQueue()
+      saveSyncQueue(latest.filter((item) => item.eventId !== event.eventId))
+    }
+  })().finally(() => {
+    syncQueueFlushInFlight = null
+    if (loadSyncQueue().length > 0) scheduleSyncQueueFlush(15000)
+  })
+
+  return syncQueueFlushInFlight
+}
+
+async function queueMutationHint(ref, action = "changed", explicitUserId = "") {
+  const collection = syncedCollection(ref)
+  if (!collection) return
+  const userId = explicitUserId || (USER_SYNC_COLLECTIONS.has(collection) ? await cachedOwnerId(ref) : "")
+  const event = hintForRef(ref, action, userId)
+  if (event) enqueueTargetedSync(event)
+}
+
 export async function getDoc(ref) {
   const snapshot = await firestore.getDoc(ref)
   if (isServerReadSnapshot(snapshot)) queueRead({ operation: "getDoc", source: describeSource(ref), reads: 1 })
@@ -262,11 +425,90 @@ export function onSnapshot(ref, ...args) {
   return firestore.onSnapshot(ref, ...wrapped)
 }
 
-export function runTransaction(db, updateFunction, options) {
-  return firestore.runTransaction(
+export async function addDoc(collectionRef, data) {
+  const result = await firestore.addDoc(collectionRef, data)
+  const explicitUserId = String(data?.userId || data?.uid || "")
+  queueMutationHint(result, "changed", explicitUserId).catch(() => {})
+  return result
+}
+
+export async function setDoc(ref, data, options) {
+  const result = options === undefined
+    ? await firestore.setDoc(ref, data)
+    : await firestore.setDoc(ref, data, options)
+  const explicitUserId = String(data?.userId || data?.uid || "")
+  queueMutationHint(ref, "changed", explicitUserId).catch(() => {})
+  return result
+}
+
+export async function updateDoc(ref, ...args) {
+  const preOwner = await cachedOwnerId(ref)
+  const result = await firestore.updateDoc(ref, ...args)
+  const objectData = args.length === 1 && args[0] && typeof args[0] === "object" ? args[0] : null
+  const explicitUserId = String(objectData?.userId || objectData?.uid || preOwner || "")
+  queueMutationHint(ref, "changed", explicitUserId).catch(() => {})
+  return result
+}
+
+export async function deleteDoc(ref) {
+  const preOwner = await cachedOwnerId(ref)
+  const result = await firestore.deleteDoc(ref)
+  queueMutationHint(ref, "deleted", preOwner).catch(() => {})
+  return result
+}
+
+export function writeBatch(db) {
+  const batch = firestore.writeBatch(db)
+  const mutations = []
+  let proxy
+
+  proxy = new Proxy(batch, {
+    get(target, prop, receiver) {
+      if (prop === "set") {
+        return (ref, data, options) => {
+          mutations.push({ ref, action: "changed", userId: String(data?.userId || data?.uid || "") })
+          if (options === undefined) target.set(ref, data)
+          else target.set(ref, data, options)
+          return proxy
+        }
+      }
+      if (prop === "update") {
+        return (ref, ...args) => {
+          mutations.push({ ref, action: "changed", userId: "" })
+          target.update(ref, ...args)
+          return proxy
+        }
+      }
+      if (prop === "delete") {
+        return (ref) => {
+          mutations.push({ ref, action: "deleted", userId: "" })
+          target.delete(ref)
+          return proxy
+        }
+      }
+      if (prop === "commit") {
+        return async () => {
+          const result = await target.commit()
+          mutations.forEach((item) => queueMutationHint(item.ref, item.action, item.userId).catch(() => {}))
+          return result
+        }
+      }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+
+  return proxy
+}
+
+export async function runTransaction(db, updateFunction, options) {
+  let committedMutations = []
+  const result = await firestore.runTransaction(
     db,
     async (transaction) => {
-      const trackedTransaction = new Proxy(transaction, {
+      const attemptMutations = []
+      let trackedTransaction
+      trackedTransaction = new Proxy(transaction, {
         get(target, prop, receiver) {
           if (prop === "get") {
             return async (ref) => {
@@ -275,14 +517,41 @@ export function runTransaction(db, updateFunction, options) {
               return snapshot
             }
           }
+          if (prop === "set") {
+            return (ref, data, optionsArg) => {
+              attemptMutations.push({ ref, action: "changed", userId: String(data?.userId || data?.uid || "") })
+              if (optionsArg === undefined) target.set(ref, data)
+              else target.set(ref, data, optionsArg)
+              return trackedTransaction
+            }
+          }
+          if (prop === "update") {
+            return (ref, ...args) => {
+              attemptMutations.push({ ref, action: "changed", userId: "" })
+              target.update(ref, ...args)
+              return trackedTransaction
+            }
+          }
+          if (prop === "delete") {
+            return (ref) => {
+              attemptMutations.push({ ref, action: "deleted", userId: "" })
+              target.delete(ref)
+              return trackedTransaction
+            }
+          }
           const value = Reflect.get(target, prop, receiver)
           return typeof value === "function" ? value.bind(target) : value
         },
       })
-      return updateFunction(trackedTransaction)
+      const value = await updateFunction(trackedTransaction)
+      committedMutations = attemptMutations
+      return value
     },
     options,
   )
+
+  committedMutations.forEach((item) => queueMutationHint(item.ref, item.action, item.userId).catch(() => {}))
+  return result
 }
 
 export async function getCountFromServer(ref) {
@@ -297,6 +566,10 @@ if (typeof window !== "undefined" && !window.__eeFirestoreReadTrackerStarted) {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) flushUsage().catch(() => {})
   })
+  window.addEventListener("online", () => {
+    flushTargetedSyncQueue().catch(() => {})
+  })
+  window.setTimeout(() => flushTargetedSyncQueue().catch(() => {}), 1500)
 }
 
 export const __firestoreReadTracker = {

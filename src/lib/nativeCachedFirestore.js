@@ -2,14 +2,36 @@ import * as tracked from "./trackedFirestore.js"
 
 export * from "./trackedFirestore.js"
 
-const SAFE_CACHE_FIRST_COLLECTIONS = new Set([
+const PERMANENT_CACHE_COLLECTIONS = new Set([
   "courses",
   "classes",
   "subjects",
   "chapters",
   "settings",
+  "categories",
+  "teachers",
+  "announcements",
+  "exams",
+  "examQuestions",
+  "payments",
+  "userCourses",
+  "watched",
+  "userProgress",
+  "votes",
+  "examResults",
+  "examAttempts",
+  "cqSubmissions",
 ])
-const WARM_TTL_MS = 24 * 60 * 60 * 1000
+const CACHE_SCHEMA = "v3"
+
+function hashString(value = "") {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
 
 function collectionName(ref) {
   try {
@@ -22,82 +44,145 @@ function collectionName(ref) {
   return ""
 }
 
-function routeKey() {
-  if (typeof window === "undefined") return "server"
-  return `${window.location.pathname}${window.location.search}`
+function shouldUsePermanentCache(ref) {
+  return PERMANENT_CACHE_COLLECTIONS.has(collectionName(ref))
 }
 
-function warmKey(ref, kind) {
-  return `ee_firestore_warm:${kind}:${collectionName(ref)}:${routeKey()}`
+function canonicalField(field) {
+  try {
+    return field?.canonicalString?.() || String(field || "")
+  } catch (_) {
+    return String(field || "")
+  }
 }
 
-function isWarm(ref, kind) {
+function safeJson(value) {
+  try {
+    return JSON.stringify(value)
+  } catch (_) {
+    return String(value)
+  }
+}
+
+function queryIdentity(ref) {
+  try {
+    if (ref?.path && !ref?._query) return `doc:${ref.path}`
+    const q = ref?._query
+    if (!q) return `ref:${ref?.path || collectionName(ref)}`
+
+    const identity = {
+      path: q.path?.canonicalString?.() || "",
+      collectionGroup: q.collectionGroup || null,
+      filters: (q.filters || []).map((filter) => ({
+        field: canonicalField(filter.field),
+        op: filter.op || filter.operator || "",
+        value: filter.value ?? null,
+      })),
+      orderBy: (q.explicitOrderBy || []).map((order) => ({
+        field: canonicalField(order.field),
+        dir: order.dir || order.direction || "",
+      })),
+      limit: q.limit ?? null,
+      limitType: q.limitType || null,
+      startAt: q.startAt ? {
+        inclusive: Boolean(q.startAt.inclusive),
+        position: q.startAt.position || [],
+      } : null,
+      endAt: q.endAt ? {
+        inclusive: Boolean(q.endAt.inclusive),
+        position: q.endAt.position || [],
+      } : null,
+    }
+    return safeJson(identity)
+  } catch (_) {
+    return `fallback:${collectionName(ref)}:${typeof window !== "undefined" ? window.location.pathname : "server"}`
+  }
+}
+
+function cacheMarker(ref, kind) {
+  return `ee_permanent_cache:${CACHE_SCHEMA}:${kind}:${hashString(queryIdentity(ref))}`
+}
+
+function collectionMarker(collection) {
+  return `ee_permanent_collection:${CACHE_SCHEMA}:${collection}`
+}
+
+function hasMarker(ref, kind) {
   if (typeof localStorage === "undefined") return false
-  const value = Number(localStorage.getItem(warmKey(ref, kind)) || 0)
-  return value > 0 && Date.now() - value < WARM_TTL_MS
+  return localStorage.getItem(cacheMarker(ref, kind)) === "1"
 }
 
-function markWarm(ref, kind) {
+function markCached(ref, kind) {
   if (typeof localStorage === "undefined") return
-  localStorage.setItem(warmKey(ref, kind), String(Date.now()))
+  localStorage.setItem(cacheMarker(ref, kind), "1")
+  const collection = collectionName(ref)
+  if (collection) localStorage.setItem(collectionMarker(collection), "1")
 }
 
-function shouldUseCacheFirst(ref) {
-  return SAFE_CACHE_FIRST_COLLECTIONS.has(collectionName(ref))
+function clearMarker(ref, kind) {
+  if (typeof localStorage === "undefined") return
+  localStorage.removeItem(cacheMarker(ref, kind))
 }
 
-async function refreshDoc(ref) {
-  try {
-    const snapshot = await tracked.getDocFromServer(ref)
-    markWarm(ref, "doc")
-    return snapshot
-  } catch (_) {
-    return null
-  }
-}
-
-async function refreshDocs(ref) {
-  try {
-    const snapshot = await tracked.getDocsFromServer(ref)
-    markWarm(ref, "query")
-    return snapshot
-  } catch (_) {
-    return null
-  }
+export function hasSeenPermanentCollection(collection) {
+  if (typeof localStorage === "undefined") return false
+  return PERMANENT_CACHE_COLLECTIONS.has(collection)
+    && localStorage.getItem(collectionMarker(collection)) === "1"
 }
 
 export async function getDoc(ref) {
-  if (shouldUseCacheFirst(ref) && isWarm(ref, "doc")) {
-    try {
-      const cached = await tracked.getDocFromCache(ref)
-      if (cached.exists()) {
-        refreshDoc(ref)
-        return cached
-      }
-    } catch (_) {
-      // Cache miss: fall back to normal tracked read.
+  if (!shouldUsePermanentCache(ref)) return tracked.getDoc(ref)
+
+  // A document can already be present because a parent query cached it. Reuse that
+  // exact document even if this specific getDoc call has never run before.
+  try {
+    const cached = await tracked.getDocFromCache(ref)
+    if (cached.exists() || hasMarker(ref, "doc")) {
+      markCached(ref, "doc")
+      return cached
     }
+  } catch (_) {
+    if (hasMarker(ref, "doc")) clearMarker(ref, "doc")
   }
 
   const snapshot = await tracked.getDoc(ref)
-  if (shouldUseCacheFirst(ref) && snapshot.exists()) markWarm(ref, "doc")
+  if (!snapshot?.metadata?.fromCache) markCached(ref, "doc")
   return snapshot
 }
 
 export async function getDocs(ref) {
-  if (shouldUseCacheFirst(ref) && isWarm(ref, "query")) {
+  if (!shouldUsePermanentCache(ref)) return tracked.getDocs(ref)
+
+  // Queries need their own permanent marker. Firestore may have a few matching docs
+  // from another query, but that does not prove this exact query was fully loaded.
+  if (hasMarker(ref, "query")) {
     try {
-      const cached = await tracked.getDocsFromCache(ref)
-      if (!cached.empty) {
-        refreshDocs(ref)
-        return cached
-      }
+      return await tracked.getDocsFromCache(ref)
     } catch (_) {
-      // Cache miss: fall back to normal tracked read.
+      clearMarker(ref, "query")
     }
   }
 
   const snapshot = await tracked.getDocs(ref)
-  if (shouldUseCacheFirst(ref)) markWarm(ref, "query")
+  if (!snapshot?.metadata?.fromCache) markCached(ref, "query")
   return snapshot
+}
+
+// This is the only automatic refresh path for permanent-cache collections.
+// It reads one changed document, not the parent query/collection. Firestore then
+// updates its persistent IndexedDB cache so future route reads remain cache-only.
+export async function syncChangedDocument(collectionPath, documentId) {
+  if (!PERMANENT_CACHE_COLLECTIONS.has(collectionPath)) {
+    throw new Error(`Unsupported permanent-cache collection: ${collectionPath}`)
+  }
+  const ref = tracked.doc(tracked.getFirestore(), collectionPath, documentId)
+  const snapshot = await tracked.getDocFromServer(ref)
+  markCached(ref, "doc")
+  return snapshot
+}
+
+export const __permanentCache = {
+  collections: PERMANENT_CACHE_COLLECTIONS,
+  hasSeenPermanentCollection,
+  queryIdentity,
 }

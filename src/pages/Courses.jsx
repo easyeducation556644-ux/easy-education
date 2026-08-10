@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Search, Filter, BookOpen, ChevronLeft, ChevronRight } from "lucide-react"
@@ -17,22 +17,39 @@ import {
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { getCourseCategories } from "../lib/courseCategories"
+import { readViewSnapshot, writeViewSnapshot } from "../lib/viewSnapshotCache"
 
 const COURSES_PER_PAGE = 10
+
+function coursesViewKey(isAdmin, sortBy, page) {
+  return `courses:${isAdmin ? "admin" : "student"}:${sortBy}:${page}`
+}
+
+function entitlementKey(uid) {
+  return `course-entitlements:${uid || "anonymous"}`
+}
 
 export default function Courses() {
   const location = useLocation()
   const { isAdmin, currentUser } = useAuth()
-  const [courses, setCourses] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [sortBy, setSortBy] = useState("newest")
-  const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
+
+  const initialViewRef = useRef(readViewSnapshot(coursesViewKey(isAdmin, "newest", 1)))
+  const initialEntitlementsRef = useRef(readViewSnapshot(entitlementKey(currentUser?.uid)))
+  const [courses, setCourses] = useState(() => initialViewRef.current?.courses || [])
+  const [loading, setLoading] = useState(() => !initialViewRef.current)
   const [pageCursors, setPageCursors] = useState([null])
   const [lastVisible, setLastVisible] = useState(null)
-  const [hasNextPage, setHasNextPage] = useState(false)
-  const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(new Set())
+  const [hasNextPage, setHasNextPage] = useState(() => Boolean(initialViewRef.current?.hasNextPage))
+  const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(
+    () => new Set(initialEntitlementsRef.current?.bundleIds || []),
+  )
+  const [cacheRevision, setCacheRevision] = useState(0)
+  const [entitlementRevision, setEntitlementRevision] = useState(0)
+  const lastViewKeyRef = useRef(coursesViewKey(isAdmin, "newest", 1))
 
   useEffect(() => {
     if (location.state?.searchQuery) setSearchQuery(location.state.searchQuery)
@@ -40,10 +57,34 @@ export default function Courses() {
   }, [location.state])
 
   useEffect(() => {
+    const handler = (event) => {
+      const collectionName = event.detail?.collection
+      if (collectionName === "courses") setCacheRevision((value) => value + 1)
+      if (collectionName === "userCourses") setEntitlementRevision((value) => value + 1)
+    }
+    window.addEventListener("easy-education-cache-updated", handler)
+    return () => window.removeEventListener("easy-education-cache-updated", handler)
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
 
     const loadCoursesPage = async () => {
-      setLoading(true)
+      const viewKey = coursesViewKey(isAdmin, sortBy, page)
+      const cachedView = readViewSnapshot(viewKey)
+      const viewChanged = lastViewKeyRef.current !== viewKey
+      lastViewKeyRef.current = viewKey
+
+      if (cachedView?.courses) {
+        setCourses(cachedView.courses)
+        setHasNextPage(Boolean(cachedView.hasNextPage))
+        setLoading(false)
+      } else if (viewChanged || courses.length === 0) {
+        setCourses([])
+        setHasNextPage(false)
+        setLoading(true)
+      }
+
       try {
         const cursor = pageCursors[pageCursors.length - 1]
         const sortField = sortBy === "title" ? "title" : "createdAt"
@@ -63,12 +104,17 @@ export default function Courses() {
           pageCourses = pageCourses.filter((course) => course.publishStatus !== "draft")
         }
 
+        const nextAvailable = rawDocs.length > COURSES_PER_PAGE
         setCourses(pageCourses)
         setLastVisible(visibleDocs.at(-1) || null)
-        setHasNextPage(rawDocs.length > COURSES_PER_PAGE)
+        setHasNextPage(nextAvailable)
+        writeViewSnapshot(viewKey, {
+          courses: pageCourses,
+          hasNextPage: nextAvailable,
+        })
       } catch (error) {
-        console.error("Error fetching courses page:", error)
-        if (!cancelled) {
+        console.error("Error loading cached courses page:", error)
+        if (!cancelled && !cachedView) {
           setCourses([])
           setHasNextPage(false)
           setLastVisible(null)
@@ -80,7 +126,7 @@ export default function Courses() {
 
     loadCoursesPage()
     return () => { cancelled = true }
-  }, [isAdmin, sortBy, pageCursors])
+  }, [isAdmin, sortBy, page, pageCursors, cacheRevision])
 
   useEffect(() => {
     let cancelled = false
@@ -90,6 +136,10 @@ export default function Courses() {
         setPurchasedBundleCourses(new Set())
         return
       }
+
+      const key = entitlementKey(currentUser.uid)
+      const cached = readViewSnapshot(key)
+      if (cached?.bundleIds) setPurchasedBundleCourses(new Set(cached.bundleIds))
 
       try {
         const userCoursesQuery = query(
@@ -106,14 +156,15 @@ export default function Courses() {
           if (userCourse.bundleId) purchasedBundleSet.add(userCourse.bundleId)
         })
         setPurchasedBundleCourses(purchasedBundleSet)
+        writeViewSnapshot(key, { bundleIds: [...purchasedBundleSet] })
       } catch (error) {
-        console.error("Error refreshing purchased courses:", error)
+        console.error("Error loading cached course entitlements:", error)
       }
     }
 
     refreshEntitlements()
     return () => { cancelled = true }
-  }, [currentUser?.uid])
+  }, [currentUser?.uid, entitlementRevision])
 
   const filteredCourses = useMemo(() => {
     let filtered = [...courses]
@@ -152,6 +203,7 @@ export default function Courses() {
   const resetPagination = (nextSort = sortBy) => {
     setPage(1)
     setPageCursors([null])
+    setLastVisible(null)
     if (nextSort !== sortBy) setSortBy(nextSort)
   }
 
@@ -166,6 +218,7 @@ export default function Courses() {
     if (page <= 1 || loading) return
     setPage((current) => Math.max(1, current - 1))
     setPageCursors((current) => current.slice(0, -1))
+    setLastVisible(null)
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
@@ -233,7 +286,7 @@ export default function Courses() {
           </div>
         )}
 
-        {loading ? (
+        {loading && courses.length === 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[...Array(6)].map((_, i) => (
               <div key={i} className="bg-card border border-border rounded-lg p-4 animate-pulse">
@@ -265,7 +318,7 @@ export default function Courses() {
               <button
                 type="button"
                 onClick={goNext}
-                disabled={!hasNextPage || loading}
+                disabled={!hasNextPage || !lastVisible || loading}
                 className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Next
@@ -290,7 +343,7 @@ export default function Courses() {
               <button
                 type="button"
                 onClick={goNext}
-                disabled={!hasNextPage || loading}
+                disabled={!hasNextPage || !lastVisible || loading}
                 className="rounded-xl border border-border px-4 py-2 text-sm disabled:opacity-40"
               >
                 Next
