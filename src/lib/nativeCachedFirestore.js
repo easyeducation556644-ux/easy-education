@@ -1,4 +1,5 @@
 import * as tracked from "./trackedFirestore.js"
+import { getAuth } from "firebase/auth"
 
 export * from "./trackedFirestore.js"
 
@@ -124,6 +125,37 @@ function clearMarker(ref, kind) {
   localStorage.removeItem(cacheMarker(ref, kind))
 }
 
+function isArchivedClassData(data) {
+  if (data?.isArchived === true) return true
+  const subjects = Array.isArray(data?.subject) ? data.subject : [data?.subject]
+  const chapters = Array.isArray(data?.chapter) ? data.chapter : [data?.chapter]
+  return subjects.includes("archive") || chapters.includes("archive")
+}
+
+async function notifyCreatedClass(classId) {
+  if (typeof window === "undefined") return
+  const user = getAuth().currentUser
+  if (!user) return
+  try {
+    const token = await user.getIdToken()
+    const response = await fetch("/api/learning-push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action: "class-created", classId }),
+      keepalive: true,
+    })
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      throw new Error(body?.error || `Class notification failed: ${response.status}`)
+    }
+  } catch (error) {
+    console.warn("Class was created, but enrolled-user push notification failed:", error)
+  }
+}
+
 export function hasSeenPermanentCollection(collection) {
   if (typeof localStorage === "undefined") return false
   return PERMANENT_CACHE_COLLECTIONS.has(collection)
@@ -166,6 +198,14 @@ export async function getDocs(ref) {
   const snapshot = await tracked.getDocs(ref)
   if (!snapshot?.metadata?.fromCache) markCached(ref, "query")
   return snapshot
+}
+
+export async function addDoc(collectionRef, data) {
+  const result = await tracked.addDoc(collectionRef, data)
+  if (collectionName(collectionRef) === "classes" && !isArchivedClassData(data)) {
+    notifyCreatedClass(result.id).catch(() => {})
+  }
+  return result
 }
 
 // This is the only automatic refresh path for permanent-cache collections.
