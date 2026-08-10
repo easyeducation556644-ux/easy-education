@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { useAuth } from "../contexts/AuthContext"
 import CustomVideoPlayer from "../components/CustomVideoPlayer"
+import { nativeRequest } from "../lib/nativeAndroid"
 import {
   getDownloadJobs,
   pauseOfflineDownload,
@@ -30,6 +31,7 @@ function formatBytes(bytes) {
 
 function statusLabel(status) {
   if (status === "completed") return "ডাউনলোড সম্পূর্ণ"
+  if (status === "converting") return "MP4 প্রস্তুত হচ্ছে"
   if (status === "paused") return "পজ করা আছে"
   if (status === "error") return "ডাউনলোড ব্যর্থ"
   if (status === "queued") return "অপেক্ষায় আছে"
@@ -67,13 +69,22 @@ export default function Downloads() {
   }, [currentUser?.uid])
 
   const totals = useMemo(() => ({
-    active: jobs.filter((job) => ["queued", "downloading"].includes(job.status)).length,
+    active: jobs.filter((job) => ["queued", "downloading", "converting"].includes(job.status)).length,
     completed: jobs.filter((job) => job.status === "completed").length,
   }), [jobs])
 
   const handleRemove = async (job) => {
     await removeDownloadJob(job.userId, job.classId)
     if (watching?.id === job.id) setWatching(null)
+  }
+
+  const handleWatch = async (job) => {
+    try {
+      await nativeRequest("play", { id: `${job.userId}:${job.classId}` })
+    } catch (error) {
+      console.warn("Native offline player unavailable; using WebView fallback:", error)
+      setWatching(job)
+    }
   }
 
   return (
@@ -144,7 +155,7 @@ export default function Downloads() {
                       {canWatch && (
                         <button
                           type="button"
-                          onClick={() => setWatching(job)}
+                          onClick={() => handleWatch(job)}
                           className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
                         >
                           <Play className="h-4 w-4" />
