@@ -16,8 +16,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -25,11 +25,13 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.firebase.messaging.FirebaseMessaging
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.net.URI
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
@@ -106,8 +108,44 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(root)
 
-        if (restored == null) web.loadUrl(APP_ORIGIN) else revealWeb()
+        if (restored == null) {
+            web.loadUrl(appUrlForPath(intent?.getStringExtra(EXTRA_OPEN_PATH)))
+        } else {
+            revealWeb()
+            navigateFromIntent(intent)
+        }
         HlsDownloadService.resume(this)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        navigateFromIntent(intent)
+    }
+
+    private fun navigateFromIntent(intent: Intent?) {
+        if (!::web.isInitialized) return
+        val path = sanitizeOpenPath(intent?.getStringExtra(EXTRA_OPEN_PATH)) ?: return
+        web.loadUrl("$APP_ORIGIN$path")
+        intent?.removeExtra(EXTRA_OPEN_PATH)
+    }
+
+    private fun sanitizeOpenPath(value: String?): String? {
+        val path = value?.trim().orEmpty()
+        if (path.isBlank() || !path.startsWith("/") || path.startsWith("//")) return null
+        return path
+    }
+
+    private fun appUrlForPath(value: String?): String =
+        "$APP_ORIGIN${sanitizeOpenPath(value) ?: "/"}"
+
+    private fun nativeDeviceId(): String {
+        val prefs = getSharedPreferences(PUSH_PREFS, MODE_PRIVATE)
+        val existing = prefs.getString(KEY_DEVICE_ID, null)
+        if (!existing.isNullOrBlank()) return existing
+        val created = UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_DEVICE_ID, created).apply()
+        return created
     }
 
     private fun buildSplashView(): View {
@@ -161,11 +199,32 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val requestId = request.optString("requestId")
-        if (request.optString("action") == "googleSignIn") {
+        val action = request.optString("action")
+
+        if (action == "googleSignIn") {
             googleReply = reply
             googleRequestId = requestId
             googleSignInClient.signOut().addOnCompleteListener {
                 googleLauncher.launch(googleSignInClient.signInIntent)
+            }
+            return
+        }
+
+        if (action == "pushToken") {
+            val deviceId = nativeDeviceId()
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                val response = if (task.isSuccessful && !task.result.isNullOrBlank()) {
+                    JSONObject()
+                        .put("ok", true)
+                        .put("token", task.result)
+                        .put("deviceId", deviceId)
+                } else {
+                    JSONObject()
+                        .put("ok", false)
+                        .put("error", task.exception?.message ?: "FCM token unavailable")
+                }
+                response.put("requestId", requestId)
+                reply.postMessage(response.toString())
             }
             return
         }
@@ -460,7 +519,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        const val EXTRA_OPEN_PATH = "open_path"
         private const val APP_HOST = "easy-education.vercel.app"
         private const val APP_ORIGIN = "https://$APP_HOST"
+        private const val PUSH_PREFS = "easy_education_push"
+        private const val KEY_DEVICE_ID = "device_id"
     }
 }
