@@ -33,6 +33,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
+            android:name=".YoutubeDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
             android:name=".EasyEducationMessagingService"
             android:exported="false">
             <intent-filter>

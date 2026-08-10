@@ -4,6 +4,7 @@ import {
   removeOfflineVideo,
   saveOfflineVideo,
 } from "./offlineVideos"
+import { hasNativeDownloader, nativeRequest } from "./nativeAndroid"
 
 const DOWNLOADS_KEY = "easy-education-download-jobs-v1"
 const DOWNLOADS_EVENT = "easy-education-downloads-changed"
@@ -37,6 +38,45 @@ function getJobId(userId, classId) {
   return `${userId}:${classId}`
 }
 
+function nativeStatusToJobStatus(state) {
+  if (state === "completed") return "completed"
+  if (state === "paused") return "paused"
+  if (state === "failed") return "error"
+  if (state === "converting") return "converting"
+  return "downloading"
+}
+
+async function waitForNativeYoutubeDownload({ id, signal, onProgress }) {
+  while (true) {
+    if (signal?.aborted) {
+      await nativeRequest("pause", { id }).catch(() => null)
+      throw new DOMException("Download paused", "AbortError")
+    }
+
+    const status = await nativeRequest("status", { id })
+    onProgress?.(status.progress || 0, status)
+    if (status.state === "completed" && status.playbackUrl) return status.playbackUrl
+    if (status.state === "paused") throw new DOMException("Download paused", "AbortError")
+    if (status.state === "failed") throw new Error(status.error || "YouTube download failed")
+    await new Promise((resolve) => setTimeout(resolve, 700))
+  }
+}
+
+async function saveNativeYoutubeVideo({ user, job, signal, onProgress }) {
+  if (!hasNativeDownloader()) throw new Error("YouTube offline download is available in the Android app only")
+  const id = getJobId(user.uid, job.classId)
+  await nativeRequest("start", {
+    id,
+    kind: "youtube",
+    title: job.title || "Class video",
+    courseTitle: job.courseTitle || "",
+    height: Number(job.height) || 360,
+    totalBytes: Number(job.totalBytes) || 0,
+    playlistUrl: job.videoUrl,
+  })
+  return waitForNativeYoutubeDownload({ id, signal, onProgress })
+}
+
 export function getDownloadJobs(userId) {
   return readJobs()
     .filter((job) => !userId || job.userId === userId)
@@ -58,34 +98,49 @@ export async function startOfflineDownload({ user, job }) {
   const promise = (async () => {
     updateJob(id, { status: "downloading", error: null })
     try {
-      const playbackUrl = await saveOfflineVideo({
-        user,
-        classId: job.classId,
-        videoUrl: job.videoUrl,
-        height: job.height,
-        title: job.title,
-        courseTitle: job.courseTitle,
-        totalBytes: job.totalBytes,
-        signal: controller.signal,
-        onProgress: (progress, nativeStatus) => {
-          const totalBytes = Number(nativeStatus?.totalBytes || job.totalBytes) || 0
-          updateJob(id, {
-            status: "downloading",
-            progress: Math.round(Number(progress) * 10) / 10,
-            downloadedBytes: Number(nativeStatus?.downloadedBytes)
-              || Math.round(totalBytes * progress / 100),
-            totalBytes,
-            height: Number(nativeStatus?.height || job.height),
-            playbackUrl: nativeStatus?.playbackUrl || job.playbackUrl,
+      const onProgress = (progress, nativeStatus) => {
+        const totalBytes = Number(nativeStatus?.totalBytes || job.totalBytes) || 0
+        updateJob(id, {
+          status: nativeStatus?.state ? nativeStatusToJobStatus(nativeStatus.state) : "downloading",
+          progress: Math.round(Number(progress) * 10) / 10,
+          downloadedBytes: Number(nativeStatus?.downloadedBytes)
+            || Math.round(totalBytes * progress / 100),
+          totalBytes,
+          height: Number(nativeStatus?.height || job.height),
+          playbackUrl: nativeStatus?.playbackUrl || job.playbackUrl,
+          error: nativeStatus?.error || null,
+        })
+      }
+
+      const playbackUrl = job.kind === "youtube"
+        ? await saveNativeYoutubeVideo({
+            user,
+            job,
+            signal: controller.signal,
+            onProgress,
           })
-        },
-      })
+        : await saveOfflineVideo({
+            user,
+            classId: job.classId,
+            videoUrl: job.videoUrl,
+            height: job.height,
+            title: job.title,
+            courseTitle: job.courseTitle,
+            totalBytes: job.totalBytes,
+            signal: controller.signal,
+            onProgress,
+          })
+
+      const latest = readJobs().find((item) => item.id === id)
+      const finalBytes = Number(latest?.downloadedBytes || latest?.totalBytes || job.totalBytes) || 0
       updateJob(id, {
         status: "completed",
         progress: 100,
-        downloadedBytes: Number(job.totalBytes) || 0,
+        downloadedBytes: finalBytes,
+        totalBytes: Number(latest?.totalBytes) || finalBytes,
         playbackUrl,
         completedAt: Date.now(),
+        error: null,
       })
       return playbackUrl
     } catch (error) {
@@ -93,7 +148,7 @@ export async function startOfflineDownload({ user, job }) {
       const intentionallyPaused = activeDownloads.get(id)?.intentionalPause === true
       const reloadOrNetworkInterruption = !intentionallyPaused && (
         error?.name === "AbortError"
-        || /Cache\.put|network error|Failed to fetch|Load failed/i.test(message)
+        || /Cache\.put|network error|Failed to fetch|Load failed|did not respond/i.test(message)
       )
       updateJob(id, {
         status: intentionallyPaused
@@ -170,6 +225,7 @@ export function pauseOfflineDownload(userId, classId) {
     active.intentionalPause = true
     active.controller.abort()
   }
+  if (hasNativeDownloader()) nativeRequest("pause", { id }).catch(() => null)
   updateJob(id, { status: "paused" })
 }
 
@@ -186,9 +242,9 @@ export function resumePendingDownloads(user) {
   for (const job of getDownloadJobs(user.uid)) {
     const reloadError = (
       job.status === "error"
-      && /Cache\.put|network error|Failed to fetch|Load failed/i.test(job.error || "")
+      && /Cache\.put|network error|Failed to fetch|Load failed|did not respond/i.test(job.error || "")
     )
-    if (["queued", "downloading"].includes(job.status) || reloadError) {
+    if (["queued", "downloading", "converting"].includes(job.status) || reloadError) {
       startOfflineDownload({ user, job })
     }
   }
@@ -205,7 +261,36 @@ export async function removeDownloadJob(userId, classId) {
 export async function refreshDownloadPlaybackUrls(userId) {
   const jobs = getDownloadJobs(userId)
   let changed = false
+
   for (const job of jobs) {
+    if (hasNativeDownloader()) {
+      const native = await nativeRequest("status", { id: getJobId(userId, job.classId) }).catch(() => null)
+      if (native) {
+        const nativeJobStatus = nativeStatusToJobStatus(native.state)
+        const progress = Math.max(0, Math.min(100, Number(native.progress) || 0))
+        const patchChanged = (
+          nativeJobStatus !== job.status
+          || progress !== Number(job.progress || 0)
+          || Number(native.downloadedBytes || 0) !== Number(job.downloadedBytes || 0)
+          || Number(native.totalBytes || 0) !== Number(job.totalBytes || 0)
+          || (native.playbackUrl || null) !== (job.playbackUrl || null)
+          || Number(native.height || 0) !== Number(job.height || 0)
+        )
+        if (patchChanged) {
+          job.status = nativeJobStatus
+          job.progress = progress
+          job.downloadedBytes = Number(native.downloadedBytes) || 0
+          job.totalBytes = Number(native.totalBytes) || 0
+          job.height = Number(native.height || job.height)
+          job.playbackUrl = native.playbackUrl || job.playbackUrl
+          job.error = native.error || null
+          job.updatedAt = Date.now()
+          changed = true
+        }
+        continue
+      }
+    }
+
     if (job.status !== "completed" && job.progress <= 0) continue
     const playbackUrl = await getSavedOfflineVideoUrl(userId, job.classId)
     if (playbackUrl && playbackUrl !== job.playbackUrl) {
@@ -213,6 +298,7 @@ export async function refreshDownloadPlaybackUrls(userId) {
       changed = true
     }
   }
+
   if (changed) {
     const others = readJobs().filter((job) => job.userId !== userId)
     writeJobs([...others, ...jobs])

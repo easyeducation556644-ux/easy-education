@@ -26,12 +26,14 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.messaging.FirebaseMessaging
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
@@ -42,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chrome: AppWebChromeClient
     private var googleReply: JavaScriptReplyProxy? = null
     private var googleRequestId: String = ""
+    private val bridgeExecutor = Executors.newSingleThreadExecutor()
 
     private val googleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val response = runCatching {
@@ -115,6 +118,7 @@ class MainActivity : AppCompatActivity() {
             navigateFromIntent(intent)
         }
         HlsDownloadService.resume(this)
+        YoutubeDownloadService.resume(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -229,6 +233,38 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (action == "youtubeOptions") {
+            val videoUrl = request.optString("videoUrl")
+            bridgeExecutor.execute {
+                val response = runCatching {
+                    val resolved = YoutubeDeviceResolver().resolve(videoUrl)
+                    val options = JSONArray()
+                    resolved.formats.forEach { format ->
+                        options.put(
+                            JSONObject()
+                                .put("height", format.height)
+                                .put("label", format.qualityLabel)
+                                .put("kind", "youtube")
+                                .put("contentLength", format.contentLength)
+                                .put("mimeType", format.mimeType),
+                        )
+                    }
+                    JSONObject()
+                        .put("ok", true)
+                        .put("title", resolved.title)
+                        .put("recommendedHeight", resolved.recommendedHeight)
+                        .put("options", options)
+                }.getOrElse {
+                    JSONObject()
+                        .put("ok", false)
+                        .put("error", it.message ?: "YouTube qualities unavailable")
+                }
+                response.put("requestId", requestId)
+                runOnUiThread { reply.postMessage(response.toString()) }
+            }
+            return
+        }
+
         val response = runCatching {
             when (request.getString("action")) {
                 "start" -> {
@@ -236,17 +272,22 @@ class MainActivity : AppCompatActivity() {
                     val kind = request.optString("kind", "hls")
                     val playlistUrl = request.optString("playlistUrl")
                     val downloadUrlBase = request.optString("downloadUrlBase")
-                    if (kind == "mp4") {
-                        require(isAllowedAppDownloadUrl(downloadUrlBase)) { "Unsupported MP4 download source" }
-                    } else {
-                        require(isAllowedMediaUrl(playlistUrl)) { "Unsupported media host" }
+                    when (kind) {
+                        "youtube" -> require(YoutubeDeviceResolver.isYoutubeUrl(playlistUrl)) {
+                            "Unsupported YouTube source"
+                        }
+                        "mp4" -> require(isAllowedAppDownloadUrl(downloadUrlBase)) {
+                            "Unsupported MP4 download source"
+                        }
+                        else -> require(isAllowedMediaUrl(playlistUrl)) { "Unsupported media host" }
                     }
 
                     val existing = store.get(id)
-                    val sameSource = existing != null && existing.kind == kind && (
-                        (kind == "mp4" && existing.downloadUrlBase == downloadUrlBase) ||
-                            (kind != "mp4" && existing.playlistUrl == playlistUrl)
-                        )
+                    val sameSource = existing != null && existing.kind == kind && when (kind) {
+                        "youtube" -> existing.playlistUrl == playlistUrl
+                        "mp4" -> existing.downloadUrlBase == downloadUrlBase
+                        else -> existing.playlistUrl == playlistUrl
+                    }
                     if (!sameSource) HlsDownloadService.offlineDir(this, id).deleteRecursively()
 
                     store.save(DownloadTask(
@@ -263,7 +304,8 @@ class MainActivity : AppCompatActivity() {
                         total = if (sameSource) existing?.total ?: 0 else 0,
                         state = if (sameSource && existing?.state == "completed" && mp4File(id).exists()) "completed" else "queued",
                     ))
-                    HlsDownloadService.start(this, id)
+                    if (kind == "youtube") YoutubeDownloadService.start(this, id)
+                    else HlsDownloadService.start(this, id)
                     JSONObject().put("ok", true).put("id", id)
                 }
                 "status" -> {
@@ -509,6 +551,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun close() = source.close()
+    }
+
+    override fun onDestroy() {
+        bridgeExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     @Deprecated("Deprecated in Java")

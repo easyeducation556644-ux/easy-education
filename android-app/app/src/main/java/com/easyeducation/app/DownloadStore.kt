@@ -23,27 +23,34 @@ class DownloadStore(context: Context) {
     private val prefs = context.getSharedPreferences("native_downloads", Context.MODE_PRIVATE)
 
     fun save(task: DownloadTask) {
+        // Keep YouTube jobs out of the legacy HLS queue even in the tiny window before
+        // YoutubeDownloadService starts its worker.
+        val normalized = if (task.kind == "youtube" && task.state == "queued") {
+            task.copy(state = "yt_resolving")
+        } else task
         val json = JSONObject()
-            .put("id", task.id)
-            .put("title", task.title)
-            .put("courseTitle", task.courseTitle)
-            .put("playlistUrl", task.playlistUrl)
-            .put("downloadUrlBase", task.downloadUrlBase)
-            .put("kind", task.kind)
-            .put("height", task.height)
-            .put("downloadedBytes", task.downloadedBytes)
-            .put("totalBytes", task.totalBytes)
-            .put("completed", task.completed)
-            .put("total", task.total)
-            .put("state", task.state)
-            .put("error", task.error)
-        prefs.edit().putString(task.id, json.toString()).apply()
+            .put("id", normalized.id)
+            .put("title", normalized.title)
+            .put("courseTitle", normalized.courseTitle)
+            .put("playlistUrl", normalized.playlistUrl)
+            .put("downloadUrlBase", normalized.downloadUrlBase)
+            .put("kind", normalized.kind)
+            .put("height", normalized.height)
+            .put("downloadedBytes", normalized.downloadedBytes)
+            .put("totalBytes", normalized.totalBytes)
+            .put("completed", normalized.completed)
+            .put("total", normalized.total)
+            .put("state", normalized.state)
+            .put("error", normalized.error)
+        prefs.edit().putString(normalized.id, json.toString()).apply()
     }
 
     fun get(id: String): DownloadTask? = prefs.getString(id, null)?.let(::decode)
     fun remove(id: String) { prefs.edit().remove(id).apply() }
     fun all(): List<DownloadTask> = prefs.all.values.mapNotNull { (it as? String)?.let(::decode) }
-    fun pending(): List<DownloadTask> = all().filter { it.state in setOf("queued", "downloading", "converting") }
+    fun pending(): List<DownloadTask> = all().filter {
+        it.kind != "youtube" && it.state in setOf("queued", "downloading", "converting")
+    }
 
     private fun decode(raw: String): DownloadTask? = runCatching {
         val j = JSONObject(raw)

@@ -28,9 +28,11 @@ export function nativeRequest(action, payload = {}) {
     window.EasyEducationNative.postMessage(JSON.stringify({ requestId, action, ...payload }))
     const timeout = action === "googleSignIn"
       ? 120000
-      : action === "pushToken"
-        ? 30000
-        : 10000
+      : action === "youtubeOptions"
+        ? 45000
+        : action === "pushToken"
+          ? 30000
+          : 10000
     setTimeout(() => {
       if (!pending.has(requestId)) return
       pending.delete(requestId)

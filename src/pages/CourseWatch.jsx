@@ -39,8 +39,15 @@ import {
   removeOfflineVideosForOtherUsers,
 } from "../lib/offlineVideos"
 import { queueOfflineDownload } from "../lib/offlineDownloadManager"
+import { hasNativeDownloader, nativeRequest } from "../lib/nativeAndroid"
 
 const RUMBLE_URL_PATTERN = /https?:\/\/(?:www\.)?rumble\.com\//i
+const YOUTUBE_URL_PATTERN = /https?:\/\/(?:(?:www|m)\.)?(?:youtube\.com|youtu\.be)\//i
+
+function supportsOfflineDownload(videoUrl, nativeApp) {
+  const value = videoUrl || ""
+  return RUMBLE_URL_PATTERN.test(value) || (nativeApp && YOUTUBE_URL_PATTERN.test(value))
+}
 
 function formatOfflineSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "সাইজ অজানা"
@@ -60,6 +67,7 @@ export default function CourseWatch() {
   const { courseId, classId } = useParams()
   const navigate = useNavigate()
   const { currentUser, isAdmin } = useAuth()
+  const nativeApp = hasNativeDownloader()
   const [course, setCourse] = useState(null)
   const [actualCourseId, setActualCourseId] = useState(null)
   const [classes, setClasses] = useState([])
@@ -118,7 +126,7 @@ export default function CourseWatch() {
       if (
         !currentUser?.uid ||
         !currentClass?.id ||
-        !RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
+        !supportsOfflineDownload(currentClass.videoURL, nativeApp)
       ) return
 
       try {
@@ -142,46 +150,54 @@ export default function CourseWatch() {
       offlineAbortRef.current?.abort()
       offlineAbortRef.current = null
     }
-  }, [currentUser?.uid, currentClass?.id])
+  }, [currentUser?.uid, currentClass?.id, currentClass?.videoURL, nativeApp])
 
   useEffect(() => {
-    if (
-      !currentUser ||
-      !currentClass?.id ||
-      !RUMBLE_URL_PATTERN.test(currentClass.videoURL || "")
-    ) {
+    const videoUrl = currentClass?.videoURL || ""
+    if (!currentUser || !currentClass?.id || !supportsOfflineDownload(videoUrl, nativeApp)) {
       setOfflineQualityOptions([])
       return
     }
 
     const controller = new AbortController()
+    let active = true
     setOfflineQualityLoading(true)
 
-    getOfflineVideoOptions({
-      user: currentUser,
-      classId: currentClass.id,
-      videoUrl: currentClass.videoURL,
-      signal: controller.signal,
-    })
+    const request = nativeApp && YOUTUBE_URL_PATTERN.test(videoUrl)
+      ? nativeRequest("youtubeOptions", { videoUrl })
+      : getOfflineVideoOptions({
+          user: currentUser,
+          classId: currentClass.id,
+          videoUrl,
+          signal: controller.signal,
+        })
+
+    request
       .then((payload) => {
+        if (!active) return
         const options = Array.isArray(payload?.options) ? payload.options : []
         setOfflineQualityOptions(options)
         if (payload?.recommendedHeight) {
-          setOfflineQuality(payload.recommendedHeight)
+          setOfflineQuality(Number(payload.recommendedHeight))
+        } else if (options.length > 0) {
+          setOfflineQuality(Number(options[0].height) || 360)
         }
       })
       .catch((error) => {
-        if (error.name !== "AbortError") {
-          console.warn("Unable to load offline quality options:", error)
-          setOfflineQualityOptions([])
-        }
+        if (!active || error.name === "AbortError") return
+        console.warn("Unable to load offline quality options:", error)
+        setOfflineQualityOptions([])
+        showToast(error.message || "Offline quality পাওয়া যায়নি", "error")
       })
       .finally(() => {
-        if (!controller.signal.aborted) setOfflineQualityLoading(false)
+        if (active) setOfflineQualityLoading(false)
       })
 
-    return () => controller.abort()
-  }, [currentUser, currentClass?.id, currentClass?.videoURL])
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [currentUser, currentClass?.id, currentClass?.videoURL, nativeApp])
 
   const fetchExamsForCourse = async () => {
     if (!actualCourseId) return
@@ -220,13 +236,11 @@ export default function CourseWatch() {
         if (isAdmin) {
           setHasAccess(true)
         } else if (currentUser) {
-          // Check userCourses collection first (supports bundles and new enrollments)
           const userCourseDoc = await getDoc(doc(db, "userCourses", `${currentUser.uid}_${resolvedCourseId}`))
           
           if (userCourseDoc.exists()) {
             setHasAccess(true)
           } else {
-            // Fallback: Check payments for legacy free enrollments
             const paymentsQuery = query(
               collection(db, "payments"),
               where("userId", "==", currentUser.uid),
@@ -253,7 +267,6 @@ export default function CourseWatch() {
         setClasses(classesData)
 
         if (classesData.length > 0) {
-          // If classId is provided in URL, find and set that specific class
           let initialClass = classesData[0]
           if (classId) {
             const foundClass = classesData.find(cls => cls.id === classId)
@@ -361,7 +374,6 @@ export default function CourseWatch() {
       const previousClass = classes[currentIndex - 1]
       setCurrentClass(previousClass)
 
-      // Update selected subject/chapter if needed
       if (course?.type === "batch" && previousClass.subject) {
         setSelectedSubject(previousClass.subject)
         if (previousClass.chapter) {
@@ -389,7 +401,6 @@ export default function CourseWatch() {
       const nextClass = classes[currentIndex + 1]
       setCurrentClass(nextClass)
 
-      // Update selected subject/chapter if needed
       if (course?.type === "batch" && nextClass.subject) {
         setSelectedSubject(nextClass.subject)
         if (nextClass.chapter) {
@@ -416,7 +427,7 @@ export default function CourseWatch() {
 
   const handleSaveOffline = () => {
     if (!currentUser || !currentClass?.id || offlineQualityOptions.length === 0) return
-    const option = offlineQualityOptions.find((item) => item.height === offlineQuality)
+    const option = offlineQualityOptions.find((item) => Number(item.height) === Number(offlineQuality))
       || offlineQualityOptions[0]
 
     queueOfflineDownload({
@@ -426,9 +437,9 @@ export default function CourseWatch() {
       courseTitle: course?.title,
       courseId: actualCourseId,
       videoUrl: currentClass.videoURL,
-      height: option.height,
+      height: Number(option.height) || 360,
       kind: option.kind,
-      totalBytes: option.contentLength,
+      totalBytes: Number(option.contentLength) || 0,
     })
     navigate("/downloads")
   }
@@ -481,12 +492,12 @@ export default function CourseWatch() {
       } else if (selectedSubject) {
         return Object.values(classStructure[selectedSubject] || {}).flat()
       }
-      return [] // No subject selected yet
+      return []
     } else {
       if (selectedChapter) {
         return classStructure[selectedChapter] || []
       }
-      return [] // No chapter selected yet
+      return []
     }
   }
 
@@ -529,7 +540,6 @@ export default function CourseWatch() {
     )
   }
 
-  // Access control - only show videos if user has purchased
   if (!hasAccess && !isAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
@@ -566,15 +576,15 @@ export default function CourseWatch() {
     { label: course?.title || "Loading...", href: `/course/${courseId}` },
     { label: "Watch" }
   ]
+  const currentVideoSupportsOffline = supportsOfflineDownload(currentClass?.videoURL, nativeApp)
+  const currentVideoIsYoutube = YOUTUBE_URL_PATTERN.test(currentClass?.videoURL || "")
 
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-3 sm:px-4 py-4 sm:py-6">
         <Breadcrumb items={breadcrumbItems} />
         <div className="max-w-5xl mx-auto">
-          {/* Main Content - Video Player */}
           <div className="space-y-4 sm:space-y-6">
-            {/* Video Player */}
             <div className="bg-card border border-border rounded-lg sm:rounded-xl overflow-hidden shadow-lg">
               <div className="aspect-video bg-black relative">
                 {currentClass?.videoURL ? (
@@ -598,7 +608,7 @@ export default function CourseWatch() {
                   </div>
                 )}
               </div>
-              {currentClass?.videoURL && RUMBLE_URL_PATTERN.test(currentClass.videoURL) && (
+              {currentClass?.videoURL && currentVideoSupportsOffline && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
                   <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
                     {offlineBusy ? (
@@ -613,7 +623,9 @@ export default function CourseWatch() {
                         ? `অফলাইনের জন্য সেভ হচ্ছে${offlineProgress ? ` — ${offlineProgress}%` : "…"}`
                         : offlineSaved
                           ? "এই ডিভাইসে অফলাইনে পাওয়া যাবে"
-                          : "ইন্টারনেট ছাড়াই পরে দেখুন"}
+                          : currentVideoIsYoutube
+                            ? "YouTube ভিডিও ফোন থেকেই resolve ও download হবে"
+                            : "ইন্টারনেট ছাড়াই পরে দেখুন"}
                     </span>
                   </div>
 
@@ -626,11 +638,11 @@ export default function CourseWatch() {
                     {!offlineSaved && (
                       <select
                         id={`offline-quality-${currentClass.id}`}
-                      value={offlineQuality}
-                      onChange={(event) => setOfflineQuality(Number(event.target.value))}
-                      disabled={offlineBusy || offlineQualityLoading || offlineQualityOptions.length === 0}
-                      className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
-                    >
+                        value={offlineQuality}
+                        onChange={(event) => setOfflineQuality(Number(event.target.value))}
+                        disabled={offlineBusy || offlineQualityLoading || offlineQualityOptions.length === 0}
+                        className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                      >
                         {offlineQualityLoading && (
                           <option value={offlineQuality}>কোয়ালিটি খোঁজা হচ্ছে…</option>
                         )}
@@ -638,8 +650,8 @@ export default function CourseWatch() {
                           <option value={offlineQuality}>কোনো offline quality পাওয়া যায়নি</option>
                         )}
                         {offlineQualityOptions.map((option) => (
-                          <option key={option.height} value={option.height}>
-                            {option.height}p · {formatOfflineSize(option.contentLength)} · {getMobileQualityLabel(option.height)}
+                          <option key={`${option.kind || "video"}-${option.height}`} value={option.height}>
+                            {option.height}p · {formatOfflineSize(Number(option.contentLength))} · {getMobileQualityLabel(Number(option.height))}
                           </option>
                         ))}
                       </select>
@@ -674,7 +686,6 @@ export default function CourseWatch() {
               )}
             </div>
 
-            
             <div className="bg-card border border-border rounded-lg sm:rounded-xl p-4 sm:p-6 shadow-lg">
               <div className="flex items-start justify-between gap-4 mb-3">
                 <h1 className="text-xl sm:text-2xl font-bold flex-1">{currentClass?.title || "Select a class to watch"}</h1>
@@ -728,8 +739,6 @@ export default function CourseWatch() {
         </div>
       </div>
 
-
-      {/* Toast Notification Display */}
       {toast && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
           <div

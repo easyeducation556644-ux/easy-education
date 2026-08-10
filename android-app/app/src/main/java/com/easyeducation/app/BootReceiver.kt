@@ -6,8 +6,8 @@ import android.content.Intent
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED && DownloadStore(context).pending().isNotEmpty()) {
-            HlsDownloadService.resume(context)
-        }
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        HlsDownloadService.resume(context)
+        YoutubeDownloadService.resume(context)
     }
 }

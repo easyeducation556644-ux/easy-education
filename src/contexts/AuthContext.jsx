@@ -98,7 +98,6 @@ export function AuthProvider({ children }) {
       const permanentBan = userData.permanentBan || false
       const banExpiresAt = userData.banExpiresAt
 
-      // Check for permanent ban - just show ban info, DON'T logout
       if (permanentBan) {
         const banData = {
           isBanned: true,
@@ -108,11 +107,9 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        // IMPORTANT: Still return deviceInfo so user stays logged in to see ban
         return deviceInfo
       }
 
-      // Check for manual admin ban without expiration
       if (userData.banned === true && !banExpiresAt) {
         const banData = {
           isBanned: true,
@@ -122,11 +119,9 @@ export function AuthProvider({ children }) {
         }
         localStorage.setItem('banInfo', JSON.stringify(banData))
         setBanInfo(banData)
-        // IMPORTANT: Still return deviceInfo
         return deviceInfo
       }
 
-      // Check for temporary ban
       if (banExpiresAt) {
         const banEndTime = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
         const now = new Date()
@@ -134,26 +129,14 @@ export function AuthProvider({ children }) {
         if (banEndTime <= now) {
           console.log('✅ Ban expired during login - clearing all devices for fresh start')
           console.log(`📊 Current ban count: ${banCount} (will be preserved for tracking violations)`)
-          
-          // CRITICAL: Clear ALL devices when ban expires
-          // This ensures fresh login required from ALL devices
-          // Current device will be added below in normal flow
           await updateDoc(userRef, {
             banned: false,
             banExpiresAt: null,
-            devices: []  // ✅ Clear all devices in database
-            // banCount intentionally preserved for violation tracking
-            // Current device will be added in normal flow below
+            devices: []
           })
-          
-          // ✅ FIX: Also clear local devices variable to prevent re-ban
           devices = []
-          
           localStorage.removeItem('banInfo')
           setBanInfo(null)
-          
-          // DO NOT return - continue to normal device management flow below
-          // This allows current device to be added as the ONLY device
         } else {
           const banData = {
             isBanned: true,
@@ -168,7 +151,6 @@ export function AuthProvider({ children }) {
         }
       }
 
-      // No active ban - clear any cached ban info
       localStorage.removeItem('banInfo')
       setBanInfo(null)
 
@@ -645,14 +627,12 @@ export function AuthProvider({ children }) {
           const updatedProfile = { id: currentUser.uid, ...doc.data() }
           setUserProfile(updatedProfile)
 
-          // Admin bypass - never ban admins
           if (updatedProfile.role === "admin") {
             setBanInfo(null)
             localStorage.removeItem('banInfo')
             return
           }
 
-          // Clear ban cache if admin requested
           if (updatedProfile.clearBanCacheAt) {
             const clearCacheTimestamp = updatedProfile.clearBanCacheAt.toMillis ?
               updatedProfile.clearBanCacheAt.toMillis() :
@@ -673,17 +653,12 @@ export function AuthProvider({ children }) {
           }
 
           const storedFingerprint = currentDeviceFingerprint || localStorage.getItem('currentDeviceFingerprint')
-
-          // ===============================================
-          // Check Ban Status FIRST
-          // ===============================================
           const isBanned = updatedProfile.banned || updatedProfile.permanentBan
           const banExpiresAt = updatedProfile.banExpiresAt
           let isBanActive = false
 
           if (isBanned) {
             if (!banExpiresAt) {
-              // Permanent ban or manual ban
               isBanActive = true
             } else {
               try {
@@ -696,28 +671,20 @@ export function AuthProvider({ children }) {
             }
           }
 
-          // If ban expired, clear ban flags and force logout on ALL devices
           if (isBanned && !isBanActive && banExpiresAt) {
             console.log('✅ Ban has expired in snapshot listener - clearing all devices for fresh start')
             console.log(`📊 Preserving ban count: ${updatedProfile.banCount || 0} for violation tracking`)
             try {
               const userRef = doc(db, "users", currentUser.uid)
-              
               const forceLogoutTimestamp = Timestamp.now()
               localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
-              
-              // CRITICAL: Clear ALL devices when ban expires
-              // This forces ALL devices to logout and require fresh login
-              // banCount persists to track cumulative violations
               await updateDoc(userRef, {
                 banned: false,
                 banExpiresAt: null,
-                devices: [],  // ✅ Clear all devices - force logout on ALL devices
+                devices: [],
                 forceLogoutAt: forceLogoutTimestamp,
                 forceLogoutReason: 'নিষেধাজ্ঞা সমাপ্ত - অনুগ্রহ করে আবার লগইন করুন'
-                // banCount intentionally preserved for violation tracking
               })
-              
               console.log(`✅ Ban cleared - ALL devices removed, users must login again`)
             } catch (error) {
               console.error('Error clearing ban on expiry:', error)
@@ -732,7 +699,6 @@ export function AuthProvider({ children }) {
             return
           }
 
-          // 🔥 FIX: If user is actively banned, show ban overlay and STOP here
           if (isBanActive) {
             console.log('🚫 User is banned - showing overlay')
             console.log('🚫 Ban type:', updatedProfile.permanentBan ? 'permanent' : 'temporary')
@@ -842,7 +808,7 @@ export function AuthProvider({ children }) {
 
     return () => unsubscribe()
   }, [currentUser, currentDeviceFingerprint, loginFlowComplete]) 
-  // useEffect for deviceWarning (unchanged)
+
   useEffect(() => {
     const storedWarning = localStorage.getItem('deviceWarning')
     if (storedWarning) {
@@ -863,7 +829,6 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  // useEffect for banInfo (unchanged)
   useEffect(() => {
     if (currentUser && userProfile) {
       const storedBanInfo = localStorage.getItem('banInfo')
@@ -897,7 +862,6 @@ export function AuthProvider({ children }) {
     }
   }, [currentUser, userProfile])
 
-  // useEffect for onAuthStateChanged (unchanged)
   useEffect(() => {
     const loadingTimeout = setTimeout(() => {
       if (loading) {
@@ -1004,19 +968,8 @@ export function AuthProvider({ children }) {
     error,
   }
 
-  if (loading) {
-    return (
-      <AuthContext.Provider value={value}>
-        <div className="min-h-screen flex items-center justify-center bg-background">
-          <div className="text-center">
-            <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-muted-foreground">Loading...</p>
-          </div>
-        </div>
-      </AuthContext.Provider>
-    )
-  }
-
+  // Public pages render immediately while Firebase restores the session. ProtectedRoute
+  // still consumes `loading` and keeps private routes gated until auth is resolved.
   if (error) {
     return (
       <AuthContext.Provider value={value}>
@@ -1053,15 +1006,11 @@ export function AuthProvider({ children }) {
             const forceLogoutTimestamp = Timestamp.now()
             localStorage.setItem('lastAckedLogoutAt', (forceLogoutTimestamp.toMillis() + 2000).toString())
             
-            // CRITICAL FIX: Only clear ban flags, NOT devices
-            // Preserving devices ensures next multi-device login properly triggers violation
-            // banCount persists to track cumulative violations
             await updateDoc(userRef, {
               banned: false,
               banExpiresAt: null,
               forceLogoutAt: forceLogoutTimestamp,
               forceLogoutReason: 'Ban expired - please log in again'
-              // banCount and devices intentionally NOT touched - preserved for violation tracking
             })
           }
         }
