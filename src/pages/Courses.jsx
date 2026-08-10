@@ -111,7 +111,6 @@ export default function Courses() {
 
   const ensureGlobalCatalog = useCallback(async ({ forceCacheRefresh = false } = {}) => {
     if (catalogLoadRef.current) return catalogLoadRef.current
-
     if (!forceCacheRefresh && catalogCourses) return catalogCourses
 
     const cached = readViewSnapshot(CATALOG_VIEW_KEY)
@@ -123,9 +122,6 @@ export default function Courses() {
     setCatalogLoading(true)
     const work = (async () => {
       try {
-        // This exact collection query is permanent-cached by nativeCachedFirestore.
-        // It can cost reads once on the first global search/filter, but typing,
-        // changing filters, sorting, and revisiting the page do not refetch it.
         const snapshot = await getDocs(collection(db, "courses"))
         const allCourses = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
         setCatalogCourses(allCourses)
@@ -154,9 +150,6 @@ export default function Courses() {
 
   useEffect(() => {
     if (!catalogRequested || !catalogCourses || cacheRevision === 0) return
-    // Targeted sync has already fetched only the changed course document.
-    // Re-running the permanent collection query now reads from Firestore's local cache
-    // and refreshes our lightweight global search snapshot without a collection refetch.
     ensureGlobalCatalog({ forceCacheRefresh: true })
   }, [cacheRevision])
 
@@ -335,6 +328,8 @@ export default function Courses() {
   const changeSearch = (value) => {
     setSearchQuery(value)
     setPage(1)
+    setPageCursors([null])
+    setLastVisible(null)
     if (value.trim()) {
       setCatalogRequested(true)
       ensureGlobalCatalog()
@@ -344,11 +339,11 @@ export default function Courses() {
   const changeCategory = (value) => {
     setCategoryFilter(value)
     setPage(1)
+    setPageCursors([null])
+    setLastVisible(null)
     if (value !== "all") {
       setCatalogRequested(true)
       ensureGlobalCatalog()
-    } else if (!searchQuery.trim()) {
-      resetCursorPagination(sortBy)
     }
   }
 
