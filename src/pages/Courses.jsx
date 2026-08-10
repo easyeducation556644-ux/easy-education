@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Search, Filter, BookOpen, ChevronLeft, ChevronRight } from "lucide-react"
@@ -20,6 +20,7 @@ import { getCourseCategories } from "../lib/courseCategories"
 import { readViewSnapshot, writeViewSnapshot } from "../lib/viewSnapshotCache"
 
 const COURSES_PER_PAGE = 10
+const CATALOG_VIEW_KEY = "courses:global-catalog:v1"
 
 function coursesViewKey(isAdmin, sortBy, page) {
   return `courses:${isAdmin ? "admin" : "student"}:${sortBy}:${page}`
@@ -27,6 +28,41 @@ function coursesViewKey(isAdmin, sortBy, page) {
 
 function entitlementKey(uid) {
   return `course-entitlements:${uid || "anonymous"}`
+}
+
+function sortCourses(items, sortBy) {
+  const list = [...items]
+  if (sortBy === "title") {
+    return list.sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), undefined, { sensitivity: "base" }))
+  }
+
+  const createdAt = (course) => {
+    const value = course?.createdAt
+    if (typeof value?.toMillis === "function") return value.toMillis()
+    if (typeof value?.seconds === "number") return value.seconds * 1000
+    const parsed = new Date(value || 0).getTime()
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  return list.sort((a, b) => sortBy === "oldest"
+    ? createdAt(a) - createdAt(b)
+    : createdAt(b) - createdAt(a))
+}
+
+function matchesSearch(course, rawSearch) {
+  const search = rawSearch.trim().toLowerCase()
+  if (!search) return true
+
+  const searchableKeywords = Array.isArray(course.searchKeywords)
+    ? course.searchKeywords.join(" ").toLowerCase()
+    : String(course.searchKeywords || "").toLowerCase()
+
+  return (
+    String(course.title || "").toLowerCase().includes(search) ||
+    String(course.description || "").toLowerCase().includes(search) ||
+    getCourseCategories(course).some((category) => category.toLowerCase().includes(search)) ||
+    searchableKeywords.includes(search)
+  )
 }
 
 export default function Courses() {
@@ -39,17 +75,24 @@ export default function Courses() {
 
   const initialViewRef = useRef(readViewSnapshot(coursesViewKey(isAdmin, "newest", 1)))
   const initialEntitlementsRef = useRef(readViewSnapshot(entitlementKey(currentUser?.uid)))
+  const initialCatalogRef = useRef(readViewSnapshot(CATALOG_VIEW_KEY))
   const [courses, setCourses] = useState(() => initialViewRef.current?.courses || [])
   const [loading, setLoading] = useState(() => !initialViewRef.current)
   const [pageCursors, setPageCursors] = useState([null])
   const [lastVisible, setLastVisible] = useState(null)
   const [hasNextPage, setHasNextPage] = useState(() => Boolean(initialViewRef.current?.hasNextPage))
+  const [catalogCourses, setCatalogCourses] = useState(() => initialCatalogRef.current?.courses || null)
+  const [catalogRequested, setCatalogRequested] = useState(() => Boolean(initialCatalogRef.current?.courses))
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const catalogLoadRef = useRef(null)
   const [purchasedBundleCourses, setPurchasedBundleCourses] = useState(
     () => new Set(initialEntitlementsRef.current?.bundleIds || []),
   )
   const [cacheRevision, setCacheRevision] = useState(0)
   const [entitlementRevision, setEntitlementRevision] = useState(0)
   const lastViewKeyRef = useRef(coursesViewKey(isAdmin, "newest", 1))
+
+  const filterMode = Boolean(searchQuery.trim()) || categoryFilter !== "all"
 
   useEffect(() => {
     if (location.state?.searchQuery) setSearchQuery(location.state.searchQuery)
@@ -66,7 +109,59 @@ export default function Courses() {
     return () => window.removeEventListener("easy-education-cache-updated", handler)
   }, [])
 
+  const ensureGlobalCatalog = useCallback(async ({ forceCacheRefresh = false } = {}) => {
+    if (catalogLoadRef.current) return catalogLoadRef.current
+
+    if (!forceCacheRefresh && catalogCourses) return catalogCourses
+
+    const cached = readViewSnapshot(CATALOG_VIEW_KEY)
+    if (!forceCacheRefresh && cached?.courses) {
+      setCatalogCourses(cached.courses)
+      return cached.courses
+    }
+
+    setCatalogLoading(true)
+    const work = (async () => {
+      try {
+        // This exact collection query is permanent-cached by nativeCachedFirestore.
+        // It can cost reads once on the first global search/filter, but typing,
+        // changing filters, sorting, and revisiting the page do not refetch it.
+        const snapshot = await getDocs(collection(db, "courses"))
+        const allCourses = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+        setCatalogCourses(allCourses)
+        writeViewSnapshot(CATALOG_VIEW_KEY, { courses: allCourses })
+        return allCourses
+      } catch (error) {
+        console.error("Error loading global course catalog:", error)
+        return catalogCourses || cached?.courses || []
+      } finally {
+        setCatalogLoading(false)
+        catalogLoadRef.current = null
+      }
+    })()
+
+    catalogLoadRef.current = work
+    return work
+  }, [catalogCourses])
+
   useEffect(() => {
+    if (filterMode) {
+      setCatalogRequested(true)
+      setPage(1)
+      ensureGlobalCatalog()
+    }
+  }, [filterMode, ensureGlobalCatalog])
+
+  useEffect(() => {
+    if (!catalogRequested || !catalogCourses || cacheRevision === 0) return
+    // Targeted sync has already fetched only the changed course document.
+    // Re-running the permanent collection query now reads from Firestore's local cache
+    // and refreshes our lightweight global search snapshot without a collection refetch.
+    ensureGlobalCatalog({ forceCacheRefresh: true })
+  }, [cacheRevision])
+
+  useEffect(() => {
+    if (filterMode) return
     let cancelled = false
 
     const loadCoursesPage = async () => {
@@ -126,7 +221,7 @@ export default function Courses() {
 
     loadCoursesPage()
     return () => { cancelled = true }
-  }, [isAdmin, sortBy, page, pageCursors, cacheRevision])
+  }, [isAdmin, sortBy, page, pageCursors, cacheRevision, filterMode])
 
   useEffect(() => {
     let cancelled = false
@@ -166,8 +261,10 @@ export default function Courses() {
     return () => { cancelled = true }
   }, [currentUser?.uid, entitlementRevision])
 
-  const filteredCourses = useMemo(() => {
-    let filtered = [...courses]
+  const globallyFilteredCourses = useMemo(() => {
+    if (!filterMode || !catalogCourses) return []
+
+    let filtered = catalogCourses.filter((course) => isAdmin || course.publishStatus !== "draft")
 
     if (purchasedBundleCourses.size > 0) {
       filtered = filtered.filter((course) =>
@@ -175,52 +272,114 @@ export default function Courses() {
       )
     }
 
-    if (searchQuery?.trim()) {
-      const search = searchQuery.toLowerCase()
-      filtered = filtered.filter((course) => {
-        const searchableKeywords = Array.isArray(course.searchKeywords)
-          ? course.searchKeywords.join(",").toLowerCase()
-          : (course.searchKeywords || "").toLowerCase()
-
-        return (
-          course.title?.toLowerCase().includes(search) ||
-          course.description?.toLowerCase().includes(search) ||
-          getCourseCategories(course).some((category) => category.toLowerCase().includes(search)) ||
-          searchableKeywords.includes(search)
-        )
-      })
+    if (searchQuery.trim()) {
+      filtered = filtered.filter((course) => matchesSearch(course, searchQuery))
     }
 
-    if (categoryFilter && categoryFilter !== "all") {
+    if (categoryFilter !== "all") {
       filtered = filtered.filter((course) => getCourseCategories(course).includes(categoryFilter))
     }
 
-    return filtered
-  }, [courses, searchQuery, categoryFilter, purchasedBundleCourses])
+    return sortCourses(filtered, sortBy)
+  }, [filterMode, catalogCourses, isAdmin, purchasedBundleCourses, searchQuery, categoryFilter, sortBy])
 
-  const categories = ["all", ...new Set(courses.flatMap(getCourseCategories))]
+  const normalPageCourses = useMemo(() => {
+    if (filterMode) return []
+    if (purchasedBundleCourses.size === 0) return courses
+    return courses.filter((course) =>
+      course.courseFormat !== "bundle" || !purchasedBundleCourses.has(course.id),
+    )
+  }, [courses, purchasedBundleCourses, filterMode])
 
-  const resetPagination = (nextSort = sortBy) => {
+  const filteredTotalPages = Math.max(1, Math.ceil(globallyFilteredCourses.length / COURSES_PER_PAGE))
+  const filteredPage = Math.min(page, filteredTotalPages)
+  const filteredPageCourses = useMemo(() => {
+    if (!filterMode) return []
+    const start = (filteredPage - 1) * COURSES_PER_PAGE
+    return globallyFilteredCourses.slice(start, start + COURSES_PER_PAGE)
+  }, [filterMode, globallyFilteredCourses, filteredPage])
+
+  useEffect(() => {
+    if (filterMode && page > filteredTotalPages) setPage(filteredTotalPages)
+  }, [filterMode, page, filteredTotalPages])
+
+  const displayCourses = filterMode ? filteredPageCourses : normalPageCourses
+  const displayLoading = filterMode ? catalogLoading && !catalogCourses : loading
+
+  const categories = useMemo(() => {
+    const source = catalogCourses || courses
+    return ["all", ...new Set(
+      source
+        .filter((course) => isAdmin || course.publishStatus !== "draft")
+        .flatMap(getCourseCategories),
+    )]
+  }, [catalogCourses, courses, isAdmin])
+
+  const resetCursorPagination = (nextSort = sortBy) => {
     setPage(1)
     setPageCursors([null])
     setLastVisible(null)
     if (nextSort !== sortBy) setSortBy(nextSort)
   }
 
+  const changeSort = (nextSort) => {
+    if (nextSort === sortBy) return
+    if (filterMode) {
+      setSortBy(nextSort)
+      setPage(1)
+    } else {
+      resetCursorPagination(nextSort)
+    }
+  }
+
+  const changeSearch = (value) => {
+    setSearchQuery(value)
+    setPage(1)
+    if (value.trim()) {
+      setCatalogRequested(true)
+      ensureGlobalCatalog()
+    }
+  }
+
+  const changeCategory = (value) => {
+    setCategoryFilter(value)
+    setPage(1)
+    if (value !== "all") {
+      setCatalogRequested(true)
+      ensureGlobalCatalog()
+    } else if (!searchQuery.trim()) {
+      resetCursorPagination(sortBy)
+    }
+  }
+
   const goNext = () => {
-    if (!hasNextPage || !lastVisible || loading) return
-    setPage((current) => current + 1)
-    setPageCursors((current) => [...current, lastVisible])
+    if (displayLoading) return
+
+    if (filterMode) {
+      if (filteredPage >= filteredTotalPages) return
+      setPage((current) => current + 1)
+    } else {
+      if (!hasNextPage || !lastVisible) return
+      setPage((current) => current + 1)
+      setPageCursors((current) => [...current, lastVisible])
+    }
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
   const goPrevious = () => {
-    if (page <= 1 || loading) return
+    if (page <= 1 || displayLoading) return
+
     setPage((current) => Math.max(1, current - 1))
-    setPageCursors((current) => current.slice(0, -1))
-    setLastVisible(null)
+    if (!filterMode) {
+      setPageCursors((current) => current.slice(0, -1))
+      setLastVisible(null)
+    }
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
+
+  const canGoNext = filterMode
+    ? filteredPage < filteredTotalPages
+    : Boolean(hasNextPage && lastVisible)
 
   return (
     <div className="min-h-screen py-8 md:py-12 px-4 md:px-6">
@@ -239,8 +398,11 @@ export default function Courses() {
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search in this page..."
+                  onFocus={() => {
+                    if (readViewSnapshot(CATALOG_VIEW_KEY)?.courses) setCatalogRequested(true)
+                  }}
+                  onChange={(e) => changeSearch(e.target.value)}
+                  placeholder="Search all courses..."
                   className="w-full pl-10 pr-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm smooth-transition"
                 />
               </div>
@@ -252,7 +414,11 @@ export default function Courses() {
                 <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <select
                   value={categoryFilter}
-                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  onFocus={() => {
+                    setCatalogRequested(true)
+                    ensureGlobalCatalog()
+                  }}
+                  onChange={(e) => changeCategory(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm appearance-none smooth-transition"
                 >
                   {categories.map((cat) => (
@@ -269,7 +435,7 @@ export default function Courses() {
               {["newest", "oldest", "title"].map((option) => (
                 <button
                   key={option}
-                  onClick={() => resetPagination(option)}
+                  onClick={() => changeSort(option)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium smooth-transition ${sortBy === option ? "bg-primary text-primary-foreground" : "bg-muted text-foreground hover:bg-muted/80"}`}
                 >
                   {option.charAt(0).toUpperCase() + option.slice(1)}
@@ -279,14 +445,20 @@ export default function Courses() {
           </div>
         </div>
 
-        {!loading && (
+        {!displayLoading && (
           <div className="mb-6 flex items-center justify-between gap-3 text-sm text-muted-foreground">
-            <span>Page {page} · Showing {filteredCourses.length} of up to {COURSES_PER_PAGE}</span>
+            {filterMode ? (
+              <span>
+                {globallyFilteredCourses.length} matching course{globallyFilteredCourses.length === 1 ? "" : "s"} · Page {filteredPage} of {filteredTotalPages}
+              </span>
+            ) : (
+              <span>Page {page} · Showing {displayCourses.length} of up to {COURSES_PER_PAGE}</span>
+            )}
             <span>{COURSES_PER_PAGE} courses per page</span>
           </div>
         )}
 
-        {loading && courses.length === 0 ? (
+        {displayLoading && displayCourses.length === 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[...Array(6)].map((_, i) => (
               <div key={i} className="bg-card border border-border rounded-lg p-4 animate-pulse">
@@ -296,10 +468,10 @@ export default function Courses() {
               </div>
             ))}
           </div>
-        ) : filteredCourses.length > 0 ? (
+        ) : displayCourses.length > 0 ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredCourses.map((course) => (
+              {displayCourses.map((course) => (
                 <CourseCard key={course.id} course={course} showMinimal={true} />
               ))}
             </div>
@@ -308,17 +480,17 @@ export default function Courses() {
               <button
                 type="button"
                 onClick={goPrevious}
-                disabled={page <= 1 || loading}
+                disabled={page <= 1 || displayLoading}
                 className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <ChevronLeft className="h-4 w-4" />
                 Previous
               </button>
-              <span className="min-w-20 text-center text-sm font-semibold">Page {page}</span>
+              <span className="min-w-20 text-center text-sm font-semibold">Page {filterMode ? filteredPage : page}</span>
               <button
                 type="button"
                 onClick={goNext}
-                disabled={!hasNextPage || !lastVisible || loading}
+                disabled={!canGoNext || displayLoading}
                 className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Next
@@ -329,26 +501,10 @@ export default function Courses() {
         ) : (
           <div className="text-center py-12">
             <BookOpen className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">No courses found on this page</h3>
-            <p className="text-muted-foreground">Try another page or adjust your search and filters</p>
-            <div className="mt-6 flex justify-center gap-3">
-              <button
-                type="button"
-                onClick={goPrevious}
-                disabled={page <= 1 || loading}
-                className="rounded-xl border border-border px-4 py-2 text-sm disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={goNext}
-                disabled={!hasNextPage || !lastVisible || loading}
-                className="rounded-xl border border-border px-4 py-2 text-sm disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
+            <h3 className="text-lg font-semibold mb-2">No courses found</h3>
+            <p className="text-muted-foreground">
+              {filterMode ? "Try another search or category." : "No courses are available on this page."}
+            </p>
           </div>
         )}
       </div>
