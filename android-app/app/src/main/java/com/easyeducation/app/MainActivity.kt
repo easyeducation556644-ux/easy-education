@@ -7,7 +7,10 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
+import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.webkit.JavaScriptReplyProxy
@@ -26,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var store: DownloadStore
     private lateinit var googleSignInClient: GoogleSignInClient
+    private lateinit var chrome: AppWebChromeClient
     private var googleReply: JavaScriptReplyProxy? = null
     private var googleRequestId: String = ""
 
@@ -54,13 +58,16 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 10)
         }
+
+        chrome = AppWebChromeClient()
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
-            webChromeClient = WebChromeClient()
+            webChromeClient = chrome
             webViewClient = LockedWebClient()
         }
+
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             WebViewCompat.addWebMessageListener(web, "EasyEducationNative", setOf(APP_ORIGIN)) {
                     _, message, sourceOrigin, isMainFrame, replyProxy ->
@@ -69,9 +76,16 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
         setContentView(web)
-        web.loadUrl(APP_ORIGIN)
+        val restored = savedInstanceState?.let { web.restoreState(it) }
+        if (restored == null) web.loadUrl(APP_ORIGIN)
         HlsDownloadService.resume(this)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        web.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     private fun handleMessage(raw: String, reply: JavaScriptReplyProxy) {
@@ -149,12 +163,52 @@ class MainActivity : AppCompatActivity() {
             host == "1a-1791.com" || host.endsWith(".1a-1791.com"))
     }.getOrDefault(false)
 
+    private inner class AppWebChromeClient : WebChromeClient() {
+        private var customView: View? = null
+        private var customViewCallback: CustomViewCallback? = null
+        private var previousSystemUiVisibility = 0
+
+        override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+            if (customView != null) {
+                callback.onCustomViewHidden()
+                return
+            }
+            val decor = window.decorView as FrameLayout
+            previousSystemUiVisibility = decor.systemUiVisibility
+            customView = view
+            customViewCallback = callback
+            decor.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            web.visibility = View.GONE
+            decor.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+        }
+
+        override fun onHideCustomView() {
+            val view = customView ?: return
+            val decor = window.decorView as FrameLayout
+            decor.removeView(view)
+            customView = null
+            web.visibility = View.VISIBLE
+            decor.systemUiVisibility = previousSystemUiVisibility
+            customViewCallback?.onCustomViewHidden()
+            customViewCallback = null
+        }
+
+        fun isFullscreen(): Boolean = customView != null
+    }
+
     private inner class LockedWebClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            // Embedded players (YouTube/Rumble/Drive/etc.) navigate inside iframes/subframes.
-            // They must stay inside the WebView. Only top-level external navigation is opened outside.
             if (!request.isForMainFrame) return false
-
             val uri = request.url
             if (uri.scheme == "https" && uri.host == APP_HOST) return false
             startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -180,7 +234,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Deprecated("Deprecated in Java")
-    override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
+    override fun onBackPressed() {
+        if (chrome.isFullscreen()) chrome.onHideCustomView()
+        else if (web.canGoBack()) web.goBack()
+        else super.onBackPressed()
+    }
 
     companion object {
         private const val APP_HOST = "easy-education.vercel.app"
