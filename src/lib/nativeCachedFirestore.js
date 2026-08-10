@@ -22,8 +22,6 @@ const PERMANENT_CACHE_COLLECTIONS = new Set([
   "examResults",
   "examAttempts",
   "cqSubmissions",
-  "posts",
-  "comments",
 ])
 const CACHE_SCHEMA = "v4"
 const CACHE_UPDATED_EVENT = "easy-education-cache-updated"
