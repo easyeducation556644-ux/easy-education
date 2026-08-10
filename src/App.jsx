@@ -12,8 +12,10 @@ import PWAInstallPrompt from "./components/PWAInstallPrompt"
 import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
 import DownloadResumeAgent from "./components/DownloadResumeAgent"
+import NativeHlsBootstrap from "./components/NativeHlsBootstrap"
+import { NativeAppTopBar, NativeBottomNav } from "./components/NativeAppChrome"
+import { hasNativeDownloader } from "./lib/nativeAndroid"
 
-// Pages
 import Home from "./pages/Home"
 import Login from "./pages/Login"
 import Courses from "./pages/Courses"
@@ -44,10 +46,8 @@ import ExamAttempts from "./pages/ExamAttempts"
 import Analytics from "./pages/Analytics"
 import NotFound from "./pages/NotFound"
 
-console.log(" App.jsx loaded")
-
 function App() {
-  console.log(" App component rendering")
+  const nativeApp = hasNativeDownloader()
 
   return (
     <Router>
@@ -56,9 +56,10 @@ function App() {
           <ExamProvider>
             <SettingsLoader />
             <DownloadResumeAgent />
-            <div className="flex flex-col min-h-screen bg-background text-foreground">
-              <Header />
-              <main className="flex-1">
+            <NativeHlsBootstrap />
+            <div className="flex min-h-screen flex-col bg-background text-foreground">
+              {nativeApp ? <NativeAppTopBar /> : <Header />}
+              <main className={`flex-1 ${nativeApp ? "pb-20" : ""}`}>
                 <Routes>
                   <Route path="/" element={<Home />} />
                   <Route path="/login" element={<Login />} />
@@ -73,135 +74,37 @@ function App() {
                   <Route path="/course/:courseId/classes/:chapter" element={<CourseClasses />} />
                   <Route path="/course/:courseId/classes/:subject/:chapter" element={<CourseClasses />} />
                   <Route path="/course/:courseId/watch/:classId" element={<CourseWatch />} />
-                  {/* End hierarchical routes */}
                   <Route path="/course/:courseId/watch" element={<CourseWatch />} />
                   <Route path="/checkout" element={<Checkout />} />
                   <Route path="/checkout-complete" element={<CheckoutComplete />} />
-                  <Route 
-                    path="/payment-success" 
-                    element={
-                      <ProtectedRoute>
-                        <PaymentSuccess />
-                      </ProtectedRoute>
-                    } 
-                  />
+                  <Route path="/payment-success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
                   <Route path="/payment-cancel" element={<PaymentCancel />} />
-                  <Route
-                    path="/payment-history"
-                    element={
-                      <ProtectedRoute>
-                        <PaymentHistory />
-                      </ProtectedRoute>
-                    }
-                  />
+                  <Route path="/payment-history" element={<ProtectedRoute><PaymentHistory /></ProtectedRoute>} />
                   <Route path="/announcements" element={<Announcements />} />
                   <Route path="/announcements/:id" element={<AnnouncementDetail />} />
                   <Route path="/community" element={<Community />} />
-                  <Route
-                    path="/profile"
-                    element={
-                      <ProtectedRoute>
-                        <Profile />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/dashboard"
-                    element={
-                      <ProtectedRoute>
-                        <Dashboard />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/downloads"
-                    element={
-                      <ProtectedRoute>
-                        <Downloads />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/my-courses"
-                    element={
-                      <ProtectedRoute>
-                        <MyCourses />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/course/:courseId/exams"
-                    element={
-                      <ProtectedRoute>
-                        <ExamList />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/exam/:examId"
-                    element={
-                      <ProtectedRoute>
-                        <ExamView />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/exam/:examId/leaderboard"
-                    element={
-                      <ProtectedRoute>
-                        <ExamLeaderboard />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/exam/:examId/result"
-                    element={
-                      <ProtectedRoute>
-                        <ExamResult />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/exam/:examId/solutions"
-                    element={
-                      <ProtectedRoute>
-                        <ExamSolutions />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/exam/:examId/attempts"
-                    element={
-                      <ProtectedRoute>
-                        <ExamAttempts />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/analytics"
-                    element={
-                      <ProtectedRoute>
-                        <Analytics />
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="/admin/*"
-                    element={
-                      <ProtectedRoute adminOnly>
-                        <AdminDashboard />
-                      </ProtectedRoute>
-                    }
-                  />
+                  <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+                  <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+                  <Route path="/downloads" element={<ProtectedRoute><Downloads /></ProtectedRoute>} />
+                  <Route path="/my-courses" element={<ProtectedRoute><MyCourses /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/exams" element={<ProtectedRoute><ExamList /></ProtectedRoute>} />
+                  <Route path="/exam/:examId" element={<ProtectedRoute><ExamView /></ProtectedRoute>} />
+                  <Route path="/exam/:examId/leaderboard" element={<ProtectedRoute><ExamLeaderboard /></ProtectedRoute>} />
+                  <Route path="/exam/:examId/result" element={<ProtectedRoute><ExamResult /></ProtectedRoute>} />
+                  <Route path="/exam/:examId/solutions" element={<ProtectedRoute><ExamSolutions /></ProtectedRoute>} />
+                  <Route path="/exam/:examId/attempts" element={<ProtectedRoute><ExamAttempts /></ProtectedRoute>} />
+                  <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+                  <Route path="/admin/*" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </main>
+
               <CartDrawer />
-              <FloatingCartButton />
-              <PWAInstallPrompt />
+              {!nativeApp && <FloatingCartButton />}
+              {!nativeApp && <PWAInstallPrompt />}
               <UpdateNotification />
               <Toaster />
-              <Footer />
+              {nativeApp ? <NativeBottomNav /> : <Footer />}
             </div>
           </ExamProvider>
         </CartProvider>
