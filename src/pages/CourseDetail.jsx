@@ -4,11 +4,38 @@ import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { motion } from "framer-motion"
 import { Play, BookOpen, Clock, Users, Tag, Check, AlertCircle, Video, MessageCircle } from "lucide-react"
-import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore"
+import { doc, getDoc, collection, query, where, getDocs, getCountFromServer } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import { useCart } from "../contexts/CartContext"
 import { isFirebaseId } from "../lib/slug"
+
+const ENROLLMENT_COUNT_TTL_MS = 30 * 60 * 1000
+const ENROLLMENT_COUNT_PREFIX = "ee_course_enrollment_count_v1:"
+
+function readCachedEnrollmentCount(courseId) {
+  if (typeof localStorage === "undefined" || !courseId) return null
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${ENROLLMENT_COUNT_PREFIX}${courseId}`) || "null")
+    if (!cached || !Number.isFinite(Number(cached.count)) || !Number.isFinite(Number(cached.cachedAt))) return null
+    if (Date.now() - Number(cached.cachedAt) > ENROLLMENT_COUNT_TTL_MS) return null
+    return Number(cached.count)
+  } catch (_) {
+    return null
+  }
+}
+
+function writeCachedEnrollmentCount(courseId, count) {
+  if (typeof localStorage === "undefined" || !courseId) return
+  try {
+    localStorage.setItem(`${ENROLLMENT_COUNT_PREFIX}${courseId}`, JSON.stringify({
+      count: Math.max(0, Number(count) || 0),
+      cachedAt: Date.now(),
+    }))
+  } catch (_) {
+    // Count is cosmetic; storage failure should never block the page.
+  }
+}
 
 export default function CourseDetail() {
   const { courseId } = useParams()
@@ -32,89 +59,152 @@ export default function CourseDetail() {
     purchaseOptions.find((option) => option.id === selectedPurchaseOption) || purchaseOptions[0] || null
   const displayedPrice = activePurchaseOption ? Number(activePurchaseOption.price) : Number(course?.price || 0)
 
+  const loadEnrollmentCount = async (resolvedCourseId) => {
+    const cachedCount = readCachedEnrollmentCount(resolvedCourseId)
+    if (cachedCount !== null) {
+      setEnrolledCount(cachedCount)
+      return
+    }
+
+    try {
+      const countSnapshot = await getCountFromServer(
+        query(collection(db, "userCourses"), where("courseId", "==", resolvedCourseId)),
+      )
+      const count = Number(countSnapshot.data()?.count || 0)
+      setEnrolledCount(count)
+      writeCachedEnrollmentCount(resolvedCourseId, count)
+    } catch (error) {
+      console.warn("Unable to load enrollment count:", error)
+    }
+  }
+
+  const loadTeachers = async (courseData) => {
+    if (!courseData.instructors?.length) {
+      setTeachers([])
+      return
+    }
+    try {
+      const teachersSnapshot = await getDocs(
+        query(
+          collection(db, "teachers"),
+          where("name", "in", courseData.instructors.slice(0, 10)),
+        ),
+      )
+      setTeachers(teachersSnapshot.docs.map((teacherDoc) => ({
+        id: teacherDoc.id,
+        ...teacherDoc.data(),
+      })))
+    } catch (error) {
+      console.warn("Unable to load course instructors:", error)
+    }
+  }
+
+  const refreshAccess = async (resolvedCourseId) => {
+    if (!currentUser?.uid || !resolvedCourseId) {
+      setHasAccess(false)
+      setHasPendingPayment(false)
+      return
+    }
+
+    try {
+      const pendingPromise = getDocs(
+        query(
+          collection(db, "payments"),
+          where("userId", "==", currentUser.uid),
+          where("status", "==", "pending"),
+        ),
+      )
+
+      const enrollmentDoc = await getDoc(
+        doc(db, "userCourses", `${currentUser.uid}_${resolvedCourseId}`),
+      )
+
+      if (enrollmentDoc.exists()) {
+        setHasAccess(true)
+      } else {
+        const paymentsSnapshot = await getDocs(
+          query(
+            collection(db, "payments"),
+            where("userId", "==", currentUser.uid),
+            where("status", "==", "approved"),
+          ),
+        )
+        setHasAccess(paymentsSnapshot.docs.some((paymentDoc) => {
+          const payment = paymentDoc.data()
+          return payment.courses?.some((item) => item.id === resolvedCourseId)
+        }))
+      }
+
+      const pendingSnapshot = await pendingPromise
+      setHasPendingPayment(pendingSnapshot.docs.some((paymentDoc) => {
+        const payment = paymentDoc.data()
+        return payment.courses?.some((item) => item.id === resolvedCourseId)
+      }))
+    } catch (error) {
+      console.warn("Unable to refresh course access:", error)
+    }
+  }
+
   useEffect(() => {
     fetchCourseData()
-  }, [courseId, currentUser])
+  }, [courseId])
+
+  useEffect(() => {
+    if (!course?.id) return
+    refreshAccess(course.id)
+  }, [course?.id, currentUser?.uid])
+
+  useEffect(() => {
+    if (!course?.id || !currentUser?.uid) return
+    const enrollmentId = `${currentUser.uid}_${course.id}`
+    const onCacheUpdated = (event) => {
+      const detail = event?.detail || {}
+      if (
+        (detail.collection === "userCourses" && (!detail.docId || detail.docId === enrollmentId)) ||
+        detail.collection === "payments"
+      ) {
+        refreshAccess(course.id)
+      }
+    }
+    window.addEventListener("easy-education-cache-updated", onCacheUpdated)
+    return () => window.removeEventListener("easy-education-cache-updated", onCacheUpdated)
+  }, [course?.id, currentUser?.uid])
 
   const fetchCourseData = async () => {
+    if (!course) setLoading(true)
     try {
       let courseData = null
-      
+
       if (isFirebaseId(courseId)) {
         const courseDoc = await getDoc(doc(db, "courses", courseId))
         if (courseDoc.exists()) {
           courseData = { id: courseDoc.id, ...courseDoc.data() }
         }
       } else {
-        const q = query(collection(db, "courses"), where("slug", "==", courseId))
-        const snapshot = await getDocs(q)
+        const snapshot = await getDocs(
+          query(collection(db, "courses"), where("slug", "==", courseId)),
+        )
         if (!snapshot.empty) {
           const courseDoc = snapshot.docs[0]
           courseData = { id: courseDoc.id, ...courseDoc.data() }
         }
       }
-      
-      if (courseData) {
-        setCourse(courseData)
-        setSelectedPurchaseOption(courseData.purchaseOptions?.[0]?.id || "")
 
-        const enrolledQuery = query(
-          collection(db, "userCourses"),
-          where("courseId", "==", courseData.id)
-        )
-        const enrolledSnapshot = await getDocs(enrolledQuery)
-        setEnrolledCount(enrolledSnapshot.size)
-
-        if (courseData.instructors && courseData.instructors.length > 0) {
-          const teachersQuery = query(
-            collection(db, "teachers"),
-            where("name", "in", courseData.instructors.slice(0, 10))
-          )
-          const teachersSnapshot = await getDocs(teachersQuery)
-          const teachersData = teachersSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          }))
-          setTeachers(teachersData)
-        }
-
-        if (currentUser) {
-          const enrollmentDoc = await getDoc(
-            doc(db, "userCourses", `${currentUser.uid}_${courseData.id}`),
-          )
-
-          if (enrollmentDoc.exists()) {
-            setHasAccess(true)
-          } else {
-            const paymentsQuery = query(
-              collection(db, "payments"),
-              where("userId", "==", currentUser.uid),
-              where("status", "==", "approved"),
-            )
-            const paymentsSnapshot = await getDocs(paymentsQuery)
-            const hasApprovedCourse = paymentsSnapshot.docs.some((paymentDoc) => {
-              const payment = paymentDoc.data()
-              return payment.courses?.some((c) => c.id === courseData.id)
-            })
-            setHasAccess(hasApprovedCourse)
-          }
-
-          const pendingPaymentQuery = query(
-            collection(db, "payments"),
-            where("userId", "==", currentUser.uid),
-            where("status", "==", "pending"),
-          )
-          const pendingPaymentSnapshot = await getDocs(pendingPaymentQuery)
-
-          const hasPendingCourse = pendingPaymentSnapshot.docs.some((doc) => {
-            const payment = doc.data()
-            return payment.courses?.some((c) => c.id === courseData.id)
-          })
-          setHasPendingPayment(hasPendingCourse)
-        }
+      if (!courseData) {
+        setCourse(null)
+        return
       }
+
+      setCourse(courseData)
+      setSelectedPurchaseOption(courseData.purchaseOptions?.[0]?.id || "")
+      setLoading(false)
+
+      // Secondary information must never block the primary course view.
+      loadEnrollmentCount(courseData.id)
+      loadTeachers(courseData)
     } catch (error) {
       console.error("Error fetching course data:", error)
+      setCourse(null)
     } finally {
       setLoading(false)
     }
@@ -202,8 +292,13 @@ export default function CourseDetail() {
       }
 
       setHasAccess(true)
-      setEnrolledCount((count) => count + (result.alreadyProcessed ? 0 : 1))
-      await fetchCourseData()
+      if (!result.alreadyProcessed) {
+        setEnrolledCount((count) => {
+          const next = count + 1
+          writeCachedEnrollmentCount(course.id, next)
+          return next
+        })
+      }
     } catch (error) {
       console.error("Error enrolling in free course:", error)
       alert("Failed to enroll. Please try again.")
@@ -214,8 +309,35 @@ export default function CourseDetail() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+      <div className="min-h-screen px-4 py-12" aria-busy="true" aria-label="Loading course">
+        <div className="container mx-auto max-w-6xl">
+          <div className="mb-6 aspect-video animate-pulse rounded-xl bg-muted lg:hidden" />
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+            <div className="space-y-6 lg:col-span-2">
+              <div className="rounded-xl border border-border bg-card p-6">
+                <div className="mb-4 h-10 w-3/4 animate-pulse rounded bg-muted" />
+                <div className="space-y-3">
+                  <div className="h-4 w-full animate-pulse rounded bg-muted" />
+                  <div className="h-4 w-11/12 animate-pulse rounded bg-muted" />
+                  <div className="h-4 w-4/5 animate-pulse rounded bg-muted" />
+                </div>
+                <div className="mt-8 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="h-16 animate-pulse rounded-lg bg-muted" />
+                  <div className="h-16 animate-pulse rounded-lg bg-muted" />
+                </div>
+              </div>
+              <div className="h-56 animate-pulse rounded-xl border border-border bg-muted" />
+            </div>
+            <div>
+              <div className="mb-6 hidden aspect-video animate-pulse rounded-xl bg-muted lg:block" />
+              <div className="space-y-4 rounded-xl border border-border bg-card p-6">
+                <div className="h-10 w-1/2 animate-pulse rounded bg-muted" />
+                <div className="h-12 w-full animate-pulse rounded bg-muted" />
+                <div className="h-12 w-full animate-pulse rounded bg-muted" />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     )
   }
