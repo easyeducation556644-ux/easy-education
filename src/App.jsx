@@ -13,7 +13,6 @@ import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
 import DownloadResumeAgent from "./components/DownloadResumeAgent"
 import NativeHlsBootstrap from "./components/NativeHlsBootstrap"
-import PermanentCacheSyncAgent from "./components/PermanentCacheSyncAgent"
 import NativePushRegistrationAgent from "./components/NativePushRegistrationAgent"
 import LearningPushFeedbackAgent from "./components/LearningPushFeedbackAgent"
 import { NativeAppTopBar, NativeBottomNav } from "./components/NativeAppChrome"
@@ -58,7 +57,6 @@ function App() {
         <CartProvider>
           <ExamProvider>
             <SettingsLoader />
-            <PermanentCacheSyncAgent />
             <NativePushRegistrationAgent />
             <LearningPushFeedbackAgent />
             <DownloadResumeAgent />
