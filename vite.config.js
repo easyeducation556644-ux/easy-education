@@ -2,20 +2,21 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 function firestoreReadTrackerPlugin() {
-  // Keep the lightweight Firestore read/mutation tracker as the global wrapper.
-  // The previous permanent-cache wrapper converted normal reads and realtime
-  // listeners into cache-only behavior, allowing stale access/payment/course
-  // state to survive indefinitely when a targeted sync event was missed.
-  const trackedModule = '/src/lib/trackedFirestore.js'
+  // Cache V2 is the global Firestore facade. It serves previously server-primed
+  // documents/queries from persistent cache and relies on the tiny sync feeds to
+  // fetch only changed documents. trackedFirestore remains underneath it for
+  // read accounting and mutation sync hints.
+  const trackedModule = '/src/lib/cacheV2Firestore.js'
 
   return {
-    name: 'easy-education-firestore-read-tracker',
+    name: 'easy-education-firestore-cache-v2',
     enforce: 'pre',
     transform(code, id) {
       if (!id.includes('/src/')) return null
       if (
         id.endsWith('/src/lib/trackedFirestore.js') ||
-        id.endsWith('/src/lib/nativeCachedFirestore.js')
+        id.endsWith('/src/lib/nativeCachedFirestore.js') ||
+        id.endsWith('/src/lib/cacheV2Firestore.js')
       ) return null
       if (!code.includes('firebase/firestore')) return null
 
