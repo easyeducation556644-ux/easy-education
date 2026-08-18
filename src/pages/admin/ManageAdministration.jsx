@@ -17,7 +17,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore"
-import { Search, ShieldCheck, X } from "lucide-react"
+import { Search, ShieldCheck, Users, X } from "lucide-react"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import { getRoleLabel, getStaffRole, STAFF_ROLES } from "../../lib/adminPermissions"
@@ -51,9 +51,10 @@ export default function ManageAdministration() {
   const [lastVisible, setLastVisible] = useState(null)
   const [hasNextPage, setHasNextPage] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
-  const [selectedRole, setSelectedRole] = useState("user")
+  const [accountType, setAccountType] = useState("user")
   const [classPdfEnabled, setClassPdfEnabled] = useState(false)
   const [examEnabled, setExamEnabled] = useState(false)
+  const [manageUsersEnabled, setManageUsersEnabled] = useState(false)
   const [classPdfCourseIds, setClassPdfCourseIds] = useState([])
   const [examCourseIds, setExamCourseIds] = useState([])
   const [saving, setSaving] = useState(false)
@@ -177,14 +178,18 @@ export default function ManageAdministration() {
     const access = user.adminAccess || {}
     const classIds = access.classPdfCourseIds || []
     const examIds = access.examCourseIds || []
-    const currentRole =
-      user.role === "admin" && access.mode === "limited"
-        ? getStaffRole({ classPdfCourseIds: classIds, examCourseIds: examIds })
-        : user.role || "user"
+    const fullAdmin = user.role === "admin" && access.mode !== "limited"
+    const normalUser = !user.role || user.role === "user"
+
     setSelectedUser(user)
-    setSelectedRole(currentRole)
-    setClassPdfEnabled(currentRole === "class_pdf_admin" || currentRole === "class_exam_admin")
-    setExamEnabled(currentRole === "exam_create_admin" || currentRole === "class_exam_admin")
+    setAccountType(fullAdmin ? "admin" : normalUser ? "user" : "limited")
+    setClassPdfEnabled(
+      classIds.length > 0 || user.role === "class_pdf_admin" || user.role === "class_exam_admin",
+    )
+    setExamEnabled(
+      examIds.length > 0 || user.role === "exam_create_admin" || user.role === "class_exam_admin",
+    )
+    setManageUsersEnabled(access.manageUsers === true || user.role === "users_admin")
     setClassPdfCourseIds(classIds)
     setExamCourseIds(examIds)
     setCourseSearchQuery("")
@@ -198,34 +203,60 @@ export default function ManageAdministration() {
 
   const handleSave = async () => {
     if (!selectedUser) return
-    const nextClassIds = classPdfEnabled ? classPdfCourseIds : []
-    const nextExamIds = examEnabled ? examCourseIds : []
 
-    if ((selectedRole === "class_pdf_admin" || selectedRole === "class_exam_admin") && nextClassIds.length === 0) {
-      toast({ variant: "error", title: "Course Required", description: "Select a course for the content admin role." })
+    const nextClassIds = accountType === "limited" && classPdfEnabled ? classPdfCourseIds : []
+    const nextExamIds = accountType === "limited" && examEnabled ? examCourseIds : []
+    const nextManageUsers = accountType === "limited" && manageUsersEnabled
+
+    if (accountType === "limited" && !classPdfEnabled && !examEnabled && !manageUsersEnabled) {
+      toast({
+        variant: "error",
+        title: "Permission Required",
+        description: "Select at least one limited-admin permission.",
+      })
       return
     }
-    if ((selectedRole === "exam_create_admin" || selectedRole === "class_exam_admin") && nextExamIds.length === 0) {
+    if (accountType === "limited" && classPdfEnabled && nextClassIds.length === 0) {
+      toast({ variant: "error", title: "Course Required", description: "Select a course for Content Admin." })
+      return
+    }
+    if (accountType === "limited" && examEnabled && nextExamIds.length === 0) {
       toast({ variant: "error", title: "Course Required", description: "Select a course for Exam Create Admin." })
       return
     }
 
     setSaving(true)
     try {
-      if (selectedRole === "admin" || selectedRole === "user") {
+      if (accountType === "admin" || accountType === "user") {
         await updateDoc(doc(db, "users", selectedUser.id), {
-          role: selectedRole,
+          role: accountType === "admin" ? "admin" : "user",
           adminAccess: deleteField(),
         })
         setSelectedUser(null)
-        toast({ title: "Role Updated", description: `${getRoleLabel(selectedRole)} role saved successfully.` })
+        toast({
+          title: "Role Updated",
+          description: `${accountType === "admin" ? "Full Admin" : "Normal User"} role saved successfully.`,
+        })
         return
       }
 
-      const adminAccess = { classPdfCourseIds: nextClassIds, examCourseIds: nextExamIds }
-      await updateDoc(doc(db, "users", selectedUser.id), { role: selectedRole, adminAccess })
+      const role = getStaffRole({
+        classPdfCourseIds: nextClassIds,
+        examCourseIds: nextExamIds,
+        manageUsers: nextManageUsers,
+      })
+      const adminAccess = {
+        mode: "limited",
+        classPdfCourseIds: nextClassIds,
+        examCourseIds: nextExamIds,
+        manageUsers: nextManageUsers,
+      }
+      await updateDoc(doc(db, "users", selectedUser.id), { role, adminAccess })
       setSelectedUser(null)
-      toast({ title: "Access Updated", description: `${getRoleLabel(selectedRole)} access saved successfully.` })
+      toast({
+        title: "Permissions Updated",
+        description: `${getRoleLabel(role, adminAccess)} saved successfully.`,
+      })
     } catch (error) {
       console.error("Error saving staff access:", error)
       toast({ variant: "error", title: "Save Failed", description: error.message || "Failed to save permissions." })
@@ -250,11 +281,15 @@ export default function ManageAdministration() {
     setPage((current) => current + 1)
   }
 
+  const limited = accountType === "limited"
+
   return (
     <div>
       <div className="mb-6">
         <h1 className="text-3xl font-bold mb-2">Administration</h1>
-        <p className="text-muted-foreground">Assign course-specific content and exam roles.</p>
+        <p className="text-muted-foreground">
+          Assign one or multiple limited-admin permissions without giving full-admin power.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
@@ -340,7 +375,7 @@ export default function ManageAdministration() {
           <div className="bg-card border border-border rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
-                <h2 className="text-xl font-bold">Assign or Change Role</h2>
+                <h2 className="text-xl font-bold">Assign Role & Permissions</h2>
                 <p className="text-sm text-muted-foreground">{selectedUser.name} · {selectedUser.email}</p>
               </div>
               <button onClick={() => setSelectedUser(null)} className="p-2 hover:bg-muted rounded-lg">
@@ -349,57 +384,60 @@ export default function ManageAdministration() {
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium mb-2">Role</label>
+              <label className="block text-sm font-medium mb-2">Account type</label>
               <select
-                value={selectedRole}
-                onChange={(event) => {
-                  const role = event.target.value
-                  setSelectedRole(role)
-                  setClassPdfEnabled(role === "class_pdf_admin" || role === "class_exam_admin")
-                  setExamEnabled(role === "exam_create_admin" || role === "class_exam_admin")
-                }}
+                value={accountType}
+                onChange={(event) => setAccountType(event.target.value)}
                 className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 <option value="admin">Full Admin</option>
-                <option value="class_pdf_admin">Class, PDF, Subject & Chapter Admin</option>
-                <option value="exam_create_admin">Exam Create Admin</option>
-                <option value="class_exam_admin">Content & Exam Admin</option>
+                <option value="limited">Limited Admin — choose multiple permissions</option>
                 <option value="user">Normal User</option>
               </select>
             </div>
 
-            {(classPdfEnabled || examEnabled) && (
-            <div className="relative mb-4">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                value={courseSearchQuery}
-                onChange={(event) => setCourseSearchQuery(event.target.value)}
-                placeholder="Search courses..."
-                className="w-full pl-9 pr-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-            </div>
-            )}
+            {limited && (
+              <>
+                <PermissionSection
+                  title="Class, PDF, Subject & Chapter"
+                  description="Manage course content only for selected courses."
+                  enabled={classPdfEnabled}
+                  setEnabled={setClassPdfEnabled}
+                  courses={filteredCourses}
+                  selectedIds={classPdfCourseIds}
+                  toggleCourse={(courseId) => toggleCourse(courseId, classPdfCourseIds, setClassPdfCourseIds)}
+                />
 
-            {classPdfEnabled && <PermissionSection
-              title="Class, PDF, Subject & Chapter Admin"
-              description="Can manage classes, PDFs, subjects and chapters only in selected courses."
-              enabled={classPdfEnabled}
-              setEnabled={setClassPdfEnabled}
-              locked
-              courses={filteredCourses}
-              selectedIds={classPdfCourseIds}
-              toggleCourse={(courseId) => toggleCourse(courseId, classPdfCourseIds, setClassPdfCourseIds)}
-            />}
-            {examEnabled && <PermissionSection
-              title="Exam Create Admin"
-              description="Can create exams and questions only in selected courses."
-              enabled={examEnabled}
-              setEnabled={setExamEnabled}
-              locked
-              courses={filteredCourses}
-              selectedIds={examCourseIds}
-              toggleCourse={(courseId) => toggleCourse(courseId, examCourseIds, setExamCourseIds)}
-            />}
+                <PermissionSection
+                  title="Exam Create"
+                  description="Create exams and questions only for selected courses."
+                  enabled={examEnabled}
+                  setEnabled={setExamEnabled}
+                  courses={filteredCourses}
+                  selectedIds={examCourseIds}
+                  toggleCourse={(courseId) => toggleCourse(courseId, examCourseIds, setExamCourseIds)}
+                />
+
+                <TogglePermissionSection
+                  title="Manage Users — Grant Course Access Only"
+                  description="Can open Users, search users and grant course access. Cannot ban, delete, remove access, edit roles, or use any other Users action."
+                  enabled={manageUsersEnabled}
+                  setEnabled={setManageUsersEnabled}
+                />
+
+                {(classPdfEnabled || examEnabled) && (
+                  <div className="relative mb-4">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <input
+                      value={courseSearchQuery}
+                      onChange={(event) => setCourseSearchQuery(event.target.value)}
+                      placeholder="Filter course permission lists..."
+                      className="w-full pl-9 pr-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                  </div>
+                )}
+              </>
+            )}
 
             <div className="flex gap-2 mt-5">
               <button onClick={() => setSelectedUser(null)} className="flex-1 px-4 py-2 bg-muted rounded-lg">Cancel</button>
@@ -418,14 +456,32 @@ export default function ManageAdministration() {
   )
 }
 
-function PermissionSection({ title, description, enabled, setEnabled, locked = false, courses, selectedIds, toggleCourse }) {
+function TogglePermissionSection({ title, description, enabled, setEnabled }) {
   return (
     <section className="border border-border rounded-xl p-4 mb-4">
       <label className="flex items-start gap-3 cursor-pointer">
         <input
           type="checkbox"
           checked={enabled}
-          disabled={locked}
+          onChange={(event) => setEnabled(event.target.checked)}
+          className="mt-1 w-4 h-4"
+        />
+        <span>
+          <span className="font-semibold flex items-center gap-2"><Users className="w-4 h-4" />{title}</span>
+          <span className="block text-sm text-muted-foreground">{description}</span>
+        </span>
+      </label>
+    </section>
+  )
+}
+
+function PermissionSection({ title, description, enabled, setEnabled, courses, selectedIds, toggleCourse }) {
+  return (
+    <section className="border border-border rounded-xl p-4 mb-4">
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
           onChange={(event) => setEnabled(event.target.checked)}
           className="mt-1 w-4 h-4"
         />
