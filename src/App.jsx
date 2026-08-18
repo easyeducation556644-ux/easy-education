@@ -8,6 +8,8 @@ import Footer from "./components/Footer"
 import CartDrawer from "./components/CartDrawer"
 import FloatingCartButton from "./components/FloatingCartButton"
 import ProtectedRoute from "./components/ProtectedRoute"
+import CourseDetailRoute from "./components/CourseDetailRoute"
+import PermanentCacheSyncAgent from "./components/PermanentCacheSyncAgent"
 import PWAInstallPrompt from "./components/PWAInstallPrompt"
 import UpdateNotification from "./components/UpdateNotification"
 import SettingsLoader from "./components/SettingsLoader"
@@ -21,7 +23,6 @@ import { hasNativeDownloader } from "./lib/nativeAndroid"
 import Home from "./pages/Home"
 import Login from "./pages/Login"
 import Courses from "./pages/Courses"
-import CourseDetail from "./pages/CourseDetail"
 import CourseChapters from "./pages/CourseChapters"
 import CourseSubjects from "./pages/CourseSubjects"
 import CourseClasses from "./pages/CourseClasses"
@@ -57,6 +58,7 @@ function App() {
         <CartProvider>
           <ExamProvider>
             <SettingsLoader />
+            <PermanentCacheSyncAgent />
             <NativePushRegistrationAgent />
             <LearningPushFeedbackAgent />
             <DownloadResumeAgent />
@@ -69,17 +71,17 @@ function App() {
                   <Route path="/" element={<Home />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/courses" element={<Courses />} />
-                  <Route path="/course/:courseId" element={<CourseDetail />} />
-                  <Route path="/course/:courseId/chapters" element={<CourseChapters />} />
-                  <Route path="/course/:courseId/subjects" element={<CourseSubjects />} />
-                  <Route path="/course/:courseId/subjects/:subject/chapters" element={<CourseChapters />} />
-                  <Route path="/course/:courseId/archive/:subject/chapters" element={<CourseChapters />} />
-                  <Route path="/course/:courseId/archive/:subject/:chapter/classes" element={<CourseClasses />} />
-                  <Route path="/course/:courseId/archive/:chapter/classes" element={<CourseClasses />} />
-                  <Route path="/course/:courseId/classes/:chapter" element={<CourseClasses />} />
-                  <Route path="/course/:courseId/classes/:subject/:chapter" element={<CourseClasses />} />
-                  <Route path="/course/:courseId/watch/:classId" element={<CourseWatch />} />
-                  <Route path="/course/:courseId/watch" element={<CourseWatch />} />
+                  <Route path="/course/:courseId" element={<CourseDetailRoute />} />
+                  <Route path="/course/:courseId/chapters" element={<ProtectedRoute><CourseChapters /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/subjects" element={<ProtectedRoute><CourseSubjects /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/subjects/:subject/chapters" element={<ProtectedRoute><CourseChapters /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/archive/:subject/chapters" element={<ProtectedRoute><CourseChapters /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/archive/:subject/:chapter/classes" element={<ProtectedRoute><CourseClasses /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/archive/:chapter/classes" element={<ProtectedRoute><CourseClasses /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/classes/:chapter" element={<ProtectedRoute><CourseClasses /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/classes/:subject/:chapter" element={<ProtectedRoute><CourseClasses /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/watch/:classId" element={<ProtectedRoute><CourseWatch /></ProtectedRoute>} />
+                  <Route path="/course/:courseId/watch" element={<ProtectedRoute><CourseWatch /></ProtectedRoute>} />
                   <Route path="/checkout" element={<Checkout />} />
                   <Route path="/checkout-complete" element={<CheckoutComplete />} />
                   <Route path="/payment-success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
