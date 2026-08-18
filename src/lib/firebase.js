@@ -26,19 +26,14 @@ let db
 let googleProvider
 let messaging
 
-function isNativeAndroidApp() {
-  return typeof window !== "undefined" && Boolean(window.EasyEducationNative?.postMessage)
-}
-
-function clearLegacyPermanentCacheMarkers() {
-  if (typeof window === "undefined" || isNativeAndroidApp()) return
+function clearLegacyCacheMarkers() {
+  if (typeof window === "undefined") return
   try {
     const prefixes = [
       "ee_permanent_cache:",
       "ee_permanent_collection:",
       "ee_content_sync_seq_v1",
       "ee_user_sync_seq_v1:",
-      "ee_targeted_sync_queue_v1",
     ]
     Object.keys(localStorage).forEach((key) => {
       if (prefixes.some((prefix) => key === prefix || key.startsWith(prefix))) {
@@ -50,31 +45,47 @@ function clearLegacyPermanentCacheMarkers() {
   }
 }
 
+function clearCacheV2TrustMarkers() {
+  if (typeof window === "undefined") return
+  try {
+    Object.keys(localStorage).forEach((key) => {
+      if (key.startsWith("ee_cache_v4:") || key.startsWith("ee_cache_v4_seen:")) {
+        localStorage.removeItem(key)
+      }
+    })
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
 try {
   app = initializeApp(firebaseConfig)
   auth = getAuth(app)
+  clearLegacyCacheMarkers()
 
-  // Persistent Firestore caching is retained for the native Android app where it is
-  // an explicit offline feature. On the website we intentionally use memory-only
-  // caching so stale IndexedDB state can never survive a reload and become the
-  // source of truth for access, payment, or course data.
-  if (isNativeAndroidApp()) {
-    try {
-      db = initializeFirestore(app, {
-        localCache: persistentLocalCache({
-          cacheSizeBytes: 100 * 1024 * 1024,
-          tabManager: persistentMultipleTabManager(),
-        }),
-      })
-      console.log(" Firestore persistent cache enabled for native Android")
-    } catch (cacheError) {
-      console.warn(" Persistent Firestore cache unavailable; falling back to memory cache", cacheError)
-      db = initializeFirestore(app, { localCache: memoryLocalCache() })
+  // Cache V2 deliberately persists Firestore data on both web and Android. The
+  // cache wrapper never trusts old IndexedDB entries unless a v4 marker proves
+  // that the exact document/query was primed from the server under this schema.
+  // Targeted sync events then refresh only changed documents.
+  try {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        cacheSizeBytes: 200 * 1024 * 1024,
+        tabManager: persistentMultipleTabManager(),
+      }),
+    })
+    if (typeof window !== "undefined") {
+      window.__EASY_EDUCATION_PERSISTENT_FIRESTORE__ = true
+      navigator.storage?.persist?.().catch(() => false)
     }
-  } else {
-    clearLegacyPermanentCacheMarkers()
+    console.log(" Firestore persistent Cache V2 storage enabled")
+  } catch (cacheError) {
+    console.warn(" Persistent Firestore cache unavailable; falling back to memory cache", cacheError)
     db = initializeFirestore(app, { localCache: memoryLocalCache() })
-    console.log(" Firestore memory cache enabled for web")
+    if (typeof window !== "undefined") {
+      window.__EASY_EDUCATION_PERSISTENT_FIRESTORE__ = false
+      clearCacheV2TrustMarkers()
+    }
   }
 
   googleProvider = new GoogleAuthProvider()
