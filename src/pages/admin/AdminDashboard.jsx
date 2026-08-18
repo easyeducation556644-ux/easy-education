@@ -32,6 +32,7 @@ import { db } from "../../lib/firebase"
 import AdminOverview from "./AdminOverview"
 import ReadUsage from "./ReadUsage"
 import ManageUsers from "./ManageUsers"
+import GrantCourseAccess from "./GrantCourseAccess"
 import ManageCourses from "./ManageCourses"
 import ManageClasses from "./ManageClasses"
 import ManageAnnouncements from "./ManageAnnouncements"
@@ -114,7 +115,7 @@ export default function AdminDashboard() {
     { name: "Notifications", path: "/admin/notifications", icon: Bell, fullOnly: true },
     { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle, fullOnly: true },
     { name: "Ban Info", path: "/admin/ban-management", icon: Ban, fullOnly: true },
-    { name: "Users", path: "/admin/users", icon: Users, fullOnly: true },
+    { name: "Users", path: "/admin/users", icon: Users, permission: ADMIN_PERMISSION_KEYS.MANAGE_USERS },
     { name: "Categories", path: "/admin/categories", icon: Grid, fullOnly: true },
     { name: "Courses", path: "/admin/courses", icon: BookOpen, fullOnly: true },
     { name: "Subjects", path: "/admin/subjects", icon: BookMarked, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
@@ -213,7 +214,14 @@ export default function AdminDashboard() {
               <Route path="notifications" element={<AdminRoute fullOnly><Notifications /></AdminRoute>} />
               <Route path="ban-notifications" element={<AdminRoute fullOnly><BannedNotifications /></AdminRoute>} />
               <Route path="ban-management" element={<AdminRoute fullOnly><BanManagement /></AdminRoute>} />
-              <Route path="users" element={<AdminRoute fullOnly><ManageUsers /></AdminRoute>} />
+              <Route
+                path="users"
+                element={
+                  <AdminRoute permission={ADMIN_PERMISSION_KEYS.MANAGE_USERS}>
+                    {fullAdmin ? <ManageUsers /> : <GrantCourseAccess />}
+                  </AdminRoute>
+                }
+              />
               <Route path="courses" element={<AdminRoute fullOnly><ManageCourses /></AdminRoute>} />
               <Route path="classes" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageClasses /></AdminRoute>} />
               <Route path="class-comments" element={<AdminRoute fullOnly><ClassComments /></AdminRoute>} />

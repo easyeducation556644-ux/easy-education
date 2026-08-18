@@ -9,11 +9,31 @@
  */
 
 import { processPaymentAndEnrollUser } from './utils/process-payment.js';
-import { getAdminServices } from './utils/firebase-admin.js';
+import { getAdminServices, isFullAdminProfile, requireAuthenticatedUser } from './utils/firebase-admin.js';
 import { publishEnrollmentSync } from './_sync-event.js';
 
 const RUPANTORPAY_API_KEY = process.env.RUPANTORPAY_API_KEY;
 const VERIFY_API_URL = 'https://payment.rupantorpay.com/api/payment/verify-payment';
+const MAX_MANUAL_GRANT_COURSES = 50;
+const LIMITED_ADMIN_ROLES = new Set([
+  'class_pdf_admin',
+  'exam_create_admin',
+  'class_exam_admin',
+  'users_admin',
+  'staff_admin',
+]);
+
+function canGrantCourseAccess(userProfile = {}) {
+  if (isFullAdminProfile(userProfile)) return true;
+  const limitedAdmin =
+    LIMITED_ADMIN_ROLES.has(userProfile?.role) ||
+    (userProfile?.role === 'admin' && userProfile?.adminAccess?.mode === 'limited');
+  return limitedAdmin && userProfile?.adminAccess?.manageUsers === true;
+}
+
+function cleanId(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 async function syncEnrollmentCache(userId, transactionId, result) {
   if (!result?.success) return;
@@ -32,6 +52,92 @@ async function syncEnrollmentCache(userId, transactionId, result) {
   }
 }
 
+async function handlePermissionedManualGrant(req, res) {
+  const { decodedToken, userProfile, db } = await requireAuthenticatedUser(req);
+  if (!canGrantCourseAccess(userProfile)) {
+    return res.status(403).json({ success: false, error: 'Manage Users permission is required' });
+  }
+
+  const userId = cleanId(req.body?.userId);
+  const courseIds = Array.isArray(req.body?.courseIds)
+    ? [...new Set(req.body.courseIds.map(cleanId).filter(Boolean))]
+    : [];
+
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'A target user is required' });
+  }
+  if (courseIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'Select at least one course' });
+  }
+  if (courseIds.length > MAX_MANUAL_GRANT_COURSES) {
+    return res.status(400).json({
+      success: false,
+      error: `You can grant at most ${MAX_MANUAL_GRANT_COURSES} courses at once`,
+    });
+  }
+
+  const targetUserSnapshot = await db.collection('users').doc(userId).get();
+  if (!targetUserSnapshot.exists) {
+    return res.status(404).json({ success: false, error: 'Target user was not found' });
+  }
+  const targetUser = targetUserSnapshot.data() || {};
+
+  const courseRefs = courseIds.map((courseId) => db.collection('courses').doc(courseId));
+  const courseSnapshots = await db.getAll(...courseRefs);
+  const courses = courseSnapshots
+    .filter((snapshot) => snapshot.exists)
+    .map((snapshot) => {
+      const data = snapshot.data() || {};
+      return {
+        id: snapshot.id,
+        title: String(data.title || 'Untitled Course').slice(0, 180),
+        price: Number(data.price || 0),
+        courseFormat: data.courseFormat || 'single',
+        bundledCourses: Array.isArray(data.bundledCourses) ? data.bundledCourses : [],
+      };
+    });
+
+  if (courses.length !== courseIds.length) {
+    return res.status(400).json({ success: false, error: 'One or more selected courses no longer exist' });
+  }
+
+  const transactionId = `MANUAL_${Date.now()}_${userId}_${decodedToken.uid}`;
+  const result = await processPaymentAndEnrollUser({
+    userId,
+    userName: targetUser.name || targetUser.displayName || 'User',
+    userEmail: targetUser.email || '',
+    mobileNumber: targetUser.mobileNumber || targetUser.phone || '',
+    transactionId,
+    invoiceId: transactionId,
+    trxId: transactionId,
+    paymentMethod: 'Manual Grant by Admin',
+    courses,
+    subtotal: 0,
+    discount: 0,
+    couponCode: 'MANUAL_ADMIN_GRANT',
+    finalAmount: 0,
+    currency: 'BDT',
+  });
+
+  if (!result?.success) {
+    return res.status(500).json({
+      success: false,
+      error: result?.error || 'Failed to grant course access',
+      details: result?.details,
+    });
+  }
+
+  await syncEnrollmentCache(userId, transactionId, result);
+  return res.status(200).json({
+    success: true,
+    verified: true,
+    message: 'Course access granted successfully',
+    alreadyProcessed: result.alreadyProcessed,
+    coursesEnrolled: courses.length,
+    enrollmentDetails: result.enrollmentDetails,
+  });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
@@ -39,6 +145,18 @@ export default async function handler(req, res) {
       success: false,
       error: "Method Not Allowed"
     });
+  }
+
+  if (req.body?.grantCourseAccessOnly === true) {
+    try {
+      return await handlePermissionedManualGrant(req, res);
+    } catch (error) {
+      console.error('Permissioned manual grant failed:', error);
+      return res.status(error?.statusCode || 500).json({
+        success: false,
+        error: error?.message || 'Failed to grant course access',
+      });
+    }
   }
 
   const { transaction_id, userId, skipPaymentVerification, userName, userEmail, mobileNumber, courses: requestCourses, subtotal, discount, couponCode, finalAmount, paymentMethod } = req.body;
