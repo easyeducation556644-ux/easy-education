@@ -2,7 +2,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 function firestoreReadTrackerPlugin() {
-  const trackedModule = '/src/lib/nativeCachedFirestore.js'
+  // Keep the lightweight Firestore read/mutation tracker as the global wrapper.
+  // The previous permanent-cache wrapper converted normal reads and realtime
+  // listeners into cache-only behavior, allowing stale access/payment/course
+  // state to survive indefinitely when a targeted sync event was missed.
+  const trackedModule = '/src/lib/trackedFirestore.js'
 
   return {
     name: 'easy-education-firestore-read-tracker',
