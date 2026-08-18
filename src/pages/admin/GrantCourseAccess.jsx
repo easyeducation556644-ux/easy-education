@@ -153,13 +153,14 @@ export default function GrantCourseAccess() {
     setGranting(true)
     try {
       const token = await currentUser.getIdToken()
-      const response = await fetch("/api/admin-grant-course-access", {
+      const response = await fetch("/api/process-enrollment", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          grantCourseAccessOnly: true,
           userId: selectedUser.id,
           courseIds: selectedCourseIds,
         }),
