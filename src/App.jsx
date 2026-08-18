@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom"
 import { AuthProvider } from "./contexts/AuthContext"
 import { CartProvider } from "./contexts/CartContext"
@@ -8,7 +9,6 @@ import Footer from "./components/Footer"
 import CartDrawer from "./components/CartDrawer"
 import FloatingCartButton from "./components/FloatingCartButton"
 import ProtectedRoute from "./components/ProtectedRoute"
-import CourseDetailRoute from "./components/CourseDetailRoute"
 import PermanentCacheSyncAgent from "./components/PermanentCacheSyncAgent"
 import PWAInstallPrompt from "./components/PWAInstallPrompt"
 import UpdateNotification from "./components/UpdateNotification"
@@ -23,6 +23,7 @@ import { hasNativeDownloader } from "./lib/nativeAndroid"
 import Home from "./pages/Home"
 import Login from "./pages/Login"
 import Courses from "./pages/Courses"
+import CourseDetail from "./pages/CourseDetail"
 import CourseChapters from "./pages/CourseChapters"
 import CourseSubjects from "./pages/CourseSubjects"
 import CourseClasses from "./pages/CourseClasses"
@@ -51,6 +52,19 @@ import NotFound from "./pages/NotFound"
 
 function App() {
   const nativeApp = hasNativeDownloader()
+  const [accessVersion, setAccessVersion] = useState(0)
+
+  useEffect(() => {
+    const handleCacheUpdate = (event) => {
+      const collection = event?.detail?.collection
+      if (collection !== "userCourses" && collection !== "payments") return
+      if (!window.location.pathname.startsWith("/course/")) return
+      setAccessVersion((version) => version + 1)
+    }
+
+    window.addEventListener("easy-education-cache-updated", handleCacheUpdate)
+    return () => window.removeEventListener("easy-education-cache-updated", handleCacheUpdate)
+  }, [])
 
   return (
     <Router>
@@ -67,11 +81,11 @@ function App() {
             <div className="flex min-h-screen flex-col bg-background text-foreground">
               {nativeApp ? <NativeAppTopBar /> : <Header />}
               <main className={`flex-1 ${nativeApp ? "pb-20" : ""}`}>
-                <Routes>
+                <Routes key={accessVersion}>
                   <Route path="/" element={<Home />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/courses" element={<Courses />} />
-                  <Route path="/course/:courseId" element={<CourseDetailRoute />} />
+                  <Route path="/course/:courseId" element={<CourseDetail />} />
                   <Route path="/course/:courseId/chapters" element={<ProtectedRoute><CourseChapters /></ProtectedRoute>} />
                   <Route path="/course/:courseId/subjects" element={<ProtectedRoute><CourseSubjects /></ProtectedRoute>} />
                   <Route path="/course/:courseId/subjects/:subject/chapters" element={<ProtectedRoute><CourseChapters /></ProtectedRoute>} />
