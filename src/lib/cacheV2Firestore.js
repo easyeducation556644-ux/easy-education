@@ -1,9 +1,11 @@
+import { deleteDoc as rawDeleteDoc } from "firebase/firestore"
 import * as tracked from "./trackedFirestore.js"
 
 export * from "./trackedFirestore.js"
 
 const CACHE_SCHEMA = "v4"
 const CACHE_EVENT = "easy-education-cache-updated"
+const SYNC_QUEUE_KEY = "ee_targeted_sync_queue_v1"
 
 export const CACHE_V2_PUBLIC_COLLECTIONS = new Set([
   "courses",
@@ -117,9 +119,20 @@ function persistentCacheReady() {
   return window.__EASY_EDUCATION_PERSISTENT_FIRESTORE__ === true
 }
 
+function isAdminRoute() {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/admin")
+}
+
 function shouldCache(ref) {
   if (typeof window === "undefined") return false
-  return CACHE_V2_COLLECTIONS.has(collectionName(ref))
+  const collection = collectionName(ref)
+  if (!CACHE_V2_COLLECTIONS.has(collection)) return false
+
+  // Admin operations must observe fresh grants/revocations immediately. Public
+  // content remains cache-first in admin, but user-specific authorization/payment
+  // collections use normal Firestore semantics there.
+  if (isAdminRoute() && CACHE_V2_USER_COLLECTIONS.has(collection)) return false
+  return true
 }
 
 function shouldKeepLiveListener(ref) {
@@ -166,6 +179,38 @@ function emitCacheUpdated(ref, action = "changed", extra = {}) {
   }))
 }
 
+function inferUserCourseOwner(ref) {
+  if (collectionName(ref) !== "userCourses") return ""
+  const id = String(ref?.id || "")
+  const separator = id.lastIndexOf("_")
+  if (separator <= 0) return ""
+  return id.slice(0, separator)
+}
+
+function enqueueExplicitUserDeleteHint(ref) {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return
+  const userId = inferUserCourseOwner(ref)
+  if (!userId) return
+
+  try {
+    const existing = JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) || "[]")
+    const queue = Array.isArray(existing) ? existing : []
+    const docId = String(ref.id || "")
+    const event = {
+      eventId: `userCourses:${docId.slice(0, 100)}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`.slice(0, 220),
+      collection: "userCourses",
+      docId,
+      action: "deleted",
+      userId,
+    }
+    queue.push(event)
+    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue.slice(-200)))
+    tracked.flushTargetedSyncQueue().catch(() => {})
+  } catch (error) {
+    console.warn("Unable to queue explicit enrollment revoke sync:", error)
+  }
+}
+
 export function hasSeenCacheV2Collection(collection) {
   if (typeof localStorage === "undefined" || !persistentCacheReady()) return false
   return CACHE_V2_COLLECTIONS.has(collection)
@@ -177,23 +222,25 @@ export function hasAnySeenCacheV2Collection(collections = CACHE_V2_COLLECTIONS) 
 }
 
 export function invalidateCacheV2Collections(collections, reason = "sync-gap") {
-  if (typeof localStorage === "undefined") return
   const targets = new Set([...collections].filter((collection) => CACHE_V2_COLLECTIONS.has(collection)))
-  try {
-    const keys = Object.keys(localStorage)
-    for (const key of keys) {
-      for (const collection of targets) {
-        if (
-          key.startsWith(`ee_cache_${CACHE_SCHEMA}:${collection}:`) ||
-          key === collectionMarkerKey(collection)
-        ) {
-          localStorage.removeItem(key)
-          break
+
+  if (typeof localStorage !== "undefined") {
+    try {
+      const keys = Object.keys(localStorage)
+      for (const key of keys) {
+        for (const collection of targets) {
+          if (
+            key.startsWith(`ee_cache_${CACHE_SCHEMA}:${collection}:`) ||
+            key === collectionMarkerKey(collection)
+          ) {
+            localStorage.removeItem(key)
+            break
+          }
         }
       }
+    } catch (_) {
+      // Ignore storage failures; listeners will still reconnect through Firestore.
     }
-  } catch (_) {
-    // Ignore storage failures; listeners will still reconnect through Firestore.
   }
 
   if (typeof window !== "undefined") {
@@ -362,7 +409,16 @@ export async function updateDoc(ref, ...args) {
 }
 
 export async function deleteDoc(ref) {
-  const result = await tracked.deleteDoc(ref)
+  let result
+  if (collectionName(ref) === "userCourses") {
+    // userCourses IDs are deterministic `${uid}_${courseId}`. Deleting through
+    // the raw SDK lets us attach the affected uid explicitly to the queued sync
+    // event, so an admin revoke cannot be lost when that doc was never cached.
+    result = await rawDeleteDoc(ref)
+    enqueueExplicitUserDeleteHint(ref)
+  } else {
+    result = await tracked.deleteDoc(ref)
+  }
   markCached(ref, "doc")
   emitCacheUpdated(ref, "deleted", { local: true })
   return result
