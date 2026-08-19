@@ -36,15 +36,18 @@ data class NativeUiState(
 
 class NativeAppViewModel(application: Application) : AndroidViewModel(application) {
     private val auth = FirebaseAuth.getInstance()
-    private val repository = NativeRepository(application)
-    private val downloads = SecureMediaStore(application)
-    private val qualityResolver = DownloadQualityResolver(application)
+
+    // Keep storage/network helpers lazy so a dependency or stale local database problem cannot
+    // abort construction of the launcher ViewModel before Compose can render a recoverable screen.
+    private val repository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeRepository(application) }
+    private val downloads by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SecureMediaStore(application) }
+    private val qualityResolver by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { DownloadQualityResolver(application) }
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private val _state = MutableStateFlow(
         NativeUiState(
             online = isOnlineNow(),
-            onWifi = DownloadPreferences.isWifi(application),
-            wifiOnlyDownloads = DownloadPreferences.wifiOnly(application),
+            onWifi = runCatching { DownloadPreferences.isWifi(application) }.getOrDefault(false),
+            wifiOnlyDownloads = runCatching { DownloadPreferences.wifiOnly(application) }.getOrDefault(false),
         ),
     )
     val state: StateFlow<NativeUiState> = _state.asStateFlow()
@@ -76,11 +79,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         auth.addAuthStateListener(authListener)
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
-        SecureHlsDownloadService.cleanupPlaintext(application)
+        runCatching { SecureHlsDownloadService.cleanupPlaintext(application) }
         viewModelScope.launch {
             SecureMediaStore.changes.collect {
                 val uid = auth.currentUser?.uid ?: return@collect
-                refreshDownloadsNow(uid)
+                runCatching { refreshDownloadsNow(uid) }
             }
         }
         auth.currentUser?.let { loadUser(it.uid) }
@@ -90,7 +93,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val online = isOnlineNow()
         val wasOffline = !_state.value.online
         val wasOnWifi = _state.value.onWifi
-        val onWifi = DownloadPreferences.isWifi(getApplication())
+        val onWifi = runCatching { DownloadPreferences.isWifi(getApplication()) }.getOrDefault(false)
         val wifiOnly = _state.value.wifiOnlyDownloads
         _state.value = _state.value.copy(online = online, onWifi = onWifi)
 
@@ -99,9 +102,9 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         }
         if (online && wasOffline) {
             auth.currentUser?.uid?.let(::refreshOnline)
-            SecureDownloadCoordinator.resumePending(getApplication())
+            runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
         } else if (online && !wasOnWifi && onWifi && wifiOnly) {
-            SecureDownloadCoordinator.resumePending(getApplication())
+            runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
         }
     }
 
@@ -109,28 +112,44 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val context = getApplication<Application>()
         _state.value.downloads
             .filter { it.state in setOf("queued", "downloading") }
-            .forEach { SecureDownloadCoordinator.pause(context, it.id) }
+            .forEach { task -> runCatching { SecureDownloadCoordinator.pause(context, task.id) } }
     }
 
-    private fun isOnlineNow(): Boolean {
-        val network = connectivity.activeNetwork ?: return false
-        val caps = connectivity.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+    private fun isOnlineNow(): Boolean = runCatching {
+        val network = connectivity.activeNetwork ?: return@runCatching false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-    }
+    }.getOrDefault(false)
 
     private fun loadUser(uid: String) {
         viewModelScope.launch {
-            val cachedProfile = repository.cachedProfile(uid)
-            val cachedCourses = repository.cachedCourses(uid)
-            val cachedDownloads = withContext(Dispatchers.IO) { healthyDownloads(uid) }
-            _state.value = _state.value.copy(
-                profile = cachedProfile,
-                restrictionMessage = cachedProfile.restrictionMessage(),
-                courses = cachedCourses,
-                downloads = cachedDownloads,
-                authReady = true,
-            )
+            val cached = runCatching {
+                val cachedProfile = repository.cachedProfile(uid)
+                val cachedCourses = repository.cachedCourses(uid)
+                val cachedDownloads = withContext(Dispatchers.IO) { healthyDownloads(uid) }
+                Triple(cachedProfile, cachedCourses, cachedDownloads)
+            }
+            cached.onSuccess { (cachedProfile, cachedCourses, cachedDownloads) ->
+                _state.value = _state.value.copy(
+                    profile = cachedProfile,
+                    restrictionMessage = cachedProfile.restrictionMessage(),
+                    courses = cachedCourses,
+                    downloads = cachedDownloads,
+                    authReady = true,
+                )
+            }.onFailure {
+                // A damaged old cache should degrade to an empty local view, not terminate the app.
+                // If online, the authoritative refresh below will rebuild the cache.
+                _state.value = _state.value.copy(
+                    profile = null,
+                    restrictionMessage = null,
+                    courses = emptyList(),
+                    downloads = emptyList(),
+                    authReady = true,
+                    error = if (_state.value.online) null else "Local course cache could not be read. Connect once to refresh it.",
+                )
+            }
             if (_state.value.online) refreshOnline(uid)
         }
     }
@@ -170,7 +189,15 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     fun loadCourse(courseId: String, force: Boolean = false) {
         if (courseId.isBlank() || _state.value.restrictionMessage != null) return
         viewModelScope.launch {
-            val cached = repository.cachedCourseContent(courseId)
+            val cached = runCatching { repository.cachedCourseContent(courseId) }
+                .getOrElse {
+                    NativeCourseContent(
+                        course = _state.value.courses.firstOrNull { course -> course.id == courseId },
+                        subjects = emptyList(),
+                        chapters = emptyList(),
+                        classes = emptyList(),
+                    )
+                }
             _state.value = _state.value.copy(
                 courseContent = _state.value.courseContent + (courseId to cached),
             )
@@ -193,17 +220,20 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     fun hasOfflineLease(courseId: String): Boolean {
         if (_state.value.restrictionMessage != null) return false
         val uid = auth.currentUser?.uid ?: return false
-        return repository.hasOfflineLease(uid, courseId)
+        return runCatching { repository.hasOfflineLease(uid, courseId) }.getOrDefault(false)
     }
 
     fun leaseExpiry(courseId: String): Long {
         val uid = auth.currentUser?.uid ?: return 0L
-        return repository.offlineLeaseExpiry(uid, courseId)
+        return runCatching { repository.offlineLeaseExpiry(uid, courseId) }.getOrDefault(0L)
     }
 
     fun refreshDownloads() {
         val uid = auth.currentUser?.uid ?: return
-        viewModelScope.launch { refreshDownloadsNow(uid) }
+        viewModelScope.launch {
+            runCatching { refreshDownloadsNow(uid) }
+                .onFailure { error -> _state.value = _state.value.copy(error = error.message ?: "Downloads could not be read") }
+        }
     }
 
     private suspend fun refreshDownloadsNow(uid: String) {
@@ -313,7 +343,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun pauseDownload(context: Context, id: String) {
-        SecureDownloadCoordinator.pause(context, id)
+        runCatching { SecureDownloadCoordinator.pause(context, id) }
     }
 
     fun resumeDownload(context: Context, id: String) {
@@ -329,20 +359,22 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = "Wi-Fi only downloads are enabled. Connect to Wi-Fi or turn the option off.")
             return
         }
-        SecureDownloadCoordinator.resume(context, id)
+        runCatching { SecureDownloadCoordinator.resume(context, id) }
+            .onFailure { error -> _state.value = _state.value.copy(error = error.message ?: "Download could not resume") }
     }
 
     fun removeDownload(context: Context, id: String) {
-        SecureDownloadCoordinator.remove(context, id)
+        runCatching { SecureDownloadCoordinator.remove(context, id) }
+            .onFailure { error -> _state.value = _state.value.copy(error = error.message ?: "Download could not be removed") }
     }
 
     fun setWifiOnlyDownloads(enabled: Boolean) {
-        DownloadPreferences.setWifiOnly(getApplication(), enabled)
+        runCatching { DownloadPreferences.setWifiOnly(getApplication(), enabled) }
         _state.value = _state.value.copy(wifiOnlyDownloads = enabled)
         if (enabled && !_state.value.onWifi) {
             pauseActiveDownloadsForNetworkPolicy()
         } else if (!enabled && _state.value.online) {
-            SecureDownloadCoordinator.resumePending(getApplication())
+            runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
         }
     }
 
