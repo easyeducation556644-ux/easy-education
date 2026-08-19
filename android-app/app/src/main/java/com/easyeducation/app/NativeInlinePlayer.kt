@@ -83,8 +83,8 @@ fun NativeInlinePlayer(
         }
         surface.onPrevious = onPrevious
         surface.onNext = onNext
-        surface.onMinimize = { minimizeFromSurface@ run {
-            val activity = ctx.findActivity() ?: return@minimizeFromSurface
+        surface.onMinimize = minimize@{
+            val activity = ctx.findActivity() ?: return@minimize
             val host = hostRef.get()
             val sourceBounds = host?.globalBounds()
             PersistentNativePlayer.savePosition(ctx)
@@ -102,9 +102,9 @@ fun NativeInlinePlayer(
             )
             if (onMinimize != null) onMinimize()
             else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
-        } }
-        surface.onFullscreen = { fullscreenFromSurface@ run {
-            val activity = ctx.findActivity() ?: return@fullscreenFromSurface
+        }
+        surface.onFullscreen = fullscreen@{
+            val activity = ctx.findActivity() ?: return@fullscreen
             val host = hostRef.get()
             PersistentNativePlayer.savePosition(ctx)
             handedToMini = false
@@ -130,7 +130,7 @@ fun NativeInlinePlayer(
             }
             if (NativeFullscreenOverlay.owns(exoPlayer)) onFullscreen?.invoke()
             else handedToFullscreen = false
-        } }
+        }
     }
 
     DisposableEffect(lifecycleOwner, classId) {
