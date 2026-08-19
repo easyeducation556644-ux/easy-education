@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        NativeCourseStoreWebViewFixer.start(this)
 
         runCatching { SecureDownloadCoordinator.resumePending(this) }
         if (FirebaseAuth.getInstance().currentUser != null) {
@@ -275,6 +276,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        NativeCourseStoreWebViewFixer.stop(this)
         deviceListener?.remove()
         FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
         NativeFullscreenOverlay.dismiss(immediate = true)
