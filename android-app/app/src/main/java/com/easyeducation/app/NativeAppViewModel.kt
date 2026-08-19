@@ -28,6 +28,8 @@ data class NativeUiState(
     val qualityOptions: Map<String, List<DownloadQualityOption>> = emptyMap(),
     val qualityLoadingClassId: String? = null,
     val online: Boolean = false,
+    val onWifi: Boolean = false,
+    val wifiOnlyDownloads: Boolean = false,
     val syncing: Boolean = false,
     val error: String? = null,
 )
@@ -38,7 +40,13 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     private val downloads = SecureMediaStore(application)
     private val qualityResolver = DownloadQualityResolver(application)
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
-    private val _state = MutableStateFlow(NativeUiState(online = isOnlineNow()))
+    private val _state = MutableStateFlow(
+        NativeUiState(
+            online = isOnlineNow(),
+            onWifi = DownloadPreferences.isWifi(application),
+            wifiOnlyDownloads = DownloadPreferences.wifiOnly(application),
+        ),
+    )
     val state: StateFlow<NativeUiState> = _state.asStateFlow()
 
     private val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
@@ -81,7 +89,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     private fun updateNetwork() {
         val online = isOnlineNow()
         val wasOffline = !_state.value.online
-        _state.value = _state.value.copy(online = online)
+        _state.value = _state.value.copy(
+            online = online,
+            onWifi = DownloadPreferences.isWifi(getApplication()),
+        )
         if (online && wasOffline) auth.currentUser?.uid?.let(::refreshOnline)
     }
 
@@ -207,6 +218,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = "Connect to the internet to check available qualities")
             return
         }
+        if (_state.value.wifiOnlyDownloads && !_state.value.onWifi) {
+            _state.value = _state.value.copy(error = "Wi-Fi only downloads are enabled. Connect to Wi-Fi or turn the option off.")
+            return
+        }
         if (_state.value.qualityLoadingClassId == item.id) return
         _state.value = _state.value.copy(qualityLoadingClassId = item.id, error = null)
         viewModelScope.launch {
@@ -243,6 +258,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         }
         if (!_state.value.online) {
             _state.value = _state.value.copy(error = "Connect to the internet to start a new download")
+            return
+        }
+        if (_state.value.wifiOnlyDownloads && !_state.value.onWifi) {
+            _state.value = _state.value.copy(error = "Wi-Fi only downloads are enabled. Connect to Wi-Fi or turn the option off.")
             return
         }
         val storage = DownloadStoragePolicy.check(context, option)
@@ -291,11 +310,20 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = "Connect to resume this download")
             return
         }
+        if (_state.value.wifiOnlyDownloads && !_state.value.onWifi) {
+            _state.value = _state.value.copy(error = "Wi-Fi only downloads are enabled. Connect to Wi-Fi or turn the option off.")
+            return
+        }
         SecureDownloadCoordinator.resume(context, id)
     }
 
     fun removeDownload(context: Context, id: String) {
         SecureDownloadCoordinator.remove(context, id)
+    }
+
+    fun setWifiOnlyDownloads(enabled: Boolean) {
+        DownloadPreferences.setWifiOnly(getApplication(), enabled)
+        _state.value = _state.value.copy(wifiOnlyDownloads = enabled)
     }
 
     fun clearError() {
