@@ -224,9 +224,7 @@ fun YoutubeClassWatchPage(
 
         item(key = "title-$classId") {
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { descriptionSheet = true },
+                modifier = Modifier.fillMaxWidth().clickable { descriptionSheet = true },
                 color = MaterialTheme.colorScheme.surface,
             ) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -251,14 +249,9 @@ fun YoutubeClassWatchPage(
         }
 
         item(key = "actions-$classId") {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.background,
-            ) {
+            Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -320,8 +313,8 @@ fun YoutubeClassWatchPage(
 
                     WatchActionChip(
                         icon = { Icon(Icons.Default.FolderOpen, null, Modifier.size(20.dp)) },
-                        label = "Resources",
-                        enabled = classItem.resourceLinks.isNotEmpty(),
+                        label = if (classItem.resourceLinks.isEmpty()) "Resources 0" else "Resources ${classItem.resourceLinks.size}",
+                        enabled = true,
                     ) { resourcesSheet = true }
                 }
             }
@@ -342,10 +335,7 @@ fun YoutubeClassWatchPage(
         }
 
         item(key = "up-next-$classId") {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.background,
-            ) {
+            Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
                 Column(Modifier.fillMaxWidth()) {
                     HorizontalDivider()
                     Text(
@@ -454,7 +444,17 @@ fun YoutubeClassWatchPage(
             ) {
                 Text("Resources", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 if (classItem.resourceLinks.isEmpty()) {
-                    Text("No resources are attached to this class.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(15.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(
+                            "No resources are attached to this class.",
+                            modifier = Modifier.padding(16.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 } else classItem.resourceLinks.forEach { resource ->
                     Surface(
                         modifier = Modifier.fillMaxWidth().clickable {
@@ -463,7 +463,10 @@ fun YoutubeClassWatchPage(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(13.dp),
                     ) {
-                        Row(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Icon(Icons.Default.Language, null, Modifier.size(20.dp))
                             Spacer(Modifier.width(10.dp))
                             Text(resource.label, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -501,22 +504,11 @@ private fun WatchDescriptionSheet(
                 HorizontalDivider()
             }
             item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surface,
-                ) {
+                Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
                     Column(Modifier.padding(horizontal = 20.dp, vertical = 20.dp)) {
-                        Text(
-                            classItem.title,
-                            fontSize = 21.sp,
-                            lineHeight = 27.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Text(classItem.title, fontSize = 21.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(18.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatBox(compactNumber(likes), "Likes", Modifier.weight(1f))
                             StatBox(compactNumber(views), "Views", Modifier.weight(1f))
                             StatBox(descriptionDate(classItem.publishedAt), relativeAge(classItem.publishedAt), Modifier.weight(1f))
@@ -580,12 +572,11 @@ private fun WatchDescriptionSheet(
 
 @Composable
 private fun StatBox(value: String, label: String, modifier: Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
-        Column(Modifier.padding(horizontal = 8.dp, vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(
+            Modifier.padding(horizontal = 8.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(value.ifBlank { "—" }, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, maxLines = 1)
             Spacer(Modifier.height(3.dp))
             Text(label.ifBlank { "Published" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
@@ -602,9 +593,7 @@ private fun WatchActionChip(
     onClick: () -> Unit,
 ) {
     Surface(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .clickable(enabled = enabled, onClick = onClick),
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(999.dp),
         color = when {
             !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
@@ -620,7 +609,10 @@ private fun WatchActionChip(
             if (selected) {
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.surface,
-                ) { icon(); Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge) }
+                ) {
+                    icon()
+                    Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                }
             } else {
                 icon()
                 Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
@@ -631,35 +623,31 @@ private fun WatchActionChip(
 
 @Composable
 private fun YoutubeNextClassCard(item: NativeClassItem, onClick: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(bottom = 16.dp),
-    ) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(bottom = 16.dp)) {
         if (item.imageUrl.isNotBlank()) {
             AsyncImage(
                 model = item.imageUrl,
                 contentDescription = item.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp)
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(12.dp)),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp)
+                    .aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp)),
             )
         } else {
             Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp)
-                    .aspectRatio(16f / 9f)
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp).aspectRatio(16f / 9f)
                     .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Default.PlayArrow, null, Modifier.size(44.dp))
-            }
+            ) { Icon(Icons.Default.PlayArrow, null, Modifier.size(44.dp)) }
         }
         Spacer(Modifier.height(9.dp))
         Column(Modifier.padding(horizontal = 14.dp)) {
-            Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 20.sp)
+            Text(
+                item.title,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = 20.sp,
+            )
             val meta = listOf("@EasyEducation", item.duration).filter { it.isNotBlank() }.joinToString("  •  ")
             Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         }
