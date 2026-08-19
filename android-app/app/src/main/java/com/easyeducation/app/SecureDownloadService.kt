@@ -1,15 +1,8 @@
 package com.easyeducation.app
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import com.google.android.gms.tasks.Tasks
 import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
@@ -27,46 +20,72 @@ class SecureDownloadService : Service() {
         .retryOnConnectionFailure(true)
         .build()
     private lateinit var store: SecureMediaStore
+    private lateinit var notifier: DownloadNotifier
 
     override fun onCreate() {
         super.onCreate()
         store = SecureMediaStore(this)
-        createChannel()
+        notifier = DownloadNotifier(this)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val id = intent?.getStringExtra(EXTRA_ID)
-        val tasks = if (id.isNullOrBlank()) store.pending() else listOfNotNull(store.get(id))
-        if (tasks.isEmpty()) {
-            stopSelf()
+        val id = intent?.getStringExtra(EXTRA_ID).orEmpty()
+        val generation = intent?.getLongExtra(EXTRA_GENERATION, -1L) ?: -1L
+        val task = id.takeIf { it.isNotBlank() }?.let(store::get)
+        if (task == null || (generation >= 0 && task.generation != generation)) {
+            stopSelf(startId)
             return START_NOT_STICKY
         }
-        startForeground(notificationId(tasks.first().id), notification(tasks.first()))
+        startForeground(notifier.activeNotificationId(task.id), notifier.progressNotification(task))
         executor.execute {
-            tasks.forEach(::download)
-            stopForeground(STOP_FOREGROUND_DETACH)
-            stopSelf()
+            download(task)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun download(initial: SecureDownloadTask) {
-        var task = initial.copy(state = "downloading", error = null)
-        store.save(task)
-        updateNotification(task)
+        val generation = initial.generation
+        var task = initial
         try {
+            ensureRunning(task.id, generation)
             require(FirebaseAuth.getInstance().currentUser?.uid == task.userId) {
                 "Sign in with the account that owns this download"
             }
+            NativeAccountSecurity.restrictionMessage(this, task.userId)?.let { error(it) }
+            DownloadStoragePolicy.checkTask(this, task).let { check ->
+                require(check.allowed) { check.message ?: "Not enough storage for this download" }
+            }
+
+            task = task.copy(state = "downloading", phase = "preparing", phaseProgress = 0, error = null)
+            saveIfCurrent(task, generation)
+            notifier.updateProgress(task)
+
             val source = resolveProgressiveSource(task)
+            ensureRunning(task.id, generation)
             if (task.totalBytes > 0 && task.totalBytes != source.totalBytes) {
                 store.resetChunks(task.id)
                 task = task.copy(downloadedBytes = 0, chunkCount = 0)
             }
-            task = task.copy(totalBytes = source.totalBytes)
-            store.save(task)
+            if (task.expectedBytes > 0 && !task.sizeEstimated) {
+                val drift = kotlin.math.abs(task.expectedBytes - source.totalBytes)
+                require(drift <= maxOf(2L * 1024L * 1024L, task.expectedBytes / 20L)) {
+                    "The selected video quality changed. Please choose the quality again."
+                }
+            }
+            task = task.copy(
+                totalBytes = source.totalBytes,
+                expectedBytes = source.totalBytes,
+                sizeEstimated = false,
+                height = source.height,
+                qualityLabel = source.label,
+                phase = "downloading",
+                phaseProgress = 0,
+            )
+            saveIfCurrent(task, generation)
 
             var downloaded = task.downloadedBytes.coerceIn(0, source.totalBytes)
             var chunkIndex = task.chunkCount
@@ -76,17 +95,18 @@ class SecureDownloadService : Service() {
                 downloaded = 0
                 chunkIndex = 0
                 task = task.copy(downloadedBytes = 0, chunkCount = 0)
-                store.save(task)
+                saveIfCurrent(task, generation)
             }
 
             while (downloaded < source.totalBytes) {
-                val current = store.get(task.id) ?: throw DownloadStopped()
-                if (current.state == "paused") throw DownloadPaused()
+                ensureRunning(task.id, generation)
                 val end = minOf(source.totalBytes - 1, downloaded + SecureMediaStore.CHUNK_BYTES - 1L)
                 val bytes = source.fetch(downloaded, end)
+                ensureRunning(task.id, generation)
                 val expected = (end - downloaded + 1L).toInt()
                 require(bytes.size == expected) { "Download chunk was incomplete (${bytes.size}/$expected)" }
                 store.writeEncryptedChunk(task, chunkIndex, bytes)
+                ensureRunning(task.id, generation)
                 downloaded = end + 1
                 chunkIndex += 1
                 task = task.copy(
@@ -94,39 +114,50 @@ class SecureDownloadService : Service() {
                     chunkCount = chunkIndex,
                     totalBytes = source.totalBytes,
                     state = "downloading",
+                    phase = "downloading",
+                    phaseProgress = 0,
                     error = null,
                 )
-                store.save(task)
-                updateNotification(task)
+                saveIfCurrent(task, generation)
+                notifier.updateProgress(task)
             }
 
+            ensureRunning(task.id, generation)
             task = task.copy(
                 downloadedBytes = source.totalBytes,
                 totalBytes = source.totalBytes,
                 chunkCount = chunkIndex,
                 state = "completed",
+                phase = "completed",
+                phaseProgress = 100,
                 error = null,
             )
-            store.save(task)
-            updateNotification(task, done = true)
-            sendBroadcast(Intent(ACTION_DOWNLOAD_CHANGED).putExtra(EXTRA_ID, task.id))
-        } catch (_: DownloadPaused) {
-            task = task.copy(state = "paused", error = null)
-            store.save(task)
-            updateNotification(task)
-            sendBroadcast(Intent(ACTION_DOWNLOAD_CHANGED).putExtra(EXTRA_ID, task.id))
-        } catch (_: DownloadStopped) {
-            // Removed while downloading.
+            saveIfCurrent(task, generation)
+            require(store.hasCompleteMedia(task)) { "Encrypted offline copy failed its integrity check" }
+            notifier.completed(task)
         } catch (error: Throwable) {
-            task = task.copy(state = "failed", error = error.message ?: "Download failed")
-            store.save(task)
-            updateNotification(task)
-            sendBroadcast(Intent(ACTION_DOWNLOAD_CHANGED).putExtra(EXTRA_ID, task.id))
+            val current = store.get(initial.id) ?: return
+            if (current.generation != generation) return
+            when (current.state) {
+                "paused" -> notifier.paused(current)
+                "deleting" -> notifier.cancelAll(current.id)
+                else -> {
+                    val failed = current.copy(
+                        state = "failed",
+                        phase = "failed",
+                        error = friendlyError(error),
+                    )
+                    store.save(failed)
+                    notifier.failed(failed)
+                }
+            }
         }
     }
 
     private data class ProgressiveSource(
         val totalBytes: Long,
+        val height: Int,
+        val label: String,
         val fetch: (Long, Long) -> ByteArray,
     )
 
@@ -135,19 +166,23 @@ class SecureDownloadService : Service() {
         require(url.startsWith("https://")) { "Only secure HTTPS video sources can be downloaded" }
         return when {
             YoutubeDeviceResolver.isYoutubeUrl(url) -> {
-                val (_, format) = YoutubeDeviceResolver(http).pickFormat(url, task.height)
-                val total = format.contentLength.takeIf { it > 0 } ?: probeLength(format.url)
+                val result = YoutubeDeviceResolver(http).resolve(url)
+                val format = result.formats.firstOrNull { it.height == task.height }
+                    ?: error("${task.qualityLabel.ifBlank { "${task.height}p" }} is no longer available. Choose a quality again.")
+                val total = format.contentLength.takeIf { it > 0 } ?: probeLength(task.id, format.url)
                 require(total > 0) { "YouTube video size is unavailable" }
-                ProgressiveSource(total) { start, end -> fetchRange(format.url, start, end) }
+                ProgressiveSource(total, format.height, format.qualityLabel) { start, end ->
+                    fetchRange(task.id, format.url, start, end)
+                }
             }
             isRumblePage(url) -> resolveRumble(task, url)
-            url.contains(".m3u8", ignoreCase = true) -> {
-                error("This class uses HLS-only media. Save a progressive MP4 source for secure offline download.")
-            }
+            SecureDownloadCoordinator.isHlsSource(url) -> error("HLS media must use the secure HLS downloader")
             else -> {
-                val total = probeLength(url)
-                require(total > 0) { "Video size is unavailable for this source" }
-                ProgressiveSource(total) { start, end -> fetchRange(url, start, end) }
+                val total = probeLength(task.id, url)
+                require(total > 0) { "This video server does not expose a resumable file size" }
+                ProgressiveSource(total, task.height, task.qualityLabel.ifBlank { "Original quality" }) { start, end ->
+                    fetchRange(task.id, url, start, end)
+                }
             }
         }
     }
@@ -158,68 +193,87 @@ class SecureDownloadService : Service() {
         val optionsUrl = APP_ORIGIN + "/api/offline-video?options=1" +
             "&classId=${android.net.Uri.encode(task.classId)}" +
             "&videoUrl=${android.net.Uri.encode(sourceUrl)}"
-        val request = Request.Builder()
+        val payload = executeJson(task.id, Request.Builder()
             .url(optionsUrl)
             .header("Authorization", "Bearer $token")
             .header("Accept", "application/json")
-            .build()
-        val payload = http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Offline video authorization failed (${response.code})")
-            JSONObject(response.body?.string().orEmpty())
-        }
+            .build())
         val signedToken = payload.optString("downloadToken")
-        require(signedToken.isNotBlank()) { "Offline download token was not returned" }
+        require(signedToken.isNotBlank()) { "Offline download authorization expired. Retry the download." }
         val options = payload.optJSONArray("options") ?: error("No offline qualities are available")
-        val candidates = buildList {
-            for (index in 0 until options.length()) {
-                val item = options.optJSONObject(index) ?: continue
-                if (item.optString("kind", "mp4") != "mp4") continue
-                val height = item.optInt("height", 0)
-                val size = item.optLong("contentLength", 0)
-                if (height > 0 && size > 0) add(height to size)
-            }
+        var selectedHeight = -1
+        var total = 0L
+        for (index in 0 until options.length()) {
+            val item = options.optJSONObject(index) ?: continue
+            if (item.optString("kind", "mp4") != "mp4") continue
+            if (item.optInt("height", 0) != task.height) continue
+            selectedHeight = task.height
+            total = item.optLong("contentLength", 0)
+            break
         }
-        val selected = candidates.filter { it.first <= task.height }.maxByOrNull { it.first }
-            ?: candidates.minByOrNull { it.first }
-            ?: error("No progressive Rumble MP4 quality is available")
-        val selectedHeight = selected.first
-        val total = selected.second
-        return ProgressiveSource(total) { start, end ->
+        require(selectedHeight > 0 && total > 0) {
+            "${task.qualityLabel.ifBlank { "${task.height}p" }} is no longer available. Choose a quality again."
+        }
+        return ProgressiveSource(total, selectedHeight, "${selectedHeight}p") { start, end ->
             val chunkUrl = APP_ORIGIN + "/api/offline-video" +
                 "?classId=${android.net.Uri.encode(task.classId)}" +
                 "&height=$selectedHeight" +
                 "&start=$start&end=$end" +
                 "&downloadToken=${android.net.Uri.encode(signedToken)}"
-            http.newCall(Request.Builder().url(chunkUrl).build()).execute().use { response ->
-                if (!response.isSuccessful) error("Offline video chunk failed (${response.code})")
+            DownloadRuntime.execute(task.id, http.newCall(Request.Builder().url(chunkUrl).build())) { response ->
+                if (response.code != 206) error("Offline video server did not return a byte range (${response.code})")
                 response.body?.bytes() ?: error("Offline video chunk was empty")
             }
         }
     }
 
-    private fun probeLength(url: String): Long {
+    private fun probeLength(downloadId: String, url: String): Long {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=0-0")
             .header("User-Agent", USER_AGENT)
             .build()
-        return http.newCall(request).execute().use { response ->
+        return DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
+            if (response.code != 206) return@execute 0L
             val range = response.header("Content-Range").orEmpty()
-            val fromRange = range.substringAfterLast('/', "").toLongOrNull()
-            fromRange ?: response.header("Content-Length")?.toLongOrNull() ?: 0L
+            range.substringAfterLast('/', "").toLongOrNull() ?: 0L
         }
     }
 
-    private fun fetchRange(url: String, start: Long, end: Long): ByteArray {
+    private fun fetchRange(downloadId: String, url: String, start: Long, end: Long): ByteArray {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=$start-$end")
             .header("User-Agent", USER_AGENT)
             .build()
-        return http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Video server returned HTTP ${response.code}")
+        return DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
+            if (response.code != 206) error("Video server does not support safe resumable downloads (HTTP ${response.code})")
+            val range = response.header("Content-Range").orEmpty()
+            require(range.startsWith("bytes $start-$end/")) { "Video server returned the wrong byte range" }
+            val expected = end - start + 1
+            val declared = response.header("Content-Length")?.toLongOrNull()
+            if (declared != null) require(declared == expected) { "Video server returned the wrong chunk size" }
             response.body?.bytes() ?: error("Video server returned an empty chunk")
         }
+    }
+
+    private fun executeJson(downloadId: String, request: Request): JSONObject =
+        DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
+            if (!response.isSuccessful) error("Offline video authorization failed (${response.code})")
+            JSONObject(response.body?.string().orEmpty())
+        }
+
+    private fun ensureRunning(id: String, generation: Long): SecureDownloadTask {
+        val current = store.get(id) ?: throw DownloadStopped()
+        if (current.generation != generation) throw DownloadStopped()
+        if (current.state == "paused") throw DownloadPaused()
+        if (current.state == "deleting") throw DownloadStopped()
+        return current
+    }
+
+    private fun saveIfCurrent(task: SecureDownloadTask, generation: Long) {
+        ensureRunning(task.id, generation)
+        store.save(task)
     }
 
     private fun isRumblePage(value: String): Boolean = runCatching {
@@ -227,39 +281,11 @@ class SecureDownloadService : Service() {
         host == "rumble.com" || host.endsWith(".rumble.com")
     }.getOrDefault(false)
 
-    private fun createChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Offline classes", NotificationManager.IMPORTANCE_LOW),
-        )
-    }
-
-    private fun notification(task: SecureDownloadTask, done: Boolean = false): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            notificationId(task.id),
-            Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PATH, "/downloads"),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val text = when (task.state) {
-            "completed" -> "Ready offline • ${task.height}p"
-            "paused" -> "Paused • ${task.progress}%"
-            "failed" -> task.error ?: "Download failed"
-            else -> "${task.progress}% • encrypted offline copy"
-        }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_easy_education)
-            .setContentTitle(task.title)
-            .setContentText(text)
-            .setContentIntent(open)
-            .setOnlyAlertOnce(true)
-            .setOngoing(!done && task.state == "downloading")
-            .setProgress(100, task.progress, task.totalBytes <= 0)
-            .build()
-    }
-
-    private fun updateNotification(task: SecureDownloadTask, done: Boolean = false) {
-        getSystemService(NotificationManager::class.java)
-            .notify(notificationId(task.id), notification(task, done))
+    private fun friendlyError(error: Throwable): String = when {
+        error is DownloadPaused -> "Paused"
+        error is DownloadStopped -> "Download stopped"
+        error.message?.contains("Canceled", ignoreCase = true) == true -> "Download paused"
+        else -> error.message ?: "Download failed"
     }
 
     override fun onDestroy() {
@@ -272,46 +298,8 @@ class SecureDownloadService : Service() {
 
     companion object {
         const val EXTRA_ID = "secure_download_id"
-        const val ACTION_DOWNLOAD_CHANGED = "com.easyeducation.app.SECURE_DOWNLOAD_CHANGED"
-        private const val CHANNEL_ID = "secure_offline_classes_v2"
+        const val EXTRA_GENERATION = "secure_download_generation"
         private const val APP_ORIGIN = "https://easy-education.vercel.app"
-        private const val USER_AGENT = "EasyEducationAndroid/2.0"
-
-        fun start(context: Context, task: SecureDownloadTask) {
-            SecureMediaStore(context).save(task.copy(state = "queued", error = null))
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, SecureDownloadService::class.java).putExtra(EXTRA_ID, task.id),
-            )
-        }
-
-        fun pause(context: Context, id: String) {
-            val store = SecureMediaStore(context)
-            store.get(id)?.let { store.save(it.copy(state = "paused")) }
-        }
-
-        fun resume(context: Context, id: String) {
-            val store = SecureMediaStore(context)
-            val task = store.get(id) ?: return
-            store.save(task.copy(state = "queued", error = null))
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, SecureDownloadService::class.java).putExtra(EXTRA_ID, id),
-            )
-        }
-
-        fun resumePending(context: Context) {
-            if (SecureMediaStore(context).pending().isEmpty()) return
-            ContextCompat.startForegroundService(context, Intent(context, SecureDownloadService::class.java))
-        }
-
-        fun remove(context: Context, id: String) {
-            pause(context, id)
-            SecureMediaStore(context).remove(id)
-            context.getSystemService(NotificationManager::class.java).cancel(notificationId(id))
-            context.sendBroadcast(Intent(ACTION_DOWNLOAD_CHANGED).putExtra(EXTRA_ID, id))
-        }
-
-        private fun notificationId(id: String): Int = SecureMediaStore.safe(id).hashCode()
+        private const val USER_AGENT = "EasyEducationAndroid/2.1"
     }
 }
