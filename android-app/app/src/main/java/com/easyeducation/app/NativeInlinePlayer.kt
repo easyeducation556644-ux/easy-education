@@ -2,7 +2,9 @@
 
 package com.easyeducation.app
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -52,6 +54,7 @@ fun NativeInlinePlayer(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val exoPlayer = remember(classId) { ExoPlayer.Builder(context).build() }
+    var handedToMini by remember(exoPlayer) { mutableStateOf(false) }
     var loading by remember(classId, sourceUrl) { mutableStateOf(sourceUrl.isNotBlank() && online) }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
     val progressKey = remember(classId) { "class:$classId" }
@@ -70,7 +73,7 @@ fun NativeInlinePlayer(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             savePosition(context, progressKey, exoPlayer.currentPosition)
-            exoPlayer.release()
+            if (!handedToMini && !NativeMiniPlayerOverlay.owns(exoPlayer)) exoPlayer.release()
         }
     }
 
@@ -103,6 +106,21 @@ fun NativeInlinePlayer(
         }
     }
 
+    fun minimizePlayer() {
+        val activity = context.findActivity() ?: return
+        savePosition(context, progressKey, exoPlayer.currentPosition)
+        handedToMini = true
+        NativeMiniPlayerOverlay.show(
+            activity = activity,
+            exoPlayer = exoPlayer,
+            classId = classId,
+            sourceUrl = sourceUrl,
+            title = title,
+            requestedHeight = requestedHeight,
+        )
+        onMinimize?.invoke()
+    }
+
     Box(
         modifier
             .fillMaxWidth()
@@ -117,7 +135,7 @@ fun NativeInlinePlayer(
                     bindPlayer(exoPlayer)
                     setTitle(title)
                     setLoading(loading)
-                    this.onMinimize = onMinimize
+                    this.onMinimize = { minimizePlayer() }
                     this.onFullscreen = {
                         onFullscreen?.invoke() ?: ctx.startActivity(
                             Intent(ctx, NativePlayerActivity::class.java)
@@ -130,10 +148,10 @@ fun NativeInlinePlayer(
                 }
             },
             update = { view ->
-                view.bindPlayer(exoPlayer)
+                view.bindPlayer(if (handedToMini) null else exoPlayer)
                 view.setTitle(title)
                 view.setLoading(loading)
-                view.onMinimize = onMinimize
+                view.onMinimize = { minimizePlayer() }
                 view.onFullscreen = {
                     onFullscreen?.invoke() ?: context.startActivity(
                         Intent(context, NativePlayerActivity::class.java)
@@ -167,6 +185,15 @@ fun NativeInlinePlayer(
             )
         }
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return current as? Activity
 }
 
 private fun savePosition(context: Context, key: String, position: Long) {
