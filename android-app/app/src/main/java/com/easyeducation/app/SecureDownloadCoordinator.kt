@@ -60,30 +60,19 @@ object SecureDownloadCoordinator {
         queueAndLaunch(context, store, task)
     }
 
-    /**
-     * A normal button press stays a manual pause. The ViewModel also uses this method immediately
-     * when Wi-Fi-only policy becomes unsatisfied; in that case networkAllowed() is false and we
-     * retain an automatic waiting-network marker so connectivity can resume it later.
-     */
+    /** Explicit user pause. It is never selected by resumePending(). */
     fun pause(context: Context, id: String) {
         DownloadRuntime.cancel(id)
         SecureHlsDownloadService.cancelActiveTransform(id)
         val store = SecureMediaStore(context)
         val task = store.get(id) ?: return
         if (task.state !in setOf("queued", "downloading")) return
-        val networkPolicyPause = !DownloadPreferences.networkAllowed(context)
-        val paused = task.copy(
-            state = "paused",
-            phase = if (networkPolicyPause) NETWORK_WAIT_PHASE else "paused",
-            error = if (networkPolicyPause) {
-                "Waiting for Wi-Fi because Wi-Fi only downloads are enabled."
-            } else null,
-        )
+        val paused = task.copy(state = "paused", phase = "paused", error = null)
         store.save(paused)
         DownloadNotifier(context).paused(paused)
     }
 
-    /** Automatic pause hook for connectivity observers that can identify a network transition. */
+    /** Automatic pause used only by connectivity / Wi-Fi-policy transitions. */
     fun pauseForNetwork(context: Context, id: String, message: String) {
         DownloadRuntime.cancel(id)
         SecureHlsDownloadService.cancelActiveTransform(id)
@@ -106,7 +95,6 @@ object SecureDownloadCoordinator {
         store.get(id)?.let { store.save(it.copy(state = "deleting", phase = "deleting")) }
         purgeWorkingFiles(context, id)
         store.remove(id)
-        // Repeat after workers unwind so no stale app-private temp path survives deletion.
         purgeWorkingFiles(context, id)
         store.secureDir(id).deleteRecursively()
         DownloadNotifier(context).cancelAll(id)
