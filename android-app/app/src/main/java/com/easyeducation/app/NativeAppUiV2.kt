@@ -13,13 +13,21 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -129,6 +137,9 @@ private val V2Pill = RoundedCornerShape(999.dp)
 private const val WEB_ORIGIN = "https://easy-education.vercel.app"
 private const val CLASS_ROUTE = "class/{courseId}/{classId}"
 private const val PAST_CLASS_PAGE_SIZE = 5
+private const val APP_MOTION_QUICK_MS = 150
+private const val APP_MOTION_STANDARD_MS = 240
+private const val APP_MOTION_EMPHASIZED_MS = 320
 
 @Composable
 fun EasyEducationNativeAppV2(
@@ -145,10 +156,25 @@ fun EasyEducationNativeAppV2(
 
     EasyEducationTheme(themeMode) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when {
-                !state.authReady -> V2Splash()
-                state.user == null -> V2LoginScreen(state.online, loginBusy, onGoogleSignIn)
-                else -> {
+            val rootDestination = when {
+                !state.authReady -> "splash"
+                state.user == null -> "login"
+                else -> "app"
+            }
+            AnimatedContent(
+                targetState = rootDestination,
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                        scaleIn(initialScale = 0.985f, animationSpec = tween(APP_MOTION_EMPHASIZED_MS))) togetherWith
+                        (fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                            scaleOut(targetScale = 1.01f, animationSpec = tween(APP_MOTION_QUICK_MS)))
+                },
+                label = "app destination",
+            ) { destination ->
+                when (destination) {
+                    "splash" -> V2Splash()
+                    "login" -> V2LoginScreen(state.online, loginBusy, onGoogleSignIn)
+                    else -> {
                     val nav = rememberNavController()
                     val startRoute = nativeStartRoute(initialPath)
                     val backStack by nav.currentBackStackEntryAsState()
@@ -166,7 +192,13 @@ fun EasyEducationNativeAppV2(
                         snackbarHost = { SnackbarHost(snackbar) },
                         containerColor = MaterialTheme.colorScheme.background,
                         bottomBar = {
-                            if (!isWatchRoute) {
+                            AnimatedVisibility(
+                                visible = !isWatchRoute,
+                                enter = slideInVertically(animationSpec = tween(APP_MOTION_STANDARD_MS)) { it } +
+                                    fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                                exit = slideOutVertically(animationSpec = tween(APP_MOTION_STANDARD_MS)) { it } +
+                                    fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                            ) {
                                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                                     v2BottomItems.forEach { item ->
                                         val selected = currentRoute == item.route ||
@@ -189,8 +221,18 @@ fun EasyEducationNativeAppV2(
                         },
                     ) { padding ->
                         Column(Modifier.fillMaxSize().padding(padding)) {
-                            if (!state.online && !isWatchRoute) V2OfflineBanner()
-                            if (state.syncing) LinearProgressIndicator(Modifier.fillMaxWidth())
+                            AnimatedVisibility(
+                                visible = !state.online && !isWatchRoute,
+                                enter = slideInVertically(animationSpec = tween(APP_MOTION_STANDARD_MS)) { -it } +
+                                    fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                                exit = slideOutVertically(animationSpec = tween(APP_MOTION_STANDARD_MS)) { -it } +
+                                    fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                            ) { V2OfflineBanner() }
+                            AnimatedVisibility(
+                                visible = state.syncing,
+                                enter = fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                                exit = fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                            ) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
                             V2NavHost(
                                 nav = nav,
                                 viewModel = viewModel,
@@ -204,6 +246,7 @@ fun EasyEducationNativeAppV2(
                                 activeDeviceCount = activeDeviceCount,
                             )
                         }
+                    }
                     }
                 }
             }
@@ -320,32 +363,32 @@ private fun V2NavHost(
             if (targetState.destination.route == CLASS_ROUTE) {
                 EnterTransition.None
             } else {
-                fadeIn(animationSpec = tween(170)) +
-                    slideInHorizontally(animationSpec = tween(220)) { fullWidth -> fullWidth / 16 }
+                fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                    slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> fullWidth / 16 }
             }
         },
         exitTransition = {
             if (targetState.destination.route == CLASS_ROUTE) {
                 ExitTransition.None
             } else {
-                fadeOut(animationSpec = tween(120)) +
-                    slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> -fullWidth / 30 }
+                fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                    slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> -fullWidth / 30 }
             }
         },
         popEnterTransition = {
             if (initialState.destination.route == CLASS_ROUTE) {
                 EnterTransition.None
             } else {
-                fadeIn(animationSpec = tween(170)) +
-                    slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth / 16 }
+                fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                    slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> -fullWidth / 16 }
             }
         },
         popExitTransition = {
             if (initialState.destination.route == CLASS_ROUTE) {
                 ExitTransition.None
             } else {
-                fadeOut(animationSpec = tween(120)) +
-                    slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> fullWidth / 30 }
+                fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                    slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> fullWidth / 30 }
             }
         },
     ) {
@@ -547,9 +590,24 @@ private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state:
 
 @Composable
 private fun V2SummaryMetric(label: String, value: String, modifier: Modifier) {
-    Surface(modifier, shape = RoundedCornerShape(14.dp), color = Color.White.copy(alpha = 0.20f)) {
+    Surface(
+        modifier.animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.White.copy(alpha = 0.20f),
+    ) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 11.dp)) {
-            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+            AnimatedContent(
+                targetState = value,
+                transitionSpec = {
+                    (slideInVertically(animationSpec = tween(APP_MOTION_STANDARD_MS)) { it / 2 } +
+                        fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
+                        (slideOutVertically(animationSpec = tween(APP_MOTION_QUICK_MS)) { -it / 2 } +
+                            fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)))
+                },
+                label = "$label metric",
+            ) { animatedValue ->
+                Text(animatedValue, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+            }
             Text(label, style = MaterialTheme.typography.labelSmall)
         }
     }
@@ -566,7 +624,9 @@ private fun V2DashboardAction(
     onClick: () -> Unit,
 ) {
     Card(
-        Modifier.fillMaxWidth().height(height).clickable(onClick = onClick),
+        Modifier.fillMaxWidth().height(height)
+            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor),
         shape = RoundedCornerShape(20.dp),
     ) {
@@ -714,8 +774,6 @@ private fun V2PastClassPage(
     val pageCount = maxOf(1, ceil(classes.size / PAST_CLASS_PAGE_SIZE.toDouble()).toInt())
     var page by rememberSaveable(courseId) { mutableIntStateOf(0) }
     LaunchedEffect(pageCount) { page = page.coerceIn(0, pageCount - 1) }
-    val start = page * PAST_CLASS_PAGE_SIZE
-    val visible = classes.drop(start).take(PAST_CLASS_PAGE_SIZE)
 
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -747,8 +805,31 @@ private fun V2PastClassPage(
                 )
             }
         } else {
-            items(visible, key = { "past-class-${it.id}" }) { classItem ->
-                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+            item(key = "past-class-page-$courseId") {
+                AnimatedContent(
+                    targetState = page,
+                    transitionSpec = {
+                        val direction = if (targetState > initialState) 1 else -1
+                        (slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { width ->
+                            direction * width / 4
+                        } + fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
+                            (slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { width ->
+                                -direction * width / 5
+                            } + fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)))
+                    },
+                    label = "past class page",
+                ) { activePage ->
+                    Column(
+                        Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(11.dp),
+                    ) {
+                        classes.drop(activePage * PAST_CLASS_PAGE_SIZE)
+                            .take(PAST_CLASS_PAGE_SIZE)
+                            .forEach { classItem ->
+                                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+                            }
+                    }
+                }
             }
             item {
                 Row(
@@ -877,22 +958,45 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
                     }
                 },
             )
-            when {
-                !state.online -> V2WebOffline(
-                    title = "No internet connection",
-                    message = "Connect to the internet to browse and buy a course. Your existing cached classes are still safe.",
-                    onRetry = { pageError = null; if (state.online) browser?.reload() },
-                )
-                pageError != null -> V2WebOffline(
-                    title = "Course store could not load",
-                    message = pageError.orEmpty(),
-                    onRetry = {
-                        pageError = null
-                        browser?.loadUrl("$WEB_ORIGIN/courses")
-                    },
-                )
-                loading -> LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+            val overlayState = when {
+                !state.online -> "offline"
+                pageError != null -> "error"
+                else -> "ready"
             }
+            AnimatedContent(
+                targetState = overlayState,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                        scaleIn(initialScale = 0.985f, animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
+                        (fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                            scaleOut(targetScale = 0.99f, animationSpec = tween(APP_MOTION_QUICK_MS)))
+                },
+                label = "course store state",
+            ) { target ->
+                when (target) {
+                    "offline" -> V2WebOffline(
+                        title = "No internet connection",
+                        message = "Connect to the internet to browse and buy a course. Your existing cached classes are still safe.",
+                        onRetry = { pageError = null; if (state.online) browser?.reload() },
+                    )
+                    "error" -> V2WebOffline(
+                        title = "Course store could not load",
+                        message = pageError.orEmpty(),
+                        onRetry = {
+                            pageError = null
+                            browser?.loadUrl("$WEB_ORIGIN/courses")
+                        },
+                    )
+                    else -> Box(Modifier.fillMaxSize())
+                }
+            }
+            AnimatedVisibility(
+                visible = loading && overlayState == "ready",
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)),
+                exit = fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)),
+            ) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
     }
 }
@@ -923,7 +1027,9 @@ private fun V2WebOffline(title: String, message: String, onRetry: () -> Unit) {
 @Composable
 private fun V2CourseCard(course: NativeCourse, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        Modifier.fillMaxWidth()
+            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(14.dp),
@@ -1042,7 +1148,9 @@ private fun openClass(context: Context, nav: NavHostController, courseId: String
 @Composable
 private fun V2LearningRow(title: String, imageUrl: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        Modifier.fillMaxWidth()
+            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(13.dp),
@@ -1059,7 +1167,9 @@ private fun V2LearningRow(title: String, imageUrl: String, icon: androidx.compos
 @Composable
 private fun V2ClassRow(classItem: NativeClassItem, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        Modifier.fillMaxWidth()
+            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(13.dp),
@@ -1128,7 +1238,7 @@ private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
         if (state.downloads.isEmpty()) item { V2Empty("No offline classes yet. Open a class and tap the compact Download button.") }
         else items(state.downloads, key = { it.id }) { task ->
             Card(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
@@ -1246,7 +1356,7 @@ private fun V2Back(nav: NavHostController, title: String) {
 @Composable
 private fun V2OutlinedCard(content: @Composable () -> Unit) {
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(14.dp),

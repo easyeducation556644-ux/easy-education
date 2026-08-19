@@ -36,8 +36,10 @@ data class NativeMiniPlayerHandoff(
  */
 @UnstableApi
 class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
-    var playerSurface: YoutubeStylePlayerView = NativeSharedPlayerSurface.obtain(context)
-        private set
+    private var attachedSurface: YoutubeStylePlayerView? = null
+
+    val playerSurface: YoutubeStylePlayerView?
+        get() = attachedSurface
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
@@ -59,13 +61,12 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     init {
         clipChildren = false
         clipToPadding = false
-        attachSharedSurface(playerSurface)
     }
 
     fun attachSharedSurface(surface: YoutubeStylePlayerView = NativeSharedPlayerSurface.obtain(context)): YoutubeStylePlayerView {
-        finishDragImmediately(reattach = false)
+        if (attachedSurface != null) finishDragImmediately(reattach = false)
         (surface.parent as? ViewGroup)?.removeView(surface)
-        playerSurface = surface
+        attachedSurface = surface
         NativeSharedPlayerSurface.setMiniPresentation(surface, false)
         addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         surface.bringToFront()
@@ -150,7 +151,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     private fun beginFloatingDrag() {
         val activity = context.findActivity() ?: return
         val root = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
-        val surface = playerSurface
+        val surface = attachedSurface ?: return
         val rect = Rect()
         if (!surface.getGlobalVisibleRect(rect) || rect.isEmpty) return
         val rootLocation = IntArray(2)
@@ -226,7 +227,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
 
     private fun commitFloatingDrag() {
         val shell = dragShell ?: return resetPagePresentation()
-        val surface = playerSurface
+        val surface = attachedSurface ?: return resetPagePresentation()
         shell.animate().cancel()
         presentationPage?.let { page ->
             page.animate().cancel()
@@ -245,7 +246,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
 
     private fun animateFloatingBack() {
         val shell = dragShell ?: return resetPagePresentation()
-        val surface = playerSurface
+        val surface = attachedSurface ?: return resetPagePresentation()
         shell.animate().cancel()
         animateBackgroundReset()
         shell.animate()
@@ -347,13 +348,13 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     }
 
     private fun finishDragImmediately(reattach: Boolean) {
-        val surface = playerSurface
+        val surface = attachedSurface
         val shell = dragShell
-        if (shell != null && surface.parent === shell) shell.removeView(surface)
+        if (shell != null && surface != null && surface.parent === shell) shell.removeView(surface)
         if (shell != null) (shell.parent as? ViewGroup)?.removeView(shell)
         dragShell = null
         dragRoot = null
-        if (reattach) {
+        if (reattach && surface != null) {
             NativeSharedPlayerSurface.setMiniPresentation(surface, false)
             (surface.parent as? ViewGroup)?.removeView(surface)
             addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -364,18 +365,20 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
 
     fun resetPagePresentation() {
         (presentationPage ?: composePageRoot())?.let(::resetPageImmediately)
-        playerSurface.animate().cancel()
-        playerSurface.scaleX = 1f
-        playerSurface.scaleY = 1f
-        playerSurface.translationX = 0f
-        playerSurface.translationY = 0f
-        playerSurface.alpha = 1f
+        attachedSurface?.let { surface ->
+            surface.animate().cancel()
+            surface.scaleX = 1f
+            surface.scaleY = 1f
+            surface.translationX = 0f
+            surface.translationY = 0f
+            surface.alpha = 1f
+        }
     }
 
     /** Transfer the exact shell currently under the finger; no reparent/frame swap is needed. */
     fun claimMiniPlayerHandoff(): NativeMiniPlayerHandoff? {
         val shell = dragShell ?: return null
-        val surface = playerSurface
+        val surface = attachedSurface ?: return null
         if (surface.parent !== shell) return null
         val bounds = Rect()
         if (!shell.getGlobalVisibleRect(bounds) || bounds.isEmpty) return null
@@ -393,7 +396,8 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
 
     fun globalBounds(): Rect {
         val transformed = Rect()
-        if (playerSurface.getGlobalVisibleRect(transformed) && !transformed.isEmpty) return transformed
+        val surface = attachedSurface
+        if (surface != null && surface.getGlobalVisibleRect(transformed) && !transformed.isEmpty) return transformed
         val location = IntArray(2)
         getLocationOnScreen(location)
         return Rect(location[0], location[1], location[0] + width, location[1] + height)

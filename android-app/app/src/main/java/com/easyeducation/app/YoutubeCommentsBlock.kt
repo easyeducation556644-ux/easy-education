@@ -2,8 +2,18 @@
 
 package com.easyeducation.app
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Reply
@@ -42,8 +53,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,8 +65,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -138,9 +156,10 @@ fun YoutubeCommentsBlock(
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
             .clip(RoundedCornerShape(18.dp))
+            .animateContentSize(animationSpec = tween(COMMENT_MOTION_MS))
             .clickable { sheetOpen = true },
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -149,29 +168,43 @@ fun YoutubeCommentsBlock(
                 Spacer(Modifier.width(6.dp))
                 Text(topLevel.size.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
-                Text("●", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(4.dp))
-                Text("●", color = MaterialTheme.colorScheme.outlineVariant)
+                Icon(
+                    Icons.Default.KeyboardArrowUp,
+                    "Open comments",
+                    Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.size(9.dp))
-            when {
-                loading -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(9.dp))
-                    Text("Loading comments…", style = MaterialTheme.typography.bodySmall)
-                }
-                preview != null -> Row(verticalAlignment = Alignment.Top) {
-                    CommentAvatar(preview.userPhoto, Modifier.size(32.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("@${preview.userName}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                        Text(preview.displayText(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            val previewState = when {
+                loading -> "loading"
+                preview != null -> "preview-${preview.id}"
+                else -> "empty"
+            }
+            Crossfade(
+                targetState = previewState,
+                animationSpec = tween(COMMENT_MOTION_MS),
+                label = "comment preview",
+            ) { target ->
+                when {
+                    target == "loading" -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(9.dp))
+                        Text("Loading comments…", style = MaterialTheme.typography.bodySmall)
                     }
+                    target.startsWith("preview") && preview != null -> Row(verticalAlignment = Alignment.Top) {
+                        CommentAvatar(preview.userPhoto, Modifier.size(32.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("@${preview.userName}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text(preview.displayText(), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    else -> Text(
+                        error ?: "No comments yet. Add the first comment.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                else -> Text(
-                    error ?: "No comments yet. Add the first comment.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -206,6 +239,10 @@ private fun YoutubeCommentsSheet(
     onMessage: (String?) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var draft by remember(classId) { mutableStateOf("") }
     var replyTarget by remember(classId) { mutableStateOf<YoutubeClassComment?>(null) }
     var editTarget by remember(classId) { mutableStateOf<YoutubeClassComment?>(null) }
@@ -221,149 +258,226 @@ private fun YoutubeCommentsSheet(
             .mapValues { (_, values) -> values.sortedBy { it.timestamp } }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    LaunchedEffect(replyTarget?.id, editTarget?.id) {
+        if (replyTarget != null || editTarget != null) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    fun submitDraft() {
+        val currentUser = user ?: return
+        val text = draft.trim()
+        if (text.isBlank() || sending) return
+        val editing = editTarget
+        val replying = replyTarget
+        sending = true
+        onMessage(null)
+        scope.launch {
+            val result = when {
+                editing != null -> editComment(db, editing, currentUser, text)
+                replying != null -> postReply(db, classId, currentUser, replying, text)
+                else -> postTopLevelComment(db, classId, currentUser, text)
+            }
+            sending = false
+            result.onSuccess {
+                draft = ""
+                editTarget = null
+                replyTarget = null
+                focusManager.clearFocus()
+                keyboardController?.hide()
+                if (replying != null && replying.userId.isNotBlank() && replying.userId != currentUser.uid) {
+                    launch {
+                        NativeCommentReplyPush.send(
+                            parentCommentId = replying.id,
+                            classId = classId,
+                            courseId = courseId,
+                            classTitle = classTitle,
+                            replyText = "@${replying.userName} $text",
+                        )
+                    }
+                }
+            }.onFailure { onMessage("Could not save comment. Try again.") }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.92f)
-                .navigationBarsPadding()
+                .fillMaxHeight(0.96f)
                 .imePadding(),
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 2.dp, bottom = 10.dp),
+                Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 0.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Comments ${topLevel.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Comments", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(8.dp))
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Text(
+                        topLevel.size.toString(),
+                        Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close comments") }
             }
             HorizontalDivider()
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                when {
-                    loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    topLevel.isEmpty() -> Text(
-                        error ?: "No comments yet. Be the first to comment.",
-                        modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    else -> LazyColumn(
-                        Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        items(topLevel, key = { it.id }) { comment ->
-                            YoutubeCommentThread(
-                                comment = comment,
-                                repliesByParent = repliesByParent,
-                                currentUser = user,
-                                depth = 0,
-                                onReply = { target ->
-                                    editTarget = null
-                                    replyTarget = target
-                                    draft = ""
-                                },
-                                onEdit = { target ->
-                                    replyTarget = null
-                                    editTarget = target
-                                    draft = target.text
-                                },
-                                onDelete = { target ->
-                                    scope.launch {
-                                        deleteCommentTree(db, target.id, comments)
-                                            .onFailure { onMessage("Could not delete comment. Try again.") }
-                                    }
-                                },
+                val contentState = when {
+                    loading -> "loading"
+                    topLevel.isEmpty() -> "empty"
+                    else -> "comments"
+                }
+                Crossfade(
+                    targetState = contentState,
+                    animationSpec = tween(COMMENT_MOTION_MS),
+                    label = "comments content",
+                ) { target ->
+                    when (target) {
+                        "loading" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                        "empty" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                error ?: "No comments yet. Be the first to comment.",
+                                modifier = Modifier.padding(24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    }
-                }
-            }
-
-            if (replyTarget != null || editTarget != null) {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            if (editTarget != null) "Editing your comment"
-                            else "Replying to @${replyTarget?.userName.orEmpty()}",
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        IconButton(onClick = {
-                            replyTarget = null
-                            editTarget = null
-                            draft = ""
-                        }) { Icon(Icons.Default.Close, "Cancel") }
-                    }
-                }
-            }
-
-            HorizontalDivider()
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                CommentAvatar(user?.photoUrl?.toString().orEmpty(), Modifier.size(36.dp))
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it.take(700) },
-                    modifier = Modifier.weight(1f),
-                    enabled = user != null && !sending,
-                    placeholder = {
-                        Text(
-                            when {
-                                user == null -> "Sign in to comment"
-                                editTarget != null -> "Edit comment"
-                                replyTarget != null -> "Reply to @${replyTarget?.userName.orEmpty()}"
-                                else -> "Add a comment…"
-                            },
-                        )
-                    },
-                    maxLines = 4,
-                    shape = RoundedCornerShape(22.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                IconButton(
-                    enabled = user != null && draft.isNotBlank() && !sending,
-                    onClick = {
-                        val currentUser = user ?: return@IconButton
-                        val text = draft.trim()
-                        if (text.isBlank()) return@IconButton
-                        val editing = editTarget
-                        val replying = replyTarget
-                        sending = true
-                        scope.launch {
-                            val result = when {
-                                editing != null -> editComment(db, editing, currentUser, text)
-                                replying != null -> postReply(db, classId, currentUser, replying, text)
-                                else -> postTopLevelComment(db, classId, currentUser, text)
+                        else -> LazyColumn(
+                            Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 5.dp, bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            items(topLevel, key = { it.id }) { comment ->
+                                YoutubeCommentThread(
+                                    comment = comment,
+                                    repliesByParent = repliesByParent,
+                                    currentUser = user,
+                                    depth = 0,
+                                    onReply = { target ->
+                                        editTarget = null
+                                        replyTarget = target
+                                        draft = ""
+                                    },
+                                    onEdit = { target ->
+                                        replyTarget = null
+                                        editTarget = target
+                                        draft = target.text
+                                    },
+                                    onDelete = { target ->
+                                        scope.launch {
+                                            deleteCommentTree(db, target.id, comments)
+                                                .onFailure { onMessage("Could not delete comment. Try again.") }
+                                        }
+                                    },
+                                )
                             }
-                            sending = false
-                            result.onSuccess {
-                                draft = ""
-                                editTarget = null
-                                replyTarget = null
-                                if (replying != null && replying.userId.isNotBlank() && replying.userId != currentUser.uid) {
-                                    launch {
-                                        NativeCommentReplyPush.send(
-                                            parentCommentId = replying.id,
-                                            classId = classId,
-                                            courseId = courseId,
-                                            classTitle = classTitle,
-                                            replyText = "@${replying.userName} $text",
-                                        )
-                                    }
-                                }
-                            }.onFailure { onMessage("Could not save comment. Try again.") }
                         }
-                    },
-                ) {
-                    if (sending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Send, "Send")
+                    }
+                }
+            }
+
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp,
+            ) {
+                Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+                    AnimatedVisibility(
+                        visible = replyTarget != null || editTarget != null,
+                        enter = expandVertically(animationSpec = tween(COMMENT_MOTION_MS)) +
+                            fadeIn(animationSpec = tween(COMMENT_MOTION_MS)),
+                        exit = shrinkVertically(animationSpec = tween(COMMENT_MOTION_MS)) +
+                            fadeOut(animationSpec = tween(COMMENT_MOTION_MS / 2)),
+                    ) {
+                        Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 3.dp, bottom = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (editTarget != null) "Editing your comment"
+                                    else "Replying to @${replyTarget?.userName.orEmpty()}",
+                                    Modifier.weight(1f),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                IconButton(onClick = {
+                                    replyTarget = null
+                                    editTarget = null
+                                    draft = ""
+                                }) { Icon(Icons.Default.Close, "Cancel") }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.Bottom,
+                    ) {
+                        CommentAvatar(user?.photoUrl?.toString().orEmpty(), Modifier.size(36.dp))
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it.take(700) },
+                            modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                            enabled = user != null && !sending,
+                            placeholder = {
+                                Text(
+                                    when {
+                                        user == null -> "Sign in to comment"
+                                        editTarget != null -> "Edit comment"
+                                        replyTarget != null -> "Reply to @${replyTarget?.userName.orEmpty()}"
+                                        else -> "Add a comment…"
+                                    },
+                                )
+                            },
+                            minLines = 1,
+                            maxLines = 5,
+                            shape = RoundedCornerShape(24.dp),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { submitDraft() }),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = if (user != null && draft.isNotBlank() && !sending) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        ) {
+                            IconButton(
+                                enabled = user != null && draft.isNotBlank() && !sending,
+                                onClick = ::submitDraft,
+                            ) {
+                                if (sending) {
+                                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(
+                                        Icons.Default.Send,
+                                        "Send",
+                                        tint = if (user != null && draft.isNotBlank()) {
+                                            MaterialTheme.colorScheme.onPrimary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -381,15 +495,20 @@ private fun YoutubeCommentThread(
     onDelete: (YoutubeClassComment) -> Unit,
 ) {
     val replies = repliesByParent[comment.id].orEmpty()
-    var expanded by remember(comment.id) { mutableStateOf(depth < 2) }
+    var expanded by remember(comment.id) { mutableStateOf(false) }
     var menuOpen by remember(comment.id) { mutableStateOf(false) }
     val canManage = currentUser?.uid == comment.userId
-    val indent = (depth.coerceAtMost(4) * 18).dp
+    val indent = if (depth == 0) 0.dp else 24.dp
 
-    Column(Modifier.fillMaxWidth().padding(start = 12.dp + indent, end = 12.dp, top = 9.dp, bottom = 4.dp)) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp + indent, end = 12.dp, top = 11.dp, bottom = 3.dp)
+            .animateContentSize(animationSpec = tween(COMMENT_MOTION_MS)),
+    ) {
         Row(verticalAlignment = Alignment.Top) {
-            CommentAvatar(comment.userPhoto, Modifier.size(if (depth == 0) 36.dp else 30.dp))
-            Spacer(Modifier.width(9.dp))
+            CommentAvatar(comment.userPhoto, Modifier.size(if (depth == 0) 40.dp else 32.dp))
+            Spacer(Modifier.width(if (depth == 0) 12.dp else 9.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("@${comment.userName}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
@@ -431,23 +550,36 @@ private fun YoutubeCommentThread(
                     }
                     if (replies.isNotEmpty()) {
                         TextButton(onClick = { expanded = !expanded }) {
-                            Text(if (expanded) "Hide replies" else "${replies.size} ${if (replies.size == 1) "reply" else "replies"}")
+                            Text(
+                                if (expanded) "Hide replies"
+                                else "View ${replies.size} ${if (replies.size == 1) "reply" else "replies"}",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
                         }
                     }
                 }
             }
         }
-        if (expanded && replies.isNotEmpty() && depth < 10) {
-            replies.forEach { reply ->
-                YoutubeCommentThread(
-                    comment = reply,
-                    repliesByParent = repliesByParent,
-                    currentUser = currentUser,
-                    depth = depth + 1,
-                    onReply = onReply,
-                    onEdit = onEdit,
-                    onDelete = onDelete,
-                )
+        AnimatedVisibility(
+            visible = expanded && replies.isNotEmpty() && depth < 6,
+            enter = expandVertically(animationSpec = tween(COMMENT_MOTION_MS), expandFrom = Alignment.Top) +
+                fadeIn(animationSpec = tween(COMMENT_MOTION_MS)),
+            exit = shrinkVertically(animationSpec = tween(COMMENT_MOTION_MS), shrinkTowards = Alignment.Top) +
+                fadeOut(animationSpec = tween(COMMENT_MOTION_MS / 2)),
+        ) {
+            Column {
+                replies.forEach { reply ->
+                    YoutubeCommentThread(
+                        comment = reply,
+                        repliesByParent = repliesByParent,
+                        currentUser = currentUser,
+                        depth = depth + 1,
+                        onReply = onReply,
+                        onEdit = onEdit,
+                        onDelete = onDelete,
+                    )
+                }
             }
         }
     }
@@ -576,3 +708,5 @@ private fun commentRelativeTime(time: Long): String {
         else -> "${delta / 31_536_000_000L}y"
     }
 }
+
+private const val COMMENT_MOTION_MS = 220

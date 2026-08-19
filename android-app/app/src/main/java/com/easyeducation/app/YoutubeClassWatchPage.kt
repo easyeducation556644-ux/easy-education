@@ -4,6 +4,10 @@ package com.easyeducation.app
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -601,14 +605,23 @@ private fun WatchActionChip(
     selected: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val targetColor = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        selected -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val animatedColor by animateColorAsState(
+        targetValue = targetColor,
+        animationSpec = tween(180),
+        label = "watch action color",
+    )
     Surface(
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable(enabled = enabled, onClick = onClick),
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .animateContentSize(animationSpec = tween(220))
+            .clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(999.dp),
-        color = when {
-            !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-            selected -> MaterialTheme.colorScheme.onSurface
-            else -> MaterialTheme.colorScheme.surfaceVariant
-        },
+        color = animatedColor,
     ) {
         Row(
             Modifier.padding(horizontal = 15.dp, vertical = 10.dp),
@@ -620,11 +633,15 @@ private fun WatchActionChip(
                     androidx.compose.material3.LocalContentColor provides MaterialTheme.colorScheme.surface,
                 ) {
                     icon()
-                    Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                    Crossfade(targetState = label, animationSpec = tween(180), label = "watch action label") {
+                        animatedLabel -> Text(animatedLabel, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             } else {
                 icon()
-                Text(label, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                Crossfade(targetState = label, animationSpec = tween(180), label = "watch action label") {
+                    animatedLabel -> Text(animatedLabel, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }

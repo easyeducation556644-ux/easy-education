@@ -50,7 +50,12 @@ object NativeInlineSurfaceRegistry {
     fun restore(player: ExoPlayer): Boolean {
         val host = hostRef.get() ?: return false
         if (classId.isBlank() || classId != PersistentNativePlayer.currentClassId()) return false
-        val surface = host.attachSharedSurface(NativeSharedPlayerSurface.obtain(host.context))
+        // During mini -> full expansion the target host exists underneath the live overlay. Using
+        // obtain() here used to reset/reparent the shared view as soon as the host was constructed,
+        // leaving the still-animating top shell as a one-frame black rectangle. Keep the current
+        // view in that shell until the morph is complete, then perform the one intentional move.
+        val shared = NativeSharedPlayerSurface.current() ?: NativeSharedPlayerSurface.obtain(host.context)
+        val surface = host.attachSharedSurface(shared)
         surface.bindPlayer(player)
         configureSurface?.invoke(surface)
         host.resetPagePresentation()
