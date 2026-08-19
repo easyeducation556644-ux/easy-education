@@ -991,12 +991,18 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
                     else -> Box(Modifier.fillMaxSize())
                 }
             }
-            AnimatedVisibility(
-                visible = loading && overlayState == "ready",
+            AnimatedContent(
+                targetState = loading && overlayState == "ready",
                 modifier = Modifier.align(Alignment.TopCenter),
-                enter = fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)),
-                exit = fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)),
-            ) { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)) togetherWith
+                        fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS))
+                },
+                label = "course store loading",
+            ) { showProgress ->
+                if (showProgress) LinearProgressIndicator(Modifier.fillMaxWidth())
+                else Spacer(Modifier.fillMaxWidth().height(4.dp))
+            }
         }
     }
 }
