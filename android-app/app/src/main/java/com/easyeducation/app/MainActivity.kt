@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,44 +21,65 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var viewModel: NativeAppViewModel
     private var initialPath by mutableStateOf<String?>(null)
+    private var loginBusy by mutableStateOf(false)
+    private var activeDeviceCount by mutableStateOf(0)
+    private var deviceListener: ListenerRegistration? = null
+
+    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
+        observeDeviceSession(auth.currentUser)
+    }
 
     private val googleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val account = runCatching {
             GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
-        }.getOrElse {
-            Toast.makeText(this, it.message ?: "Google sign-in failed", Toast.LENGTH_LONG).show()
+        }.getOrElse { error ->
+            loginBusy = false
+            if ((error as? ApiException)?.statusCode != 12501) {
+                Toast.makeText(this, error.message ?: "Google sign-in failed", Toast.LENGTH_LONG).show()
+            }
             return@registerForActivityResult
         }
         val idToken = account.idToken
         if (idToken.isNullOrBlank()) {
+            loginBusy = false
             Toast.makeText(this, "Google ID token was not returned", Toast.LENGTH_LONG).show()
             return@registerForActivityResult
         }
         FirebaseAuth.getInstance()
             .signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
-            .addOnSuccessListener {
+            .addOnSuccessListener { result ->
+                loginBusy = false
+                Toast.makeText(this, "Login successful", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch(Dispatchers.IO) {
+                    runCatching { NativeDeviceSession.registerFreshLogin(this@MainActivity, result.user!!) }
                     runCatching { NativePushRegistrar.register(this@MainActivity) }
+                    withContext(Dispatchers.Main) {
+                        observeDeviceSession(FirebaseAuth.getInstance().currentUser)
+                        viewModel.refreshOnline()
+                    }
                 }
             }
             .addOnFailureListener { error ->
+                loginBusy = false
                 Toast.makeText(this, error.message ?: "Firebase sign-in failed", Toast.LENGTH_LONG).show()
             }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
-        // Migration/cleanup must never be able to kill the launcher activity. A damaged legacy
-        // file can be retried/removed later; keeping the student in the app is more important.
         runCatching { LegacyDownloadCleanup.runOnce(this) }
         runCatching { SecureHlsDownloadService.cleanupPlaintext(this) }
         runCatching { SecureYoutubeDownloadService.cleanupPlaintext(this) }
@@ -77,18 +99,20 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST)
         }
 
+        FirebaseAuth.getInstance().addAuthStateListener(authStateListener)
+
         setContent {
             key(initialPath) {
                 EasyEducationSecureRoot(
                     viewModel = viewModel,
                     onGoogleSignIn = ::launchGoogleSignIn,
+                    loginBusy = loginBusy,
+                    activeDeviceCount = activeDeviceCount,
                     initialPath = initialPath,
                 )
             }
         }
 
-        // Resuming old queued work is best-effort. A stale task from an older APK must never crash
-        // the main UI during an upgrade.
         runCatching { SecureDownloadCoordinator.resumePending(this) }
         if (FirebaseAuth.getInstance().currentUser != null) {
             lifecycleScope.launch(Dispatchers.IO) {
@@ -98,15 +122,41 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchGoogleSignIn() {
+        if (loginBusy) return
+        loginBusy = true
         googleSignInClient.signOut().addOnCompleteListener {
             googleLauncher.launch(googleSignInClient.signInIntent)
         }
+    }
+
+    private fun observeDeviceSession(user: FirebaseUser?) {
+        deviceListener?.remove()
+        deviceListener = null
+        if (user == null) {
+            activeDeviceCount = 0
+            return
+        }
+        deviceListener = NativeDeviceSession.observe(
+            context = this,
+            user = user,
+            onDeviceCount = { count -> activeDeviceCount = count },
+            onForcedOut = { message ->
+                activeDeviceCount = 0
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            },
+        )
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         initialPath = intent.getStringExtra(EXTRA_OPEN_PATH)
+    }
+
+    override fun onDestroy() {
+        deviceListener?.remove()
+        FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
+        super.onDestroy()
     }
 
     companion object {
