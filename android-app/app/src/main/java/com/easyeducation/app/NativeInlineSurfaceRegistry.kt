@@ -1,5 +1,6 @@
 package com.easyeducation.app
 
+import android.graphics.Rect
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import java.lang.ref.WeakReference
@@ -38,6 +39,9 @@ object NativeInlineSurfaceRegistry {
     @Synchronized
     fun canRestore(): Boolean =
         hostRef.get() != null && classId.isNotBlank() && classId == PersistentNativePlayer.currentClassId()
+
+    @Synchronized
+    fun targetBounds(): Rect? = hostRef.get()?.globalBounds()
 
     @Synchronized
     fun restore(player: ExoPlayer): Boolean {
