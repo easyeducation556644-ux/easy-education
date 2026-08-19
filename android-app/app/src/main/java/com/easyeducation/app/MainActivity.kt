@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
         // download state is loaded so the app has a strict encrypted-only offline store.
         LegacyDownloadCleanup.runOnce(this)
         SecureHlsDownloadService.cleanupPlaintext(this)
+        SecureYoutubeDownloadService.cleanupPlaintext(this)
 
         initialPath = intent?.getStringExtra(EXTRA_OPEN_PATH)
         viewModel = ViewModelProvider(this)[NativeAppViewModel::class.java]
