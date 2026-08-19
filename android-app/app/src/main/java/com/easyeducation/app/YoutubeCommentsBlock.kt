@@ -3,17 +3,18 @@
 package com.easyeducation.app
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -52,7 +53,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -90,7 +90,6 @@ fun YoutubeCommentsBlock(
     modifier: Modifier = Modifier,
 ) {
     val db = remember { FirebaseFirestore.getInstance() }
-    val scope = rememberCoroutineScope()
     var comments by remember(classId) { mutableStateOf<List<YoutubeClassComment>>(emptyList()) }
     var loading by remember(classId) { mutableStateOf(true) }
     var sheetOpen by remember(classId) { mutableStateOf(false) }
@@ -105,24 +104,23 @@ fun YoutubeCommentsBlock(
                     error = "Comments are temporarily unavailable."
                     return@addSnapshotListener
                 }
-                comments = snapshot?.documents.orEmpty()
-                    .mapNotNull { doc ->
-                        val text = doc.getString("text").orEmpty().trim()
-                        if (text.isBlank()) return@mapNotNull null
-                        YoutubeClassComment(
-                            id = doc.id,
-                            userId = doc.getString("userId").orEmpty(),
-                            userName = doc.getString("userName").orEmpty().ifBlank { "Student" },
-                            userPhoto = doc.getString("userPhoto").orEmpty(),
-                            text = text,
-                            parentId = doc.getString("parentId").orEmpty(),
-                            isTopLevel = doc.getBoolean("isTopLevel") == true || doc.getString("parentId").isNullOrBlank(),
-                            replyToUserId = doc.getString("replyToUserId").orEmpty(),
-                            replyToUserName = doc.getString("replyToUserName").orEmpty(),
-                            timestamp = commentMillis(doc.get("timestamp")),
-                            editedAt = commentMillis(doc.get("editedAt")),
-                        )
-                    }
+                comments = snapshot?.documents.orEmpty().mapNotNull { doc ->
+                    val text = doc.getString("text").orEmpty().trim()
+                    if (text.isBlank()) return@mapNotNull null
+                    YoutubeClassComment(
+                        id = doc.id,
+                        userId = doc.getString("userId").orEmpty(),
+                        userName = doc.getString("userName").orEmpty().ifBlank { "Student" },
+                        userPhoto = doc.getString("userPhoto").orEmpty(),
+                        text = text,
+                        parentId = doc.getString("parentId").orEmpty(),
+                        isTopLevel = doc.getBoolean("isTopLevel") == true || doc.getString("parentId").isNullOrBlank(),
+                        replyToUserId = doc.getString("replyToUserId").orEmpty(),
+                        replyToUserName = doc.getString("replyToUserName").orEmpty(),
+                        timestamp = commentMillis(doc.get("timestamp")),
+                        editedAt = commentMillis(doc.get("editedAt")),
+                    )
+                }
                 loading = false
                 error = null
             }
@@ -155,7 +153,7 @@ fun YoutubeCommentsBlock(
                 Spacer(Modifier.width(4.dp))
                 Text("●", color = MaterialTheme.colorScheme.outlineVariant)
             }
-            Spacer(Modifier.height(9.dp))
+            Spacer(Modifier.size(9.dp))
             when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
@@ -166,14 +164,13 @@ fun YoutubeCommentsBlock(
                     CommentAvatar(preview.userPhoto, Modifier.size(32.dp))
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(preview.userName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                        Text(preview.displayText(), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Text("@${preview.userName}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        Text(preview.displayText(), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 else -> Text(
                     error ?: "No comments yet. Add the first comment.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
@@ -225,7 +222,13 @@ private fun YoutubeCommentsSheet(
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .navigationBarsPadding()
+                .imePadding(),
+        ) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 2.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -246,6 +249,7 @@ private fun YoutubeCommentsSheet(
                     )
                     else -> LazyColumn(
                         Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         items(topLevel, key = { it.id }) { comment ->
@@ -266,8 +270,8 @@ private fun YoutubeCommentsSheet(
                                 },
                                 onDelete = { target ->
                                     scope.launch {
-                                        val result = deleteCommentTree(db, target.id, comments)
-                                        result.onFailure { onMessage("Could not delete comment. Try again.") }
+                                        deleteCommentTree(db, target.id, comments)
+                                            .onFailure { onMessage("Could not delete comment. Try again.") }
                                     }
                                 },
                             )
@@ -282,9 +286,12 @@ private fun YoutubeCommentsSheet(
                         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        val label = if (editTarget != null) "Editing your comment"
-                        else "Replying to @${replyTarget?.userName.orEmpty()}"
-                        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            if (editTarget != null) "Editing your comment"
+                            else "Replying to @${replyTarget?.userName.orEmpty()}",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
                         IconButton(onClick = {
                             replyTarget = null
                             editTarget = null
@@ -341,7 +348,7 @@ private fun YoutubeCommentsSheet(
                                 editTarget = null
                                 replyTarget = null
                                 if (replying != null && replying.userId.isNotBlank() && replying.userId != currentUser.uid) {
-                                    scope.launch {
+                                    launch {
                                         NativeCommentReplyPush.send(
                                             parentCommentId = replying.id,
                                             classId = classId,
@@ -351,9 +358,7 @@ private fun YoutubeCommentsSheet(
                                         )
                                     }
                                 }
-                            }.onFailure {
-                                onMessage("Could not save comment. Try again.")
-                            }
+                            }.onFailure { onMessage("Could not save comment. Try again.") }
                         }
                     },
                 ) {
