@@ -12,6 +12,7 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
@@ -41,6 +42,8 @@ object NativeFullscreenOverlay {
     private var activeHeight: Int = 480
     private var dismissCallback: ((String) -> Unit)? = null
     private var closing = false
+    private val watchEasing = PathInterpolator(0.2f, 0f, 0f, 1f)
+    private val exitEasing = PathInterpolator(0.4f, 0f, 1f, 1f)
 
     fun show(
         activity: Activity,
@@ -137,6 +140,7 @@ object NativeFullscreenOverlay {
             .translationX(0f)
             .translationY(0f)
             .alpha(1f)
+            .setInterpolator(watchEasing)
             .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .start()
 
@@ -173,6 +177,7 @@ object NativeFullscreenOverlay {
             .translationX(animatedDirectionX * distance)
             .translationY(animatedDirectionY * distance)
             .alpha(0.96f)
+            .setInterpolator(exitEasing)
             .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .withEndAction { finishDismiss() }
             .start()
@@ -369,11 +374,10 @@ object NativeFullscreenOverlay {
         }
 
         private fun isSurfaceZone(x: Float, y: Float): Boolean {
-            if (width <= 0 || height <= 0) return true
-            if (y <= dp(66) || y >= height - dp(82)) return false
-            val centerBand = abs(y - height / 2f) <= dp(52)
-            val centerControls = centerBand && abs(x - width / 2f) <= dp(144)
-            return !centerControls
+            // Every pixel of the fullscreen video is drag-eligible. A normal tap still reaches the
+            // player because interception begins only after a vertical move crosses touch slop.
+            return width <= 0 || height <= 0 ||
+                (x >= 0f && x <= width.toFloat() && y >= 0f && y <= height.toFloat())
         }
 
         private fun applyTransform(dx: Float, dy: Float, p: Float) {
@@ -413,6 +417,7 @@ object NativeFullscreenOverlay {
                 .translationX(0f)
                 .translationY(0f)
                 .alpha(1f)
+                .setInterpolator(NativeFullscreenOverlay.watchEasing)
                 .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
                 .withEndAction {
                     video.elevation = 0f

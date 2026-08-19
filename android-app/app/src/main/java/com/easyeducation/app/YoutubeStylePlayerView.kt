@@ -340,7 +340,12 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 dragProgress = 0f
                 minimizeCommitted = false
                 rapidSeekSeconds = 0
-                downOnControl = interactiveControls().any { hit(it, ev.rawX, ev.rawY) }
+                // Hidden chrome must not keep owning its old child hit boxes. In particular, the
+                // invisible play/pause button sits in the middle of the video; treating that child
+                // as interactive is why side taps revealed controls while a centre tap did nothing.
+                downOnControl = controlsVisible &&
+                    controls.visibility == View.VISIBLE &&
+                    interactiveControls().any { hit(it, ev.rawX, ev.rawY) }
                 surfaceGestureOwned = !downOnControl && !isSeeking
                 longPressEligible = surfaceGestureOwned
                 if (surfaceGestureOwned) {
@@ -486,11 +491,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     )
 
     private fun hit(view: View, rawX: Float, rawY: Float): Boolean {
-        if (view.visibility != View.VISIBLE || !view.isEnabled) return false
+        if (!view.isEnabled || view.width <= 0 || view.height <= 0 || !isEffectivelyVisible(view)) return false
         val location = IntArray(2)
         view.getLocationOnScreen(location)
         return rawX >= location[0] && rawX <= location[0] + view.width &&
             rawY >= location[1] && rawY <= location[1] + view.height
+    }
+
+    private fun isEffectivelyVisible(view: View): Boolean {
+        var current: View? = view
+        while (current != null && current !== this) {
+            if (current.visibility != View.VISIBLE) return false
+            current = current.parent as? View
+        }
+        return current === this
     }
 
     private fun applyDragTransform(dy: Float, progress: Float) {

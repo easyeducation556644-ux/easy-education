@@ -86,7 +86,8 @@ fun NativeInlinePlayer(
         surface.onMinimize = minimize@{
             val activity = ctx.findActivity() ?: return@minimize
             val host = hostRef.get()
-            val sourceBounds = host?.globalBounds()
+            val handoff = host?.claimMiniPlayerHandoff()
+            val sourceBounds = handoff?.bounds ?: host?.globalBounds()
             PersistentNativePlayer.savePosition(ctx)
             handedToMini = true
             handedToFullscreen = false
@@ -98,6 +99,7 @@ fun NativeInlinePlayer(
                 title = title,
                 requestedHeight = requestedHeight,
                 sourceBounds = sourceBounds,
+                handoff = handoff,
                 onExpandToWatchPage = onExpandFromMini,
             )
             if (onMinimize != null) onMinimize()

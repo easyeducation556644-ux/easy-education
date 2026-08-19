@@ -11,6 +11,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import androidx.appcompat.widget.AppCompatImageButton
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -61,6 +62,7 @@ object NativeMiniPlayerOverlay {
         title: String,
         requestedHeight: Int,
         sourceBounds: Rect? = null,
+        handoff: NativeMiniPlayerHandoff? = null,
         onExpandToWatchPage: (() -> Unit)? = null,
     ) {
         if (host !== activity) dismiss(releasePlayer = false)
@@ -81,24 +83,40 @@ object NativeMiniPlayerOverlay {
         normalWidth = baseWidth
         normalHeight = baseHeight
 
-        val shell = FrameLayout(activity).apply {
+        val adoptedHandoff = handoff?.takeIf { candidate ->
+            candidate.surface === NativeSharedPlayerSurface.current() &&
+                candidate.surface.parent === candidate.shell &&
+                candidate.shell.parent === contentRoot
+        }
+        if (handoff != null && adoptedHandoff == null) {
+            (handoff.shell.parent as? ViewGroup)?.removeView(handoff.shell)
+        }
+
+        val shell = (adoptedHandoff?.shell ?: FrameLayout(activity)).apply {
+            animate().cancel()
             elevation = dp(activity, YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
+            clipChildren = true
             clipToOutline = true
             outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
             background = miniBackground(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP)
         }
         container = shell
 
-        val surface = NativeSharedPlayerSurface.detach() ?: NativeSharedPlayerSurface.obtain(activity)
+        val surface = adoptedHandoff?.surface
+            ?: NativeSharedPlayerSurface.detach()
+            ?: NativeSharedPlayerSurface.obtain(activity)
         surface.bindPlayer(exoPlayer)
         surface.setTitle(title)
         surface.setLoading(false)
         NativeSharedPlayerSurface.setMiniPresentation(surface, true)
         playerSurface = surface
-        shell.addView(
-            surface,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-        )
+        if (surface.parent !== shell) {
+            (surface.parent as? ViewGroup)?.removeView(surface)
+            shell.addView(
+                surface,
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+        }
 
         val gestureLayer = View(activity).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -142,10 +160,11 @@ object NativeMiniPlayerOverlay {
         play.setOnClickListener { if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play() }
         close.setOnClickListener {
             shell.animate().cancel()
+            val exitY = ((root?.height ?: shell.rootView.height) + dp(activity, 8)).toFloat()
             shell.animate()
-                .alpha(0f)
-                .scaleX(0.82f)
-                .scaleY(0.82f)
+                .y(exitY)
+                .alpha(0.92f)
+                .setInterpolator(EXIT_EASING)
                 .setDuration(YoutubeParityMotion.WATCH_DOWN_OUT_MS)
                 .withEndAction { dismiss(releasePlayer = true) }
                 .start()
@@ -245,8 +264,10 @@ object NativeMiniPlayerOverlay {
         fun targetX(): Float = (contentRoot.width - baseWidth - miniInset).coerceAtLeast(0).toFloat()
         fun targetY(): Float = (contentRoot.height - baseHeight - miniBottomInset).coerceAtLeast(0).toFloat()
 
-        val initialBounds = sourceBounds?.takeUnless { it.isEmpty }
+        val initialBounds = (adoptedHandoff?.bounds ?: sourceBounds)?.takeUnless { it.isEmpty }
         val hasSourceBounds = initialBounds != null
+        val transitionButtons = listOf(play, close, expand)
+        if (hasSourceBounds) transitionButtons.forEach { it.alpha = 0f }
         if (initialBounds != null) {
             val rootLocation = IntArray(2)
             contentRoot.getLocationOnScreen(rootLocation)
@@ -267,10 +288,13 @@ object NativeMiniPlayerOverlay {
             shell.scaleY = 0.82f
         }
 
-        contentRoot.addView(
-            shell,
-            FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.TOP or Gravity.START),
-        )
+        val shellParams = FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.TOP or Gravity.START)
+        if (shell.parent === contentRoot) {
+            shell.layoutParams = shellParams
+        } else {
+            (shell.parent as? ViewGroup)?.removeView(shell)
+            contentRoot.addView(shell, shellParams)
+        }
 
         shell.postOnAnimation {
             normalX = targetX()
@@ -281,11 +305,21 @@ object NativeMiniPlayerOverlay {
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
+                .setInterpolator(WATCH_EASING)
                 .setDuration(
                     if (hasSourceBounds) YoutubeParityMotion.WATCH_MIN_MAX_MS
                     else YoutubeParityMotion.WATCH_REVEAL_FROM_BOTTOM_MS,
                 )
                 .start()
+            if (hasSourceBounds) {
+                transitionButtons.forEach { button ->
+                    button.animate()
+                        .alpha(1f)
+                        .setStartDelay((YoutubeParityMotion.WATCH_MIN_MAX_MS * 0.56f).toLong())
+                        .setDuration(150L)
+                        .start()
+                }
+            }
         }
 
         play.bringToFront()
@@ -321,6 +355,7 @@ object NativeMiniPlayerOverlay {
             .scaleX(targetScale)
             .scaleY(targetScale)
             .alpha(1f)
+            .setInterpolator(WATCH_EASING)
             .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
             .withEndAction {
                 if (callback != null) {
@@ -514,7 +549,12 @@ object NativeMiniPlayerOverlay {
         val targetX = shell.x.coerceIn(0f, maxX)
         val targetY = shell.y.coerceIn(0f, maxY)
         if (animate) {
-            shell.animate().x(targetX).y(targetY).setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS).start()
+            shell.animate()
+                .x(targetX)
+                .y(targetY)
+                .setInterpolator(WATCH_EASING)
+                .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
+                .start()
         } else {
             shell.x = targetX
             shell.y = targetY
@@ -545,4 +585,7 @@ object NativeMiniPlayerOverlay {
 
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
+
+    private val WATCH_EASING = PathInterpolator(0.2f, 0f, 0f, 1f)
+    private val EXIT_EASING = PathInterpolator(0.4f, 0f, 1f, 1f)
 }

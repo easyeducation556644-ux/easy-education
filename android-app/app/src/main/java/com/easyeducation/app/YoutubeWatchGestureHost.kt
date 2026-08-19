@@ -11,10 +11,18 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import androidx.media3.common.util.UnstableApi
 import kotlin.math.abs
 import kotlin.math.hypot
+
+data class NativeMiniPlayerHandoff(
+    val shell: FrameLayout,
+    val surface: YoutubeStylePlayerView,
+    val bounds: Rect,
+)
 
 /**
  * Inline host for the one shared YoutubeStylePlayerView. Once a vertical drag crosses touch slop,
@@ -46,6 +54,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     private var sourceHeight = 0
     private var presentationPage: View? = null
     private var hasBackdrop = false
+    private var handoffClaimed = false
 
     init {
         clipChildren = false
@@ -168,6 +177,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         dragShell = shell
         dragRoot = root
         dragging = true
+        handoffClaimed = false
 
         surface.cancelPendingSurfaceGesture()
         NativeSharedPlayerSurface.setMiniPresentation(surface, true)
@@ -183,18 +193,33 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         val root = dragRoot ?: return
         val shell = dragShell ?: return
         val positiveY = dy.coerceAtLeast(0f)
-        val denominator = root.height.coerceAtLeast(dp(360)) * 0.58f
+        val miniWidth = dp(if (resources.configuration.smallestScreenWidthDp >= 600) 340 else 252)
+        val miniHeight = (miniWidth * 9f / 16f).toInt()
+        val miniInset = dp(YoutubeParityMotion.MINI_INSET_DP)
+        val targetX = (root.width - miniWidth - miniInset).coerceAtLeast(0).toFloat()
+        val targetY = (root.height - miniHeight - dp(MINI_BOTTOM_CLEARANCE_DP)).coerceAtLeast(0).toFloat()
+        val denominator = (targetY - sourceY).coerceAtLeast(root.height.coerceAtLeast(dp(360)) * 0.38f)
         progress = (positiveY / denominator).coerceIn(0f, 1f)
 
-        val targetScale = 1f - 0.43f * progress
-        shell.pivotX = shell.width / 2f
-        shell.pivotY = shell.height / 2f
-        shell.scaleX = targetScale
-        shell.scaleY = targetScale
-        shell.x = (sourceX + dx * 0.76f + (root.width - sourceWidth) * 0.10f * progress)
-            .coerceIn(-sourceWidth * 0.18f, root.width - sourceWidth * targetScale * 0.72f)
-        shell.y = (sourceY + positiveY * 0.84f).coerceAtMost(root.height - sourceHeight * targetScale * 0.30f)
-        shell.background = roundedBlack(dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * progress)
+        val targetScaleX = miniWidth.toFloat() / sourceWidth.coerceAtLeast(1)
+        val targetScaleY = miniHeight.toFloat() / sourceHeight.coerceAtLeast(1)
+        val scaleXNow = lerp(1f, targetScaleX, progress)
+        val scaleYNow = lerp(1f, targetScaleY, progress)
+        shell.pivotX = 0f
+        shell.pivotY = 0f
+        shell.scaleX = scaleXNow
+        shell.scaleY = scaleYNow
+        val horizontalFollow = dx * (1f - progress) * 0.20f
+        val visualWidth = sourceWidth * scaleXNow
+        val visualHeight = sourceHeight * scaleYNow
+        shell.x = (lerp(sourceX, targetX, progress) + horizontalFollow)
+            .coerceIn(0f, (root.width - visualWidth).coerceAtLeast(0f))
+        shell.y = lerp(sourceY, targetY, progress)
+            .coerceIn(0f, (root.height - visualHeight).coerceAtLeast(0f))
+        val visualScale = ((scaleXNow + scaleYNow) / 2f).coerceAtLeast(0.08f)
+        shell.background = roundedBlack(
+            dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * progress / visualScale,
+        )
         shell.elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
         applyBackgroundProgress(progress, positiveY)
     }
@@ -208,19 +233,14 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             if (hasBackdrop) page.alpha = 0f
         }
         surface.onMinimize?.invoke()
-        post {
+        if (!handoffClaimed) {
             if (surface.parent === shell) shell.removeView(surface)
             (shell.parent as? ViewGroup)?.removeView(shell)
-            dragShell = null
-            dragRoot = null
-            // The class destination has a zero-duration pop transition. Keep the captured previous
-            // page visible for two UI frames while Compose swaps destinations, then reveal the live
-            // destination and release the snapshot. This prevents the one-frame black flash.
-            postDelayed({
-                resetPagePresentation()
-                releaseBackdrop(clearSnapshot = true)
-            }, HANDOFF_SETTLE_MS)
         }
+        dragShell = null
+        dragRoot = null
+        settleCommittedPage()
+        handoffClaimed = false
     }
 
     private fun animateFloatingBack() {
@@ -233,6 +253,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             .y(sourceY)
             .scaleX(1f)
             .scaleY(1f)
+            .setInterpolator(WATCH_EASING)
             .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
             .withEndAction {
                 if (surface.parent === shell) shell.removeView(surface)
@@ -263,11 +284,11 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         page.animate().cancel()
         page.pivotX = page.width / 2f
         page.pivotY = 0f
-        val scale = 1f - 0.012f * p
+        val scale = 1f - 0.014f * p
         page.scaleX = scale
         page.scaleY = scale
-        page.translationY = dragY * 0.38f
-        page.alpha = 1f
+        page.translationY = dragY * 0.84f
+        page.alpha = if (hasBackdrop) (1f - 1.18f * p).coerceAtLeast(0.18f) else 1f
     }
 
     private fun animateBackgroundReset() {
@@ -278,8 +299,40 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             .scaleY(1f)
             .translationY(0f)
             .alpha(1f)
+            .setInterpolator(WATCH_EASING)
             .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .start()
+    }
+
+    private fun settleCommittedPage() {
+        val page = presentationPage
+        if (page == null) {
+            resetPagePresentation()
+            releaseBackdrop(clearSnapshot = true)
+            return
+        }
+
+        var drawCount = 0
+        var completed = false
+        lateinit var listener: ViewTreeObserver.OnPreDrawListener
+        fun complete() {
+            if (completed) return
+            completed = true
+            val observer = page.viewTreeObserver
+            if (observer.isAlive) observer.removeOnPreDrawListener(listener)
+            resetPageImmediately(page)
+            resetPagePresentation()
+            releaseBackdrop(clearSnapshot = true)
+        }
+
+        listener = ViewTreeObserver.OnPreDrawListener {
+            drawCount += 1
+            if (drawCount >= 2) page.post { complete() }
+            true
+        }
+        val observer = page.viewTreeObserver
+        if (observer.isAlive) observer.addOnPreDrawListener(listener) else complete()
+        page.postDelayed({ complete() }, HANDOFF_MAX_WAIT_MS)
     }
 
     private fun resetPageImmediately(page: View) {
@@ -319,6 +372,19 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         playerSurface.alpha = 1f
     }
 
+    /** Transfer the exact shell currently under the finger; no reparent/frame swap is needed. */
+    fun claimMiniPlayerHandoff(): NativeMiniPlayerHandoff? {
+        val shell = dragShell ?: return null
+        val surface = playerSurface
+        if (surface.parent !== shell) return null
+        val bounds = Rect()
+        if (!shell.getGlobalVisibleRect(bounds) || bounds.isEmpty) return null
+        handoffClaimed = true
+        dragShell = null
+        dragRoot = null
+        return NativeMiniPlayerHandoff(shell = shell, surface = surface, bounds = bounds)
+    }
+
     private fun releaseBackdrop(clearSnapshot: Boolean) {
         NativeWatchBackdrop.detach(clearSnapshot)
         presentationPage = null
@@ -355,10 +421,13 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun dpF(value: Int): Float = value * resources.displayMetrics.density
+    private fun lerp(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
 
     companion object {
         private const val MINI_COMMIT_FRACTION = 0.30f
         private const val MINI_COMMIT_VELOCITY = 900f
-        private const val HANDOFF_SETTLE_MS = 80L
+        private const val MINI_BOTTOM_CLEARANCE_DP = 82
+        private const val HANDOFF_MAX_WAIT_MS = 260L
+        private val WATCH_EASING = PathInterpolator(0.2f, 0f, 0f, 1f)
     }
 }
