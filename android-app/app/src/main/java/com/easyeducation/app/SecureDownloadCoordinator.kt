@@ -23,8 +23,8 @@ object SecureDownloadCoordinator {
                 previous.sourceKind != task.sourceKind
             )
         if (sourceChanged || previous?.state == "completed") {
+            purgeWorkingFiles(context, task.id)
             store.resetChunks(task.id)
-            SecureHlsDownloadService.tempDir(context, task.id).deleteRecursively()
         }
         val queued = task.copy(
             generation = generation,
@@ -84,9 +84,10 @@ object SecureDownloadCoordinator {
         SecureHlsDownloadService.cancelActiveTransform(id)
         val store = SecureMediaStore(context)
         store.get(id)?.let { store.save(it.copy(state = "deleting", phase = "deleting")) }
-        SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
+        purgeWorkingFiles(context, id)
         store.remove(id)
-        SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
+        // Repeat after workers unwind so no stale app-private temp path survives deletion.
+        purgeWorkingFiles(context, id)
         store.secureDir(id).deleteRecursively()
         DownloadNotifier(context).cancelAll(id)
     }
@@ -102,10 +103,12 @@ object SecureDownloadCoordinator {
     }
 
     private fun launch(context: Context, task: SecureDownloadTask) {
-        val service = if (task.sourceKind == "hls" || isHlsSource(task.sourceUrl)) {
-            SecureHlsDownloadService::class.java
-        } else {
-            SecureDownloadService::class.java
+        val service = when {
+            task.sourceKind == "youtube" || YoutubeDeviceResolver.isYoutubeUrl(task.sourceUrl) ->
+                SecureYoutubeDownloadService::class.java
+            task.sourceKind in setOf("hls", "rumble-hls") || isHlsSource(task.sourceUrl) ->
+                SecureHlsDownloadService::class.java
+            else -> SecureDownloadService::class.java
         }
         ContextCompat.startForegroundService(
             context,
@@ -113,6 +116,11 @@ object SecureDownloadCoordinator {
                 .putExtra(SecureDownloadService.EXTRA_ID, task.id)
                 .putExtra(SecureDownloadService.EXTRA_GENERATION, task.generation),
         )
+    }
+
+    private fun purgeWorkingFiles(context: Context, id: String) {
+        SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
+        SecureYoutubeDownloadService.tempDir(context, id).deleteRecursively()
     }
 
     private fun nextGeneration(task: SecureDownloadTask?): Long =
