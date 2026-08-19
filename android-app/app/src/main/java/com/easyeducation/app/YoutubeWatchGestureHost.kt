@@ -80,9 +80,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
                 if (!eligible) return false
                 val dx = event.x - downX
                 val dy = event.y - downY
-                if (!dragging && dy > touchSlop && abs(dy) > abs(dx) * 0.92f) {
-                    beginFloatingDrag()
-                }
+                if (!dragging && dy > touchSlop && abs(dy) > abs(dx) * 0.92f) beginFloatingDrag()
                 if (dragging) {
                     updateFloatingDrag(dx, dy)
                     return true
@@ -151,8 +149,8 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         val shell = FrameLayout(context).apply {
             clipChildren = true
             clipToOutline = true
-            elevation = dp(18).toFloat()
-            outlineProvider = ViewOutlineProvider.BACKGROUND
+            elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
+            outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
             background = roundedBlack(0f)
             x = sourceX
             y = sourceY
@@ -174,7 +172,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         val root = dragRoot ?: return
         val shell = dragShell ?: return
         val positiveY = dy.coerceAtLeast(0f)
-        val denominator = (root.height.coerceAtLeast(dp(360)) * 0.58f)
+        val denominator = root.height.coerceAtLeast(dp(360)) * 0.58f
         progress = (positiveY / denominator).coerceIn(0f, 1f)
 
         val targetScale = 1f - 0.43f * progress
@@ -185,8 +183,8 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         shell.x = (sourceX + dx * 0.76f + (root.width - sourceWidth) * 0.10f * progress)
             .coerceIn(-sourceWidth * 0.18f, root.width - sourceWidth * targetScale * 0.72f)
         shell.y = (sourceY + positiveY * 0.84f).coerceAtMost(root.height - sourceHeight * targetScale * 0.30f)
-        shell.background = roundedBlack(dpF(18) * progress)
-        shell.elevation = dp(18).toFloat() + dp(6) * progress
+        shell.background = roundedBlack(dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * progress)
+        shell.elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
         applyBackgroundProgress(progress)
     }
 
@@ -195,8 +193,6 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         val surface = playerSurface
         shell.animate().cancel()
         applyBackgroundProgress(1f)
-        // NativeMiniPlayerOverlay reads the transformed shared surface bounds and reparents this
-        // exact view. The media item/player are untouched.
         surface.onMinimize?.invoke()
         post {
             if (surface.parent === shell) shell.removeView(surface)
@@ -217,7 +213,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             .y(sourceY)
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(220L)
+            .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
             .withEndAction {
                 if (surface.parent === shell) shell.removeView(surface)
                 (shell.parent as? ViewGroup)?.removeView(shell)
@@ -251,7 +247,12 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     private fun animateBackgroundReset() {
         val page = composePageRoot() ?: return
         page.animate().cancel()
-        page.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(210L).start()
+        page.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .alpha(1f)
+            .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
+            .start()
     }
 
     private fun resetPageImmediately(page: View) {
