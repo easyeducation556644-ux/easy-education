@@ -32,14 +32,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.media3.exoplayer.ExoPlayer
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
- * Inline instance of the same native player shell used by fullscreen and offline playback.
- * YouTube adaptive streams are merged at MediaSource level, so online playback no longer depends on
- * a legacy single-file progressive format existing for the requested quality.
+ * Inline surface for the process-local persistent player. Inline, fullscreen and miniplayer attach
+ * to the same ExoPlayer instance, so changing presentation does not re-resolve YouTube/Rumble,
+ * recreate the decoder or throw away buffered media.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -49,23 +46,27 @@ fun NativeInlinePlayer(
     modifier: Modifier = Modifier,
     requestedHeight: Int = 480,
     title: String = "",
+    onBack: (() -> Unit)? = null,
     onMinimize: (() -> Unit)? = null,
     onFullscreen: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val exoPlayer = remember(classId) { ExoPlayer.Builder(context).build() }
-    var handedToMini by remember(exoPlayer) { mutableStateOf(false) }
+    val exoPlayer = remember { PersistentNativePlayer.player(context) }
+    var handedToMini by remember(classId) { mutableStateOf(false) }
+    var handedToFullscreen by remember(classId) { mutableStateOf(false) }
     var loading by remember(classId, sourceUrl) { mutableStateOf(sourceUrl.isNotBlank() && online) }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
-    val progressKey = remember(classId) { "class:$classId" }
 
-    DisposableEffect(exoPlayer, lifecycleOwner, progressKey) {
+    DisposableEffect(lifecycleOwner, classId) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    if (!handedToMini) handedToFullscreen = false
+                }
                 Lifecycle.Event.ON_STOP -> {
-                    savePosition(context, progressKey, exoPlayer.currentPosition)
-                    exoPlayer.pause()
+                    PersistentNativePlayer.savePosition(context)
+                    if (!handedToMini && !handedToFullscreen) PersistentNativePlayer.pause()
                 }
                 else -> Unit
             }
@@ -73,33 +74,32 @@ fun NativeInlinePlayer(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            savePosition(context, progressKey, exoPlayer.currentPosition)
-            if (!handedToMini && !NativeMiniPlayerOverlay.owns(exoPlayer)) exoPlayer.release()
+            PersistentNativePlayer.savePosition(context)
+            if (!handedToMini && !handedToFullscreen &&
+                PersistentNativePlayer.currentClassId() == classId
+            ) {
+                PersistentNativePlayer.pause()
+            }
         }
     }
 
     LaunchedEffect(classId, sourceUrl, online, requestedHeight) {
         if (!online || sourceUrl.isBlank()) {
             loading = false
-            exoPlayer.stop()
+            errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
         loading = true
         errorText = null
-        val resolved = withContext(Dispatchers.IO) {
-            runCatching {
-                NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
-            }
-        }
-        resolved.onSuccess { source ->
-            runCatching {
-                exoPlayer.setMediaSource(NativePlaybackSourceResolver.toMediaSource(source))
-                val saved = context.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-                    .getLong(progressKey, 0L)
-                exoPlayer.prepare()
-                if (saved > 0L) exoPlayer.seekTo(saved)
-                exoPlayer.playWhenReady = true
-            }.onFailure { error -> errorText = friendlyPlayerError(error.message) }
+        runCatching {
+            PersistentNativePlayer.ensureOnline(
+                context = context,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                requestedHeight = requestedHeight,
+                autoPlay = true,
+            )
+        }.onSuccess {
             loading = false
         }.onFailure { error ->
             loading = false
@@ -109,8 +109,9 @@ fun NativeInlinePlayer(
 
     fun minimizePlayer() {
         val activity = context.findActivity() ?: return
-        savePosition(context, progressKey, exoPlayer.currentPosition)
+        PersistentNativePlayer.savePosition(context)
         handedToMini = true
+        handedToFullscreen = false
         NativeMiniPlayerOverlay.show(
             activity = activity,
             exoPlayer = exoPlayer,
@@ -123,8 +124,26 @@ fun NativeInlinePlayer(
         else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
     }
 
-    // The same ExoPlayer is now rendering in the persistent overlay. Removing this slot makes the
-    // watch page collapse upward instead of leaving a black 16:9 hole behind.
+    fun fullscreenPlayer() {
+        val activity = context.findActivity() ?: return
+        PersistentNativePlayer.savePosition(context)
+        handedToFullscreen = true
+        onFullscreen?.invoke() ?: run {
+            activity.startActivity(
+                Intent(activity, NativePlayerActivity::class.java)
+                    .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
+                    .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
+                    .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
+                    .putExtra(NativePlayerActivity.EXTRA_TITLE, title)
+                    .putExtra(NativePlayerActivity.EXTRA_SHARED_SESSION, true),
+            )
+            @Suppress("DEPRECATION")
+            activity.overridePendingTransition(0, 0)
+        }
+    }
+
+    // Once minimized the player is physically rendering in the activity overlay, while the watch
+    // route is popped. Do not leave a dead black 16:9 slot behind.
     if (handedToMini) return
 
     Box(
@@ -138,41 +157,35 @@ fun NativeInlinePlayer(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 YoutubeStylePlayerView(ctx).apply {
-                    bindPlayer(exoPlayer)
+                    bindPlayer(if (handedToFullscreen) null else exoPlayer)
                     setTitle(title)
                     setLoading(loading)
-                    this.onMinimize = { minimizePlayer() }
-                    this.onFullscreen = {
-                        onFullscreen?.invoke() ?: ctx.startActivity(
-                            Intent(ctx, NativePlayerActivity::class.java)
-                                .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
-                                .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
-                                .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
-                                .putExtra(NativePlayerActivity.EXTRA_TITLE, title),
-                        )
+                    this.onBack = {
+                        onBack?.invoke()
+                            ?: (ctx.findActivity() as? ComponentActivity)
+                                ?.onBackPressedDispatcher?.onBackPressed()
                     }
+                    this.onMinimize = { minimizePlayer() }
+                    this.onFullscreen = { fullscreenPlayer() }
                 }
             },
             update = { view ->
-                view.bindPlayer(exoPlayer)
+                view.bindPlayer(if (handedToFullscreen) null else exoPlayer)
                 view.setTitle(title)
                 view.setLoading(loading)
-                view.onMinimize = { minimizePlayer() }
-                view.onFullscreen = {
-                    onFullscreen?.invoke() ?: context.startActivity(
-                        Intent(context, NativePlayerActivity::class.java)
-                            .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
-                            .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
-                            .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
-                            .putExtra(NativePlayerActivity.EXTRA_TITLE, title),
-                    )
+                view.onBack = {
+                    onBack?.invoke()
+                        ?: (context.findActivity() as? ComponentActivity)
+                            ?.onBackPressedDispatcher?.onBackPressed()
                 }
+                view.onMinimize = { minimizePlayer() }
+                view.onFullscreen = { fullscreenPlayer() }
             },
         )
 
         when {
             !online -> Text(
-                "Offline • open the saved class from Downloads",
+                "No internet • downloaded classes are available from Downloads",
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(20.dp),
@@ -202,12 +215,6 @@ private fun Context.findActivity(): Activity? {
     return current as? Activity
 }
 
-private fun savePosition(context: Context, key: String, position: Long) {
-    if (position <= 0L) return
-    context.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-        .edit().putLong(key, position).apply()
-}
-
 private fun friendlyPlayerError(message: String?): String {
     val value = message.orEmpty()
     return when {
@@ -219,5 +226,3 @@ private fun friendlyPlayerError(message: String?): String {
         else -> value
     }
 }
-
-private const val PLAYER_PREFS = "native_player_positions_v2"
