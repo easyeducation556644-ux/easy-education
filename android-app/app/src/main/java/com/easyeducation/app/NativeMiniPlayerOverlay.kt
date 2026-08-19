@@ -20,6 +20,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.google.firebase.auth.FirebaseAuth
 import kotlin.math.abs
 
 /**
@@ -34,6 +35,7 @@ object NativeMiniPlayerOverlay {
     private var player: ExoPlayer? = null
     private var lifecycleOwner: LifecycleOwner? = null
     private var lifecycleObserver: DefaultLifecycleObserver? = null
+    private var authListener: FirebaseAuth.AuthStateListener? = null
 
     fun show(
         activity: Activity,
@@ -154,12 +156,10 @@ object NativeMiniPlayerOverlay {
             bottomMargin = dp(activity, 48)
         })
 
-        // The large expand target sits behind the actual controls.
         play.bringToFront()
         titleBar.bringToFront()
         close.bringToFront()
 
-        // Drag the title strip to park the miniplayer anywhere inside the app window.
         var downRawX = 0f
         var downRawY = 0f
         var startX = 0f
@@ -210,6 +210,7 @@ object NativeMiniPlayerOverlay {
             .start()
 
         attachLifecycle(activity, exoPlayer, play)
+        attachAuthListener(exoPlayer)
     }
 
     fun dismiss(releasePlayer: Boolean = true) {
@@ -217,6 +218,7 @@ object NativeMiniPlayerOverlay {
         if (releasePlayer) player?.release()
         player = null
         detachLifecycle()
+        detachAuthListener()
         host = null
     }
 
@@ -240,6 +242,21 @@ object NativeMiniPlayerOverlay {
         lifecycleOwner = owner
         lifecycleObserver = observer
         owner.lifecycle.addObserver(observer)
+    }
+
+    private fun attachAuthListener(exoPlayer: ExoPlayer) {
+        detachAuthListener()
+        val auth = FirebaseAuth.getInstance()
+        val listener = FirebaseAuth.AuthStateListener { state ->
+            if (state.currentUser == null && player === exoPlayer) dismiss(releasePlayer = true)
+        }
+        authListener = listener
+        auth.addAuthStateListener(listener)
+    }
+
+    private fun detachAuthListener() {
+        authListener?.let { FirebaseAuth.getInstance().removeAuthStateListener(it) }
+        authListener = null
     }
 
     private fun detachLifecycle() {
