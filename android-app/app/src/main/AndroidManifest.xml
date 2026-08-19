@@ -38,6 +38,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
+            android:name=".SecureYoutubeDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
             android:name=".SecureHlsDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
