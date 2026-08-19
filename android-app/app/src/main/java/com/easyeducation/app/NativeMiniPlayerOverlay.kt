@@ -4,18 +4,17 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.appcompat.widget.AppCompatImageButton
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -24,9 +23,8 @@ import com.google.firebase.auth.FirebaseAuth
 import kotlin.math.abs
 
 /**
- * Persistent in-app miniplayer. The watch page hands the same ExoPlayer instance here so buffer,
- * decoder state, position and speed survive the transition. Expand hands that same session to the
- * fullscreen activity instead of releasing and resolving again.
+ * Persistent draggable in-app miniplayer. The full video surface is the drag handle (except the
+ * actual control buttons), so users do not need to discover a tiny title bar before drag/drop works.
  */
 @UnstableApi
 object NativeMiniPlayerOverlay {
@@ -37,6 +35,7 @@ object NativeMiniPlayerOverlay {
     private var lifecycleOwner: LifecycleOwner? = null
     private var lifecycleObserver: DefaultLifecycleObserver? = null
     private var authListener: FirebaseAuth.AuthStateListener? = null
+    private var playerListener: Player.Listener? = null
     private var suppressNextPause = false
 
     fun show(
@@ -49,15 +48,15 @@ object NativeMiniPlayerOverlay {
     ) {
         if (host !== activity) dismiss(releasePlayer = true)
         removeContainerOnly()
+        detachPlayerListener()
         host = activity
         player = exoPlayer
         suppressNextPause = false
 
         val root = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
-        val width = dp(activity, if (activity.resources.configuration.smallestScreenWidthDp >= 600) 320 else 244)
+        val width = dp(activity, if (activity.resources.configuration.smallestScreenWidthDp >= 600) 330 else 252)
         val height = (width * 9f / 16f).toInt()
         val shell = FrameLayout(activity).apply {
-            setBackgroundColor(Color.BLACK)
             elevation = dp(activity, 18).toFloat()
             clipToOutline = true
             outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
@@ -78,19 +77,7 @@ object NativeMiniPlayerOverlay {
         videoView = pv
         shell.addView(
             pv,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
-
-        val shade = View(activity).apply { setBackgroundColor(Color.argb(28, 0, 0, 0)) }
-        shell.addView(
-            shade,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
 
         fun expandSharedPlayer() {
@@ -109,92 +96,58 @@ object NativeMiniPlayerOverlay {
             activity.overridePendingTransition(0, 0)
         }
 
-        val play = TextView(activity).apply {
-            text = if (exoPlayer.isPlaying) "❚❚" else "▶"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, Typeface.BOLD)
-            background = circle(Color.argb(150, 10, 10, 10))
-            setOnClickListener {
-                if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                text = if (exoPlayer.isPlaying) "❚❚" else "▶"
-            }
+        val dragLayer = View(activity).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true
         }
-        shell.addView(play, FrameLayout.LayoutParams(dp(activity, 48), dp(activity, 48), Gravity.CENTER))
+        shell.addView(
+            dragLayer,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
 
-        val close = TextView(activity).apply {
-            text = "×"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            background = circle(Color.argb(145, 15, 15, 15))
-            contentDescription = "Close mini player"
-            setOnClickListener { dismiss(releasePlayer = true) }
-        }
+        val play = miniButton(activity, if (exoPlayer.isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play, "Play or pause")
+        shell.addView(
+            play,
+            FrameLayout.LayoutParams(dp(activity, 50), dp(activity, 50), Gravity.CENTER),
+        )
+
+        val close = miniButton(activity, R.drawable.ic_player_close, "Close mini player")
         shell.addView(
             close,
-            FrameLayout.LayoutParams(dp(activity, 38), dp(activity, 38), Gravity.TOP or Gravity.END).apply {
-                topMargin = dp(activity, 5)
-                marginEnd = dp(activity, 5)
+            FrameLayout.LayoutParams(dp(activity, 42), dp(activity, 42), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(activity, 4)
+                marginEnd = dp(activity, 4)
             },
         )
 
-        val titleBar = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(activity, 9), 0, dp(activity, 48), 0)
-            setBackgroundColor(Color.argb(86, 0, 0, 0))
+        play.setOnClickListener {
+            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
         }
-        val label = TextView(activity).apply {
-            text = title.ifBlank { "Class" }
-            textSize = 11.5f
-            maxLines = 1
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, Typeface.BOLD)
+        close.setOnClickListener { dismiss(releasePlayer = true) }
+
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                play.setImageResource(if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play)
+            }
         }
-        titleBar.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        shell.addView(
-            titleBar,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(activity, 42),
-                Gravity.TOP,
-            ),
-        )
+        playerListener = listener
+        exoPlayer.addListener(listener)
 
-        val expandTap = View(activity).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { expandSharedPlayer() }
-        }
-        shell.addView(
-            expandTap,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ).apply {
-                topMargin = dp(activity, 42)
-                bottomMargin = dp(activity, 48)
-            },
-        )
-
-        play.bringToFront()
-        titleBar.bringToFront()
-        close.bringToFront()
-
+        val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
         var downRawX = 0f
         var downRawY = 0f
         var startX = 0f
         var startY = 0f
-        var downAt = 0L
-        titleBar.setOnTouchListener { view, event ->
+        var dragging = false
+
+        dragLayer.setOnTouchListener { view, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
                     downRawY = event.rawY
                     startX = shell.x
                     startY = shell.y
-                    downAt = SystemClock.uptimeMillis()
+                    dragging = false
                     shell.animate().cancel()
                     true
                 }
@@ -202,31 +155,52 @@ object NativeMiniPlayerOverlay {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downRawX
                     val dy = event.rawY - downRawY
-                    val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
-                    val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
-                    shell.x = (startX + dx).coerceIn(0f, maxX)
-                    shell.y = (startY + dy).coerceIn(0f, maxY)
+                    if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) dragging = true
+                    if (dragging) {
+                        val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
+                        val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
+                        shell.x = (startX + dx).coerceIn(0f, maxX)
+                        shell.y = (startY + dy).coerceIn(0f, maxY)
+                        val verticalTravel = if (root.height > 0) dy / root.height else 0f
+                        shell.alpha = (1f - verticalTravel.coerceAtLeast(0f) * 0.65f).coerceIn(0.55f, 1f)
+                    }
                     true
                 }
 
                 MotionEvent.ACTION_UP -> {
                     val dx = event.rawX - downRawX
                     val dy = event.rawY - downRawY
-                    val moved = abs(dx) > dp(activity, 8) || abs(dy) > dp(activity, 8)
                     when {
-                        dy < -dp(activity, 86) && abs(dy) > abs(dx) -> expandSharedPlayer()
-                        dy > dp(activity, 118) && abs(dy) > abs(dx) -> dismiss(releasePlayer = true)
-                        moved -> {
-                            val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
-                            val targetX = if (shell.x + shell.width / 2f < root.width / 2f) 0f else maxX
-                            shell.animate().x(targetX).setDuration(170L).start()
+                        !dragging -> {
+                            view.performClick()
+                            expandSharedPlayer()
                         }
-                        SystemClock.uptimeMillis() - downAt < 250L -> view.performClick()
+                        dy < -dp(activity, 86) && abs(dy) > abs(dx) -> expandSharedPlayer()
+                        dy > dp(activity, 135) && abs(dy) > abs(dx) -> {
+                            shell.animate().alpha(0f).translationY(dp(activity, 100).toFloat()).setDuration(140L)
+                                .withEndAction { dismiss(releasePlayer = true) }.start()
+                        }
+                        else -> {
+                            val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
+                            val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
+                            val targetX = if (shell.x + shell.width / 2f < root.width / 2f) 0f else maxX
+                            val targetY = shell.y.coerceIn(0f, maxY)
+                            shell.animate()
+                                .x(targetX)
+                                .y(targetY)
+                                .alpha(1f)
+                                .setDuration(180L)
+                                .start()
+                        }
                     }
                     true
                 }
 
-                MotionEvent.ACTION_CANCEL -> true
+                MotionEvent.ACTION_CANCEL -> {
+                    shell.animate().alpha(1f).setDuration(120L).start()
+                    true
+                }
+
                 else -> true
             }
         }
@@ -234,33 +208,32 @@ object NativeMiniPlayerOverlay {
         root.addView(
             shell,
             FrameLayout.LayoutParams(width, height, Gravity.BOTTOM or Gravity.END).apply {
-                marginEnd = dp(activity, 12)
-                bottomMargin = dp(activity, 86)
+                marginEnd = dp(activity, 10)
+                bottomMargin = dp(activity, 82)
             },
         )
         shell.alpha = 0f
-        shell.scaleX = 0.86f
-        shell.scaleY = 0.86f
-        shell.translationY = dp(activity, 36).toFloat()
+        shell.scaleX = 0.82f
+        shell.scaleY = 0.82f
+        shell.translationY = dp(activity, 44).toFloat()
         shell.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
             .translationY(0f)
-            .setDuration(190L)
+            .setDuration(180L)
             .start()
 
+        play.bringToFront()
+        close.bringToFront()
         attachLifecycle(activity, exoPlayer, play)
         attachAuthListener(exoPlayer)
     }
 
-    /**
-     * releasePlayer=true means the user explicitly closed playback. PersistentNativePlayer is not
-     * released as an object; its media session is stopped/cleared so the singleton remains reusable.
-     */
     fun dismiss(releasePlayer: Boolean = true) {
         val currentHost = host
         val currentPlayer = player
+        detachPlayerListener()
         removeContainerOnly()
         player = null
         detachLifecycle()
@@ -273,7 +246,7 @@ object NativeMiniPlayerOverlay {
 
     fun owns(exoPlayer: ExoPlayer): Boolean = player === exoPlayer && container != null
 
-    private fun attachLifecycle(activity: Activity, exoPlayer: ExoPlayer, playButton: TextView) {
+    private fun attachLifecycle(activity: Activity, exoPlayer: ExoPlayer, playButton: AppCompatImageButton) {
         detachLifecycle()
         val owner = activity as? LifecycleOwner ?: return
         val observer = object : DefaultLifecycleObserver {
@@ -281,7 +254,7 @@ object NativeMiniPlayerOverlay {
                 if (player === exoPlayer && !suppressNextPause) {
                     PersistentNativePlayer.savePosition(activity)
                     exoPlayer.pause()
-                    playButton.text = "▶"
+                    playButton.setImageResource(R.drawable.ic_player_play)
                 }
                 suppressNextPause = false
             }
@@ -303,6 +276,13 @@ object NativeMiniPlayerOverlay {
         }
         authListener = listener
         auth.addAuthStateListener(listener)
+    }
+
+    private fun detachPlayerListener() {
+        val exo = player
+        val listener = playerListener
+        if (exo != null && listener != null) exo.removeListener(listener)
+        playerListener = null
     }
 
     private fun detachAuthListener() {
@@ -331,9 +311,15 @@ object NativeMiniPlayerOverlay {
             .edit().putLong("class:$classId", position).apply()
     }
 
-    private fun circle(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(color)
+    private fun miniButton(context: Context, drawable: Int, description: String) = AppCompatImageButton(context).apply {
+        setImageResource(drawable)
+        contentDescription = description
+        scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+        setPadding(dp(context, 11), dp(context, 11), dp(context, 11), dp(context, 11))
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(155, 10, 10, 10))
+        }
     }
 
     private fun dp(context: Context, value: Int): Int =
