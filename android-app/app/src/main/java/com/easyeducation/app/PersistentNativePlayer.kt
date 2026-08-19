@@ -5,9 +5,10 @@ package com.easyeducation.app
 import android.content.Context
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -15,8 +16,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Process-local player session used by the watch page, fullscreen surface and in-app miniplayer.
- * Presentation changes never recreate ExoPlayer. A separate short-lived resolver cache can warm the
- * next class without mutating the currently playing media session.
+ * Presentation changes never recreate ExoPlayer. Resolver prefetch is isolated from the active
+ * decoder and an in-flight resolve is shared with the watch page instead of duplicated on tap.
  */
 object PersistentNativePlayer {
     private const val PLAYER_PREFS = "native_player_positions_v2"
@@ -31,6 +32,7 @@ object PersistentNativePlayer {
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val warmSources = ConcurrentHashMap<String, WarmSource>()
+    private val inFlightResolves = ConcurrentHashMap<String, Deferred<NativeOnlinePlaybackSource?>>()
 
     @Volatile private var playerInstance: ExoPlayer? = null
     @Volatile private var activeClassId: String = ""
@@ -78,16 +80,16 @@ object PersistentNativePlayer {
             return@withLock exo
         }
 
-        withContext(Dispatchers.Main.immediate) {
-            saveActivePosition(app, exo)
-        }
+        withContext(Dispatchers.Main.immediate) { saveActivePosition(app, exo) }
 
         val key = warmKey(classId, sourceUrl, requestedHeight)
         val now = System.currentTimeMillis()
         val warmed = warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
-        val resolved = warmed?.source ?: withContext(Dispatchers.IO) {
-            NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
-        }
+        val resolved = warmed?.source
+            ?: inFlightResolves[key]?.await()?.also { inFlightResolves.remove(key) }
+            ?: withContext(Dispatchers.IO) {
+                NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
+            }
         val mediaSource = NativePlaybackSourceResolver.toMediaSource(resolved)
 
         withContext(Dispatchers.Main.immediate) {
@@ -109,10 +111,7 @@ object PersistentNativePlayer {
         exo
     }
 
-    /**
-     * Resolves only metadata/direct stream URLs. It never calls setMediaSource or touches the active
-     * decoder, so a playing class cannot be interrupted by watch-next preloading.
-     */
+    /** Resolves URLs/metadata only. It never changes the active player's MediaSource. */
     fun prefetch(
         context: Context,
         classId: String,
@@ -121,30 +120,33 @@ object PersistentNativePlayer {
     ) {
         if (classId.isBlank() || sourceUrl.isBlank() || matches(classId, sourceUrl, requestedHeight)) return
         val key = warmKey(classId, sourceUrl, requestedHeight)
-        val existing = warmSources[key]
         val now = System.currentTimeMillis()
-        if (existing != null && now - existing.createdAt <= WARM_SOURCE_TTL_MS) return
+        warmSources[key]?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }?.let { return }
+        if (inFlightResolves[key]?.isActive == true) return
         val app = context.applicationContext
-        scope.launch {
-            val resolved = withContext(Dispatchers.IO) {
-                runCatching {
-                    NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
-                }.getOrNull()
-            }
+        val deferred = scope.async(Dispatchers.IO) {
+            runCatching {
+                NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
+            }.getOrNull()
+        }
+        val existing = inFlightResolves.putIfAbsent(key, deferred)
+        if (existing != null) {
+            deferred.cancel()
+            return
+        }
+        scope.async {
+            val resolved = runCatching { deferred.await() }.getOrNull()
+            inFlightResolves.remove(key, deferred)
             if (resolved != null) {
                 warmSources[key] = WarmSource(resolved, System.currentTimeMillis())
                 pruneWarmSources(System.currentTimeMillis())
             }
+            Unit
         }
     }
 
-    fun play() {
-        playerInstance?.play()
-    }
-
-    fun pause() {
-        playerInstance?.pause()
-    }
+    fun play() { playerInstance?.play() }
+    fun pause() { playerInstance?.pause() }
 
     fun savePosition(context: Context) {
         playerInstance?.let { saveActivePosition(context.applicationContext, it) }
@@ -167,6 +169,9 @@ object PersistentNativePlayer {
 
     fun resetForSignOut(context: Context) {
         warmSources.clear()
+        inFlightResolves.values.forEach { it.cancel() }
+        inFlightResolves.clear()
+        PlayerChapterQueue.clear()
         stopSession(context, savePosition = true)
     }
 
@@ -175,9 +180,7 @@ object PersistentNativePlayer {
         val position = exo.currentPosition
         if (classId.isBlank() || position <= 0L) return
         context.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putLong("class:$classId", position)
-            .apply()
+            .edit().putLong("class:$classId", position).apply()
     }
 
     private fun warmKey(classId: String, sourceUrl: String, height: Int): String =
