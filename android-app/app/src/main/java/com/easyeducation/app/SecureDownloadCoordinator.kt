@@ -12,6 +12,7 @@ object SecureDownloadCoordinator {
     }.getOrDefault(value.substringBefore('?').lowercase().endsWith(".m3u8"))
 
     fun start(context: Context, task: SecureDownloadTask) {
+        if (!DownloadPreferences.networkAllowed(context)) return
         val store = SecureMediaStore(context)
         val previous = store.get(task.id)
         DownloadRuntime.cancel(task.id)
@@ -44,6 +45,16 @@ object SecureDownloadCoordinator {
         val task = store.get(id) ?: return
         val uid = FirebaseAuth.getInstance().currentUser?.uid
         if (uid.isNullOrBlank() || uid != task.userId) return
+        if (!DownloadPreferences.networkAllowed(context)) {
+            val paused = task.copy(
+                state = "paused",
+                phase = "paused",
+                error = "Waiting for Wi-Fi because Wi-Fi only downloads are enabled.",
+            )
+            store.save(paused)
+            DownloadNotifier(context).paused(paused)
+            return
+        }
         DownloadRuntime.cancel(id)
         val queued = task.copy(
             generation = nextGeneration(task),
@@ -59,6 +70,7 @@ object SecureDownloadCoordinator {
 
     fun pause(context: Context, id: String) {
         DownloadRuntime.cancel(id)
+        SecureHlsDownloadService.cancelActiveTransform(id)
         val store = SecureMediaStore(context)
         val task = store.get(id) ?: return
         if (task.state !in setOf("queued", "downloading")) return
@@ -74,13 +86,13 @@ object SecureDownloadCoordinator {
         store.get(id)?.let { store.save(it.copy(state = "deleting", phase = "deleting")) }
         SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
         store.remove(id)
-        // Re-run cleanup once because an already-open worker may have been unwinding.
         SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
         store.secureDir(id).deleteRecursively()
         DownloadNotifier(context).cancelAll(id)
     }
 
     fun resumePending(context: Context) {
+        if (!DownloadPreferences.networkAllowed(context)) return
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         SecureMediaStore(context).pendingForUser(uid).forEach { task ->
             val refreshed = task.copy(generation = nextGeneration(task), state = "queued", phase = "preparing")
