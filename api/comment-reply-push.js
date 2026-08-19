@@ -15,10 +15,12 @@ function errorResponse(res, status, message) {
   return res.status(status).json({ success: false, error: message })
 }
 
-function canAccessCourse(userProfile, enrollmentExists) {
-  if (userProfile?.role === "admin") return true
-  if (["class_pdf_admin", "class_exam_admin"].includes(userProfile?.role)) return true
-  return enrollmentExists
+function staffCanAccessCourse(userProfile, courseId) {
+  if (userProfile?.role === "admin" && userProfile?.adminAccess?.mode !== "limited") return true
+  const limitedAdmin = userProfile?.role === "admin" && userProfile?.adminAccess?.mode === "limited"
+  const staff = ["class_pdf_admin", "class_exam_admin"].includes(userProfile?.role)
+  if (!limitedAdmin && !staff) return false
+  return (userProfile?.adminAccess?.classPdfCourseIds || []).includes(courseId)
 }
 
 export default async function commentReplyPush(req, res) {
@@ -41,10 +43,10 @@ export default async function commentReplyPush(req, res) {
     if (!ID_PATTERN.test(courseId)) return errorResponse(res, 400, "Invalid course id")
     if (!replyText) return errorResponse(res, 400, "Reply text is required")
 
-    const [parentSnapshot, classSnapshot, enrollmentSnapshot] = await Promise.all([
+    const [parentSnapshot, classSnapshot, enrollmentSnapshots] = await Promise.all([
       db.collection("classComments").doc(parentCommentId).get(),
       db.collection("classes").doc(classId).get(),
-      db.collection("userCourses").doc(`${decodedToken.uid}_${courseId}`).get(),
+      db.collection("userCourses").where("userId", "==", decodedToken.uid).get(),
     ])
 
     if (!parentSnapshot.exists) return errorResponse(res, 404, "Parent comment not found")
@@ -55,7 +57,8 @@ export default async function commentReplyPush(req, res) {
     const classData = classSnapshot.data() || {}
     if (text(classData.courseId) !== courseId) return errorResponse(res, 409, "Class does not belong to this course")
 
-    if (!canAccessCourse(userProfile, enrollmentSnapshot.exists)) {
+    const enrolled = enrollmentSnapshots.docs.some((snapshot) => text(snapshot.data()?.courseId) === courseId)
+    if (!enrolled && !staffCanAccessCourse(userProfile, courseId)) {
       return errorResponse(res, 403, "Course access required")
     }
 
