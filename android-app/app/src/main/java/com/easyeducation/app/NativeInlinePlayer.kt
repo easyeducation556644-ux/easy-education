@@ -66,13 +66,19 @@ fun NativeInlinePlayer(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    if (!handedToMini) handedToFullscreen = false
-                    val active = PersistentNativePlayer.currentClassId()
-                    if (
-                        active.isNotBlank() && active != classId &&
-                        PlayerChapterQueue.contains(active)
-                    ) {
-                        onSharedSessionClassChanged?.invoke(active)
+                    // Only reconcile a changed shared class after an actual fullscreen handoff.
+                    // A newly navigated watch route may briefly see the old active player class while
+                    // its own source resolves; treating that as a return used to navigate straight
+                    // back to the old class and caused the visible next/previous flash rollback.
+                    if (handedToFullscreen) {
+                        val active = PersistentNativePlayer.currentClassId()
+                        handedToFullscreen = false
+                        if (
+                            active.isNotBlank() && active != classId &&
+                            PlayerChapterQueue.contains(active)
+                        ) {
+                            onSharedSessionClassChanged?.invoke(active)
+                        }
                     }
                 }
                 Lifecycle.Event.ON_STOP -> {
@@ -152,7 +158,7 @@ fun NativeInlinePlayer(
                     .putExtra(NativePlayerActivity.EXTRA_SHARED_SESSION, true),
             )
             @Suppress("DEPRECATION")
-            activity.overridePendingTransition(0, 0)
+            activity.overridePendingTransition(R.anim.ee_player_fullscreen_enter, R.anim.ee_player_background_hold)
         }
     }
 
@@ -169,6 +175,7 @@ fun NativeInlinePlayer(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 YoutubeStylePlayerView(ctx).apply {
+                    setFullscreenPresentation(false)
                     bindPlayer(if (handedToFullscreen) null else exoPlayer)
                     setTitle(title)
                     setLoading(loading)
@@ -185,6 +192,7 @@ fun NativeInlinePlayer(
                 }
             },
             update = { view ->
+                view.setFullscreenPresentation(false)
                 view.bindPlayer(if (handedToFullscreen) null else exoPlayer)
                 view.setTitle(title)
                 view.setLoading(loading)
