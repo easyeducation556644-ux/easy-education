@@ -19,8 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Fullscreen presentation of the same native player surface. When launched from the class page or
- * miniplayer it binds to PersistentNativePlayer instead of resolving/creating a second stream.
+ * Fullscreen presentation of the same native player surface. Shared-session launches reuse the
+ * process-local ExoPlayer, including its buffer, speed and chapter queue.
  */
 @UnstableApi
 class NativePlayerActivity : AppCompatActivity() {
@@ -30,6 +30,9 @@ class NativePlayerActivity : AppCompatActivity() {
     private var title: String = ""
     private var ownsPlayer: Boolean = true
     private var sharedSession: Boolean = false
+    private var currentClassId: String = ""
+    private var currentSourceUrl: String = ""
+    private var currentHeight: Int = 480
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,33 +44,34 @@ class NativePlayerActivity : AppCompatActivity() {
         enterImmersiveMode()
 
         title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        currentClassId = intent.getStringExtra(EXTRA_CLASS_ID).orEmpty()
+        currentSourceUrl = intent.getStringExtra(EXTRA_SOURCE_URL).orEmpty()
+        currentHeight = intent.getIntExtra(EXTRA_HEIGHT, 480)
+        progressKey = "class:$currentClassId"
+        sharedSession = intent.getBooleanExtra(EXTRA_SHARED_SESSION, false)
+
         playerView = YoutubeStylePlayerView(this).apply {
             setTitle(title)
             onBack = { finish() }
             onMinimize = { finish() }
-            onFullscreen = { finish() }
+            onFullscreen = { enterImmersiveMode() }
         }
         setContentView(playerView)
 
         val downloadId = intent.getStringExtra(EXTRA_DOWNLOAD_ID).orEmpty()
-        val sourceUrl = intent.getStringExtra(EXTRA_SOURCE_URL).orEmpty()
-        val classId = intent.getStringExtra(EXTRA_CLASS_ID).orEmpty()
-        val requestedHeight = intent.getIntExtra(EXTRA_HEIGHT, 480)
-        progressKey = "class:$classId"
-        sharedSession = intent.getBooleanExtra(EXTRA_SHARED_SESSION, false)
-
         when {
             downloadId.isNotBlank() -> playOffline(downloadId)
-            sharedSession && sourceUrl.isNotBlank() &&
-                PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) -> {
+            sharedSession && currentSourceUrl.isNotBlank() &&
+                PersistentNativePlayer.matches(currentClassId, currentSourceUrl, currentHeight) -> {
                 ownsPlayer = false
                 val exo = PersistentNativePlayer.player(this)
                 player = exo
                 playerView.setLoading(false)
                 playerView.bindPlayer(exo)
                 exo.playWhenReady = true
+                bindSharedNavigation()
             }
-            sourceUrl.isNotBlank() -> playOnline(classId, sourceUrl, requestedHeight)
+            currentSourceUrl.isNotBlank() -> playOnline(currentClassId, currentSourceUrl, currentHeight)
             else -> fail("Video source is unavailable")
         }
     }
@@ -89,9 +93,13 @@ class NativePlayerActivity : AppCompatActivity() {
         }
         ownsPlayer = true
         sharedSession = false
+        currentClassId = task.classId
         progressKey = "class:${task.classId}"
         title = task.title
         playerView.setTitle(title)
+        playerView.setNavigationAvailability(false, false)
+        playerView.onPrevious = null
+        playerView.onNext = null
         val mediaSource = ProgressiveMediaSource.Factory(
             SecureChunkDataSource.Factory(this, downloadId, uid),
         ).createMediaSource(
@@ -103,8 +111,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun playOnline(classId: String, sourceUrl: String, requestedHeight: Int) {
         playerView.setLoading(true)
         lifecycleScope.launch {
-            val result = runCatching {
-                if (sharedSession) {
+            if (sharedSession) {
+                runCatching {
                     PersistentNativePlayer.ensureOnline(
                         context = this@NativePlayerActivity,
                         classId = classId,
@@ -112,15 +120,12 @@ class NativePlayerActivity : AppCompatActivity() {
                         requestedHeight = requestedHeight,
                         autoPlay = true,
                     )
-                } else null
-            }
-            if (sharedSession) {
-                result.onSuccess { exo ->
-                    if (exo == null) return@onSuccess
+                }.onSuccess { exo ->
                     ownsPlayer = false
                     player = exo
                     playerView.setLoading(false)
                     playerView.bindPlayer(exo)
+                    bindSharedNavigation()
                 }.onFailure { error ->
                     playerView.setLoading(false)
                     fail(error.message ?: "Could not open this class video")
@@ -129,23 +134,66 @@ class NativePlayerActivity : AppCompatActivity() {
             }
 
             val resolved = withContext(Dispatchers.IO) {
-                runCatching {
-                    NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
-                }
+                runCatching { NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight) }
             }
             resolved.onSuccess { source ->
-                runCatching {
-                    NativePlaybackSourceResolver.toMediaSource(source)
-                }.onSuccess { mediaSource ->
-                    playerView.setLoading(false)
-                    prepareOwnedPlayer(mediaSource)
-                }.onFailure { error ->
-                    playerView.setLoading(false)
-                    fail(error.message ?: "Could not open this class video")
-                }
+                runCatching { NativePlaybackSourceResolver.toMediaSource(source) }
+                    .onSuccess { mediaSource ->
+                        playerView.setLoading(false)
+                        playerView.setNavigationAvailability(false, false)
+                        prepareOwnedPlayer(mediaSource)
+                    }
+                    .onFailure { error ->
+                        playerView.setLoading(false)
+                        fail(error.message ?: "Could not open this class video")
+                    }
             }.onFailure { error ->
                 playerView.setLoading(false)
                 fail(error.message ?: "Could not open this class video")
+            }
+        }
+    }
+
+    private fun bindSharedNavigation() {
+        val previous = PlayerChapterQueue.previous(currentClassId)
+        val next = PlayerChapterQueue.next(currentClassId)
+        playerView.setNavigationAvailability(previous != null, next != null)
+        playerView.onPrevious = { navigateShared(PlayerChapterQueue.previous(currentClassId)) }
+        playerView.onNext = { navigateShared(PlayerChapterQueue.next(currentClassId)) }
+    }
+
+    private fun navigateShared(target: PlayerQueueItem?) {
+        if (!sharedSession || target == null) return
+        PersistentNativePlayer.savePosition(this)
+        playerView.setLoading(true)
+        lifecycleScope.launch {
+            runCatching {
+                PersistentNativePlayer.ensureOnline(
+                    context = this@NativePlayerActivity,
+                    classId = target.classId,
+                    sourceUrl = target.sourceUrl,
+                    requestedHeight = target.height,
+                    autoPlay = true,
+                )
+            }.onSuccess { exo ->
+                ownsPlayer = false
+                player = exo
+                currentClassId = target.classId
+                currentSourceUrl = target.sourceUrl
+                currentHeight = target.height
+                progressKey = "class:${target.classId}"
+                title = target.title
+                playerView.setTitle(title)
+                playerView.bindPlayer(exo)
+                playerView.setLoading(false)
+                bindSharedNavigation()
+            }.onFailure { error ->
+                playerView.setLoading(false)
+                Toast.makeText(
+                    this@NativePlayerActivity,
+                    friendlyMessage(error.message ?: "Could not open this class video"),
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
@@ -171,7 +219,6 @@ class NativePlayerActivity : AppCompatActivity() {
     override fun onStop() {
         player?.let { exo ->
             savePosition(exo.currentPosition)
-            // Finishing fullscreen means the same shared player is about to render inline again.
             if (!isFinishing) exo.pause()
         }
         super.onStop()
@@ -207,9 +254,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private fun savePosition(position: Long) {
         if (progressKey.isBlank() || position <= 0L) return
         getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
-            .edit()
-            .putLong(progressKey, position)
-            .apply()
+            .edit().putLong(progressKey, position).apply()
     }
 
     private fun enterImmersiveMode() {
