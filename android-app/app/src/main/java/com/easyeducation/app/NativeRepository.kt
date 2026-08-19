@@ -57,6 +57,13 @@ class NativeRepository(context: Context) {
             .sortedBy { it.title.lowercase() }
     }
 
+    suspend fun ensureEnrollments(uid: String): List<NativeCourse> {
+        val primed = withContext(Dispatchers.IO) {
+            cache.getString(enrollmentPrimeKey(uid)) == "1"
+        }
+        return if (primed) cachedCourses(uid) else refreshEnrollments(uid)
+    }
+
     suspend fun refreshEnrollments(uid: String): List<NativeCourse> {
         val snapshot = firestore.collection("userCourses")
             .whereEqualTo("userId", uid)
@@ -66,6 +73,7 @@ class NativeRepository(context: Context) {
         val courseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.distinct()
         withContext(Dispatchers.IO) {
             cache.replaceUserCollection("userCourses", uid, enrollmentJson)
+            cache.setString(enrollmentPrimeKey(uid), "1")
             leaseStore.refresh(uid, courseIds)
         }
 
@@ -124,12 +132,14 @@ class NativeRepository(context: Context) {
 
     suspend fun ensureCourseContent(courseId: String, force: Boolean = false): NativeCourseContent {
         val cached = cachedCourseContent(courseId)
-        if (!force && cached.course != null && cached.classes.isNotEmpty()) return cached
+        val primed = withContext(Dispatchers.IO) { cache.getString(contentPrimeKey(courseId)) == "1" }
+        if (!force && primed && cached.course != null) return cached
 
         refreshSingleDoc("courses", courseId)
         refreshCourseQuery("subjects", courseId)
         refreshCourseQuery("chapters", courseId)
         refreshCourseQuery("classes", courseId)
+        withContext(Dispatchers.IO) { cache.setString(contentPrimeKey(courseId), "1") }
         return cachedCourseContent(courseId)
     }
 
@@ -242,9 +252,7 @@ class NativeRepository(context: Context) {
                 .filter { it.isNotBlank() }
         }
         for (courseId in courseIds) {
-            val wasPrimed = withContext(Dispatchers.IO) {
-                cache.listDocs("classes", courseId = courseId).isNotEmpty()
-            }
+            val wasPrimed = withContext(Dispatchers.IO) { cache.getString(contentPrimeKey(courseId)) == "1" }
             if (wasPrimed) ensureCourseContent(courseId, force = true)
             else refreshSingleDoc("courses", courseId)
         }
@@ -294,6 +302,9 @@ class NativeRepository(context: Context) {
 
     private fun isContiguous(events: List<FeedEvent>): Boolean =
         events.zipWithNext().all { (a, b) -> b.seq == a.seq + 1 }
+
+    private fun enrollmentPrimeKey(uid: String) = "prime:enrollments:v2:$uid"
+    private fun contentPrimeKey(courseId: String) = "prime:course-content:v2:$courseId"
 
     companion object {
         private fun stableId(value: String): String = MessageDigest.getInstance("SHA-256")
