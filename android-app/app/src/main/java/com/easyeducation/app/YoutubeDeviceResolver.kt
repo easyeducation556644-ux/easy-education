@@ -14,16 +14,17 @@ import java.util.concurrent.TimeUnit
 /**
  * Device-side YouTube resolver used for native playback and secure offline copies.
  *
- * YouTube normally exposes only low resolutions as progressive files containing both
- * audio and video. HD/UHD qualities are commonly adaptive: one video-only stream plus
- * one audio-only stream. We expose both shapes and let the secure downloader mux adaptive
- * streams in app-private storage before encryption.
+ * Important: Android/iOS YouTube clients now commonly return HTTPS/GVS URLs that need
+ * a PO token. Those URLs look valid in the player response but return HTTP 403 when the
+ * media is requested. Use the current JS-less VisionOS client first (the same default
+ * strategy used by current yt-dlp), then TV/embed fallbacks, and validate the actual
+ * media bytes before exposing a quality to the UI.
  */
 class YoutubeDeviceResolver(
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(32, TimeUnit.SECONDS)
+        .callTimeout(36, TimeUnit.SECONDS)
         .followRedirects(true)
         .retryOnConnectionFailure(true)
         .build(),
@@ -40,12 +41,14 @@ class YoutubeDeviceResolver(
         val fps: Int,
         val hasVideo: Boolean,
         val hasAudio: Boolean,
+        val clientName: String,
+        val clientVersion: String,
+        val clientId: String,
+        val userAgent: String,
+        val referer: String,
     ) {
         val container: String
-            get() = when {
-                mimeType.endsWith("/webm", ignoreCase = true) -> "webm"
-                else -> "mp4"
-            }
+            get() = if (mimeType.endsWith("/webm", ignoreCase = true)) "webm" else "mp4"
     }
 
     data class Variant(
@@ -67,9 +70,7 @@ class YoutubeDeviceResolver(
     data class Result(
         val videoId: String,
         val title: String,
-        /** Progressive A/V streams, retained for simple online native playback. */
         val formats: List<Format>,
-        /** Real downloadable qualities, including adaptive HD/UHD pairs. */
         val variants: List<Variant>,
     ) {
         val recommendedHeight: Int
@@ -81,8 +82,10 @@ class YoutubeDeviceResolver(
     private data class ClientProfile(
         val name: String,
         val version: String,
+        val clientId: String,
         val userAgent: String,
-        val extra: JSONObject.() -> Unit,
+        val embeddedUrl: String? = null,
+        val extra: JSONObject.() -> Unit = {},
     )
 
     fun resolve(videoUrl: String): Result {
@@ -91,35 +94,46 @@ class YoutubeDeviceResolver(
         val visitorData = runCatching { fetchVisitorData(videoId) }.getOrNull()
 
         val profiles = listOf(
+            // Current yt-dlp uses VisionOS as its default JS-less YouTube client.
             ClientProfile(
-                name = "IOS",
-                version = "21.03.2",
-                userAgent = "com.google.ios.youtube/21.03.2 (iPhone16,2; U; CPU iOS 18_7_2 like Mac OS X; en_US)",
+                name = "VISIONOS",
+                version = "1.02",
+                clientId = "101",
+                userAgent = VISIONOS_USER_AGENT,
             ) {
                 put("deviceMake", "Apple")
-                put("deviceModel", "iPhone16,2")
-                put("osName", "iOS")
-                put("osVersion", "18.7.2.22H124")
+                put("deviceModel", "RealityDevice17,1")
+                put("osName", "visionOS")
+                put("osVersion", "26.5.23O471")
             },
             ClientProfile(
-                name = "ANDROID",
-                version = "21.03.36",
-                userAgent = "com.google.android.youtube/21.03.36 (Linux; U; Android 16; en_US) gzip",
-            ) {
-                put("androidSdkVersion", 36)
-                put("osName", "Android")
-                put("osVersion", "16")
-            },
+                name = "TVHTML5",
+                version = "7.20260707.07.00",
+                clientId = "7",
+                userAgent = TV_USER_AGENT,
+            ),
+            ClientProfile(
+                name = "TVHTML5",
+                version = "5.20260707",
+                clientId = "7",
+                userAgent = TV_DOWNGRADED_USER_AGENT,
+            ),
+            ClientProfile(
+                name = "WEB_EMBEDDED_PLAYER",
+                version = "2.20260708.00.00",
+                clientId = "56",
+                userAgent = WEB_USER_AGENT,
+                embeddedUrl = "https://www.reddit.com/",
+            ),
         )
 
-        var lastReason = "No downloadable YouTube stream was returned"
+        var lastReason = "No directly downloadable YouTube stream was returned"
         for (profile in profiles) {
-            val response = runCatching {
-                requestPlayer(videoId, visitorData, profile)
-            }.getOrElse {
-                lastReason = it.message ?: lastReason
-                null
-            } ?: continue
+            val response = runCatching { requestPlayer(videoId, visitorData, profile) }
+                .getOrElse {
+                    lastReason = it.message ?: lastReason
+                    null
+                } ?: continue
 
             val status = response.optJSONObject("playabilityStatus")
             if (status?.optString("status") != "OK") {
@@ -133,30 +147,38 @@ class YoutubeDeviceResolver(
             val title = response.optJSONObject("videoDetails")?.optString("title")
                 ?.takeIf { it.isNotBlank() }
                 ?: "YouTube class video"
-            val streams = parseStreams(response.optJSONObject("streamingData"))
-            val progressive = streams
-                .filter { it.hasVideo && it.hasAudio && it.height in 1..MAX_ADAPTIVE_HEIGHT }
-                .groupBy { it.height }
-                .mapNotNull { (_, choices) -> chooseProgressive(choices) }
-                .sortedBy { it.height }
-            val variants = buildVariants(streams, progressive)
-            if (variants.isNotEmpty()) {
-                return Result(videoId, title, progressive, variants)
+            val streams = parseStreams(response.optJSONObject("streamingData"), profile)
+            if (streams.isEmpty()) {
+                lastReason = "${profile.name} returned no direct media URLs"
+                continue
             }
+
+            val progressive = buildProgressive(streams)
+            val candidateVariants = buildVariants(streams, progressive)
+            val variants = validateVariants(candidateVariants)
+            if (variants.isEmpty()) {
+                lastReason = "${profile.name} media URLs were rejected by YouTube"
+                continue
+            }
+
+            val validatedProgressive = variants.mapNotNull { it.progressive }
+                .distinctBy { it.itag }
+                .sortedBy { it.height }
+            return Result(videoId, title, validatedProgressive, variants.sortedBy { it.height })
         }
 
         throw IllegalStateException(
-            "$lastReason. YouTube may require a newer device resolver for this video.",
+            "$lastReason. YouTube did not expose a validated direct stream for this video.",
         )
     }
 
-    /** Used by online playback where a single A/V stream is preferable. */
+    /** Online playback prefers a validated single-file A/V stream. */
     fun pickFormat(videoUrl: String, requestedHeight: Int): Pair<Result, Format> {
         val result = resolve(videoUrl)
         val exact = result.formats.firstOrNull { it.height == requestedHeight }
         val below = result.formats.filter { it.height <= requestedHeight }.maxByOrNull { it.height }
         val selected = exact ?: below ?: result.formats.minByOrNull { it.height }
-            ?: throw IllegalStateException("No progressive YouTube stream is available")
+            ?: throw IllegalStateException("No validated progressive YouTube stream is available")
         return result to selected
     }
 
@@ -176,14 +198,20 @@ class YoutubeDeviceResolver(
         val client = JSONObject()
             .put("clientName", profile.name)
             .put("clientVersion", profile.version)
+            .put("userAgent", profile.userAgent)
             .put("hl", "en")
             .put("gl", "US")
             .put("utcOffsetMinutes", 0)
         profile.extra(client)
         if (!visitorData.isNullOrBlank()) client.put("visitorData", visitorData)
 
+        val context = JSONObject().put("client", client)
+        profile.embeddedUrl?.let { embedUrl ->
+            context.put("thirdParty", JSONObject().put("embedUrl", embedUrl))
+        }
+
         val body = JSONObject()
-            .put("context", JSONObject().put("client", client))
+            .put("context", context)
             .put("videoId", videoId)
             .put("contentCheckOk", true)
             .put("racyCheckOk", true)
@@ -207,20 +235,22 @@ class YoutubeDeviceResolver(
             .header("User-Agent", profile.userAgent)
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("X-Goog-Api-Format-Version", "2")
+            .header("X-YouTube-Client-Name", profile.clientId)
+            .header("X-YouTube-Client-Version", profile.version)
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
         if (!visitorData.isNullOrBlank()) {
             requestBuilder.header("X-Goog-Visitor-Id", visitorData)
         }
 
         http.newCall(requestBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) error("YouTube resolver HTTP ${response.code}")
+            if (!response.isSuccessful) error("YouTube ${profile.name} resolver HTTP ${response.code}")
             val text = readBodyLimited(response.body?.byteStream(), PLAYER_RESPONSE_LIMIT)
             if (text.isBlank()) error("YouTube returned an empty player response")
             return JSONObject(text)
         }
     }
 
-    private fun parseStreams(streamingData: JSONObject?): List<Format> {
+    private fun parseStreams(streamingData: JSONObject?, profile: ClientProfile): List<Format> {
         val raw = buildList {
             addAll(jsonObjects(streamingData?.optJSONArray("formats")))
             addAll(jsonObjects(streamingData?.optJSONArray("adaptiveFormats")))
@@ -232,6 +262,8 @@ class YoutubeDeviceResolver(
             val itag = item.optInt("itag", -1)
             if (itag <= 0 || !seen.add(itag)) continue
             val url = item.optString("url")
+            // Deliberately ignore signatureCipher/cipher URLs. Without current JS signature
+            // transforms they are not safe to expose as downloadable qualities.
             if (!isAllowedGoogleVideoUrl(url)) continue
 
             val rawMime = item.optString("mimeType")
@@ -250,29 +282,42 @@ class YoutubeDeviceResolver(
             val height = item.optInt("height", 0)
             if (hasVideo && (height <= 0 || height > MAX_ADAPTIVE_HEIGHT)) continue
 
-            var contentLength = item.optString("contentLength").toLongOrNull() ?: 0L
-            if (contentLength <= 0L) {
-                contentLength = runCatching { probeContentLength(url) }.getOrDefault(0L)
-            }
-            val qualityLabel = item.optString("qualityLabel").ifBlank {
-                if (height > 0) "${height}p" else item.optString("audioQuality", "Audio")
-            }
-            result += Format(
+            val reportedLength = item.optString("contentLength").toLongOrNull() ?: 0L
+            var format = Format(
                 itag = itag,
                 height = height,
-                qualityLabel = qualityLabel,
+                qualityLabel = item.optString("qualityLabel").ifBlank {
+                    if (height > 0) "${height}p" else item.optString("audioQuality", "Audio")
+                },
                 url = url,
-                contentLength = contentLength,
+                contentLength = reportedLength,
                 mimeType = mimeType,
                 codecs = codecs,
                 bitrate = item.optLong("bitrate", 0L),
                 fps = item.optInt("fps", 0),
                 hasVideo = hasVideo,
                 hasAudio = hasAudio,
+                clientName = profile.name,
+                clientVersion = profile.version,
+                clientId = profile.clientId,
+                userAgent = profile.userAgent,
+                referer = profile.embeddedUrl ?: "https://www.youtube.com/",
             )
+            if (format.contentLength <= 0L) {
+                val length = runCatching { probeContentLength(format) }.getOrDefault(0L)
+                if (length <= 0L) continue
+                format = format.copy(contentLength = length)
+            }
+            result += format
         }
         return result
     }
+
+    private fun buildProgressive(streams: List<Format>): List<Format> = streams
+        .filter { it.hasVideo && it.hasAudio && it.height in 1..MAX_ADAPTIVE_HEIGHT }
+        .groupBy { it.height }
+        .mapNotNull { (_, choices) -> chooseProgressive(choices) }
+        .sortedBy { it.height }
 
     private fun buildVariants(streams: List<Format>, progressive: List<Format>): List<Variant> {
         val progressiveByHeight = progressive.associateBy { it.height }
@@ -288,19 +333,66 @@ class YoutubeDeviceResolver(
                     progressive = format,
                 )
             }
-
-            val videos = videoOnly.filter { it.height == height }
-            val video = chooseAdaptiveVideo(height, videos) ?: return@mapNotNull null
+            val video = chooseAdaptiveVideo(height, videoOnly.filter { it.height == height })
+                ?: return@mapNotNull null
             val audio = chooseAudioFor(video, audioOnly) ?: return@mapNotNull null
-            val label = video.qualityLabel.ifBlank {
-                buildString {
-                    append("${height}p")
-                    if (video.fps >= 50) append("${video.fps}")
-                }
-            }
-            Variant(height = height, qualityLabel = label, video = video, audio = audio)
+            Variant(
+                height = height,
+                qualityLabel = video.qualityLabel.ifBlank { "${height}p" },
+                video = video,
+                audio = audio,
+            )
         }
     }
+
+    private fun validateVariants(candidates: List<Variant>): List<Variant> {
+        val cache = mutableMapOf<String, Boolean>()
+        fun valid(format: Format): Boolean = cache.getOrPut("${format.clientName}:${format.itag}:${format.url}") {
+            validateFormat(format)
+        }
+        return candidates.filter { variant ->
+            val progressive = variant.progressive
+            if (progressive != null) {
+                valid(progressive)
+            } else {
+                val video = variant.video
+                val audio = variant.audio
+                video != null && audio != null && valid(video) && valid(audio)
+            }
+        }
+    }
+
+    private fun validateFormat(format: Format): Boolean {
+        if (format.contentLength <= 0L) return false
+        val end = minOf(format.contentLength - 1L, VALIDATION_BYTES - 1L)
+        if (end < 0L) return false
+        return runCatching {
+            http.newCall(streamRequest(format, 0L, end)).execute().use { response ->
+                if (response.code != 206) return@use false
+                val range = response.header("Content-Range").orEmpty()
+                val total = range.substringAfterLast('/', "").toLongOrNull()
+                range.startsWith("bytes 0-$end/") && (total == null || total == format.contentLength)
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun probeContentLength(format: Format): Long =
+        http.newCall(streamRequest(format, 0L, 0L)).execute().use { response ->
+            if (response.code != 206) return@use 0L
+            response.header("Content-Range").orEmpty().substringAfterLast('/', "").toLongOrNull() ?: 0L
+        }
+
+    private fun streamRequest(format: Format, start: Long, end: Long): Request = Request.Builder()
+        .url(format.url)
+        .header("Range", "bytes=$start-$end")
+        .header("User-Agent", format.userAgent)
+        .header("Accept-Encoding", "identity")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("X-YouTube-Client-Name", format.clientId)
+        .header("X-YouTube-Client-Version", format.clientVersion)
+        .header("Referer", format.referer)
+        .get()
+        .build()
 
     private fun chooseProgressive(choices: List<Format>): Format? {
         val mp4 = choices.filter { it.mimeType == "video/mp4" }
@@ -311,35 +403,19 @@ class YoutubeDeviceResolver(
         if (choices.isEmpty()) return null
         val preferredContainer = if (height <= 1080) "mp4" else "webm"
         val preferred = choices.filter { it.container == preferredContainer }
-        val fallback = if (preferred.isNotEmpty()) preferred else choices
-        return fallback.maxWithOrNull(
+        return (preferred.ifEmpty { choices }).maxWithOrNull(
             compareBy<Format> { it.fps }.thenBy { it.bitrate },
         )
     }
 
     private fun chooseAudioFor(video: Format, choices: List<Format>): Format? {
         val sameContainer = choices.filter { it.container == video.container }
-        val compatible = if (sameContainer.isNotEmpty()) sameContainer else return null
-        return compatible.maxByOrNull { it.bitrate }
+        return sameContainer.maxByOrNull { it.bitrate }
     }
 
     private fun jsonObjects(array: JSONArray?): List<JSONObject> = buildList {
         if (array == null) return@buildList
         for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add)
-    }
-
-    private fun probeContentLength(url: String): Long {
-        val request = Request.Builder()
-            .url(url)
-            .header("Range", "bytes=0-0")
-            .header("User-Agent", DOWNLOAD_USER_AGENT)
-            .get()
-            .build()
-        http.newCall(request).execute().use { response ->
-            val contentRange = response.header("Content-Range").orEmpty()
-            val total = contentRange.substringAfterLast('/', "").toLongOrNull()
-            return total ?: response.body?.contentLength()?.takeIf { response.code == 200 && it > 1 } ?: 0L
-        }
     }
 
     private fun fetchVisitorData(videoId: String): String? {
@@ -392,12 +468,18 @@ class YoutubeDeviceResolver(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val RANDOM = SecureRandom()
         private const val MAX_ADAPTIVE_HEIGHT = 2160
+        private const val VALIDATION_BYTES = 1024L
         private const val WATCH_PAGE_LIMIT = 768 * 1024
         private const val PLAYER_RESPONSE_LIMIT = 2 * 1024 * 1024
+        const val VISIONOS_USER_AGENT =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+        private const val TV_USER_AGENT =
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+        private const val TV_DOWNGRADED_USER_AGENT =
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
         private const val WEB_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150 Mobile Safari/537.36"
-        const val DOWNLOAD_USER_AGENT =
-            "com.google.android.youtube/21.03.36 (Linux; U; Android 16; en_US) gzip"
+        const val DOWNLOAD_USER_AGENT = VISIONOS_USER_AGENT
         private val SUPPORTED_STREAM_MIMES = setOf(
             "video/mp4",
             "audio/mp4",
