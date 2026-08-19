@@ -135,9 +135,8 @@ object NativeMiniPlayerOverlay {
             setOnClickListener {
                 val position = exoPlayer.currentPosition
                 savePosition(activity, classId, position)
-                removeContainerOnly()
+                dismiss(releasePlayer = false)
                 exoPlayer.release()
-                if (player === exoPlayer) player = null
                 activity.startActivity(
                     Intent(activity, NativePlayerActivity::class.java)
                         .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
