@@ -21,8 +21,13 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
         val data = message.data
-        if (data["type"] != "new_class") return
+        when (data["type"]) {
+            "new_class" -> showNewClass(data)
+            "comment_reply" -> showCommentReply(data)
+        }
+    }
 
+    private fun showNewClass(data: Map<String, String>) {
         val classId = data["classId"].orEmpty()
         val classTitle = data["classTitle"].orEmpty().ifBlank { data["title"].orEmpty().ifBlank { "New class" } }
         val courseTitle = data["courseTitle"].orEmpty().ifBlank { "Course" }
@@ -30,20 +35,9 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
         val chapterTitle = data["chapterTitle"].orEmpty().ifBlank { "Chapter" }
         val openPath = data["url"].orEmpty().ifBlank { "/my-courses" }
 
-        createChannel()
-
-        val openIntent = Intent(this, MainActivity::class.java)
-            .putExtra(MainActivity.EXTRA_OPEN_PATH, openPath)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            ("class:$classId").hashCode(),
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
+        createChannel(CLASS_CHANNEL_ID, "New classes", "New class alerts for courses you are enrolled in")
         val details = "Course: $courseTitle\nSubject: $subjectTitle\nChapter: $chapterTitle"
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CLASS_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_more)
             .setContentTitle(classTitle)
             .setContentText("$courseTitle • $subjectTitle • $chapterTitle")
@@ -51,29 +45,63 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(openPendingIntent(openPath, "class:$classId"))
             .build()
-
         getSystemService(NotificationManager::class.java)
             .notify(("learning:$classId").hashCode(), notification)
     }
 
-    private fun createChannel() {
+    private fun showCommentReply(data: Map<String, String>) {
+        val classId = data["classId"].orEmpty()
+        val parentCommentId = data["parentCommentId"].orEmpty()
+        val title = data["title"].orEmpty().ifBlank { "New reply" }
+        val body = data["body"].orEmpty().ifBlank { "Someone replied to your comment" }
+        val openPath = data["url"].orEmpty().ifBlank { "/my-courses" }
+
+        createChannel(
+            REPLY_CHANNEL_ID,
+            "Comment replies",
+            "Replies to your class comments",
+        )
+        val notification = NotificationCompat.Builder(this, REPLY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(openPendingIntent(openPath, "reply:$classId:$parentCommentId"))
+            .build()
+        getSystemService(NotificationManager::class.java)
+            .notify(("reply:$classId:$parentCommentId:${System.currentTimeMillis() / 1000L}").hashCode(), notification)
+    }
+
+    private fun openPendingIntent(openPath: String, key: String): PendingIntent {
+        val openIntent = Intent(this, MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_OPEN_PATH, openPath)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            this,
+            key.hashCode(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun createChannel(id: String, name: String, description: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "New classes",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = "New class alerts for courses you are enrolled in"
+            NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
+                this.description = description
             },
         )
     }
 
     companion object {
-        private const val CHANNEL_ID = "learning_updates"
+        private const val CLASS_CHANNEL_ID = "learning_updates"
+        private const val REPLY_CHANNEL_ID = "comment_replies"
         private const val PREFS = "easy_education_push"
         private const val KEY_LAST_FCM_TOKEN = "last_fcm_token"
     }
