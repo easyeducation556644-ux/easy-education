@@ -129,6 +129,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!PersistentNativePlayer.consumeMiniRequest()) return
+        // NativePlayerActivity may still be completing its final surface detach during this
+        // lifecycle callback. Post the handoff one frame so the same decoder can move cleanly.
+        window.decorView.post {
+            val classId = PersistentNativePlayer.currentClassId()
+            val sourceUrl = PersistentNativePlayer.currentSourceUrl()
+            if (classId.isBlank() || sourceUrl.isBlank()) return@post
+            val exo = PersistentNativePlayer.player(this)
+            if (exo.mediaItemCount == 0) return@post
+            NativeMiniPlayerOverlay.show(
+                activity = this,
+                exoPlayer = exo,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                title = PersistentNativePlayer.currentTitle(),
+                requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
+                onExpandToWatchPage = null,
+            )
+        }
+    }
+
     private fun launchGoogleSignIn() {
         if (loginBusy) return
         loginBusy = true
@@ -234,7 +257,7 @@ class MainActivity : ComponentActivity() {
                         exoPlayer = exo,
                         classId = classId,
                         sourceUrl = PersistentNativePlayer.currentSourceUrl(),
-                        title = "",
+                        title = PersistentNativePlayer.currentTitle(),
                         requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
                     )
                 }
