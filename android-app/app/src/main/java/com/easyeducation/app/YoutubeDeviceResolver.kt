@@ -2,12 +2,11 @@ package com.easyeducation.app
 
 import android.content.Context
 import android.net.Uri
+import com.google.firebase.FirebaseApp
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.VideoStream
-import java.net.URI
 import java.util.concurrent.TimeUnit
 
 /**
@@ -18,7 +17,7 @@ import java.util.concurrent.TimeUnit
  * of our previous hand-written client-profile guesses.
  */
 class YoutubeDeviceResolver(
-    private val context: Context,
+    private val context: Context = FirebaseApp.getInstance().applicationContext,
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(22, TimeUnit.SECONDS)
@@ -27,6 +26,12 @@ class YoutubeDeviceResolver(
         .retryOnConnectionFailure(true)
         .build(),
 ) {
+    /** Backward-compatible constructor for the download workers that already own an OkHttpClient. */
+    constructor(http: OkHttpClient) : this(
+        context = FirebaseApp.getInstance().applicationContext,
+        http = http,
+    )
+
     data class Format(
         val itag: Int,
         val height: Int,
