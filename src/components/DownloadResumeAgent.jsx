@@ -23,15 +23,17 @@ export default function DownloadResumeAgent() {
     if (!nativeApp || !currentUser?.uid) return
 
     const resume = () => {
-      resumePendingDownloads(currentUser).catch((error) => {
+      try {
+        resumePendingDownloads(currentUser)
+      } catch (error) {
         console.warn("Unable to resume pending downloads:", error)
-      })
+      }
     }
 
     resume()
     window.addEventListener("online", resume)
     return () => window.removeEventListener("online", resume)
-  }, [nativeApp, currentUser])
+  }, [nativeApp, currentUser?.uid])
 
   useEffect(() => {
     if (!nativeApp || window.Hls) return
