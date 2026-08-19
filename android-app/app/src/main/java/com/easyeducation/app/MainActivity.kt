@@ -9,18 +9,24 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var viewModel: NativeAppViewModel
-    private var initialPath: String? = null
+    private var initialPath by mutableStateOf<String?>(null)
 
     private val googleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val account = runCatching {
@@ -36,6 +42,9 @@ class MainActivity : ComponentActivity() {
         }
         FirebaseAuth.getInstance()
             .signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
+            .addOnSuccessListener {
+                lifecycleScope.launch(Dispatchers.IO) { NativePushRegistrar.register(this@MainActivity) }
+            }
             .addOnFailureListener { error ->
                 Toast.makeText(this, error.message ?: "Firebase sign-in failed", Toast.LENGTH_LONG).show()
             }
@@ -66,6 +75,9 @@ class MainActivity : ComponentActivity() {
             )
         }
         SecureDownloadService.resumePending(this)
+        if (FirebaseAuth.getInstance().currentUser != null) {
+            lifecycleScope.launch(Dispatchers.IO) { NativePushRegistrar.register(this@MainActivity) }
+        }
     }
 
     private fun launchGoogleSignIn() {
@@ -77,13 +89,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getStringExtra(EXTRA_OPEN_PATH) == "/downloads") {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .putExtra(EXTRA_OPEN_PATH, "/downloads")
-                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            )
-        }
+        initialPath = intent.getStringExtra(EXTRA_OPEN_PATH)
     }
 
     companion object {
