@@ -1050,7 +1050,7 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                                 val target = runCatching { Uri.parse(url.orEmpty()) }.getOrNull()
                                 if (target?.host == Uri.parse(WEB_ORIGIN).host) {
                                     view?.evaluateJavascript(COURSE_STORE_BRIDGE_SCRIPT, null)
-                                    when (target.path) {
+                                    when (target?.path) {
                                         "/checkout-complete" -> watchForEnrollment()
                                         "/my-courses" -> returnToNativeCourses()
                                     }
@@ -1136,18 +1136,27 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                 if (showProgress) LinearProgressIndicator(Modifier.fillMaxWidth())
                 else Spacer(Modifier.fillMaxWidth().height(4.dp))
             }
-            AnimatedVisibility(
-                visible = awaitingEnrollment,
+            AnimatedContent(
+                targetState = awaitingEnrollment,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-                enter = fadeIn(tween(APP_MOTION_QUICK_MS)) + slideInVertically(tween(APP_MOTION_STANDARD_MS)) { -it },
-                exit = fadeOut(tween(APP_MOTION_QUICK_MS)) + slideOutVertically(tween(APP_MOTION_STANDARD_MS)) { -it },
-            ) {
-                Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)) {
-                    Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Adding course to your app…", style = MaterialTheme.typography.labelMedium)
+                transitionSpec = {
+                    (fadeIn(tween(APP_MOTION_QUICK_MS)) +
+                        slideInVertically(tween(APP_MOTION_STANDARD_MS)) { -it }) togetherWith
+                        (fadeOut(tween(APP_MOTION_QUICK_MS)) +
+                            slideOutVertically(tween(APP_MOTION_STANDARD_MS)) { -it })
+                },
+                label = "course enrollment return",
+            ) { showEnrollmentProgress ->
+                if (showEnrollmentProgress) {
+                    Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Adding course to your app…", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
+                } else {
+                    Spacer(Modifier.size(0.dp))
                 }
             }
         }
