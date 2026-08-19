@@ -4,8 +4,11 @@ package com.easyeducation.app
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -272,10 +275,22 @@ private fun V2NavHost(
         navController = nav,
         startDestination = startRoute,
         modifier = Modifier.fillMaxSize(),
-        enterTransition = { EnterTransition.None },
-        exitTransition = { ExitTransition.None },
-        popEnterTransition = { EnterTransition.None },
-        popExitTransition = { ExitTransition.None },
+        enterTransition = {
+            fadeIn(animationSpec = tween(170)) +
+                slideInHorizontally(animationSpec = tween(220)) { fullWidth -> fullWidth / 16 }
+        },
+        exitTransition = {
+            fadeOut(animationSpec = tween(120)) +
+                slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> -fullWidth / 30 }
+        },
+        popEnterTransition = {
+            fadeIn(animationSpec = tween(170)) +
+                slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth / 16 }
+        },
+        popExitTransition = {
+            fadeOut(animationSpec = tween(120)) +
+                slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> fullWidth / 30 }
+        },
     ) {
         composable("home") { V2Home(nav, viewModel, state) }
         composable("courses") { V2Courses(nav, state) }
