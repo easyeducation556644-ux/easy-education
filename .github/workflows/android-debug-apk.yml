@@ -31,6 +31,7 @@ jobs:
         run: |
           gradle :app:dependencies --configuration releaseRuntimeClasspath > /tmp/release-deps.txt
           grep -i -C 5 'protobuf\|protolite\|NewPipeExtractor' /tmp/release-deps.txt || true
+          ! grep -q 'protobuf-javalite:3\.25\.[0-9]* -> 4\.35\.1' /tmp/release-deps.txt
       - name: Restore release keystore
         shell: bash
         env:
@@ -64,17 +65,13 @@ jobs:
           disable-animations: true
           script: |
             adb install -r android-app/app/build/outputs/apk/release/app-release.apk
+            adb shell pm grant com.easyeducation.app android.permission.POST_NOTIFICATIONS || true
             adb logcat -c
             adb shell am force-stop com.easyeducation.app
-            adb shell am start -W -n com.easyeducation.app/.MainActivity
-            sleep 8
-            PID=$(adb shell pidof com.easyeducation.app | tr -d '\r')
-            if [ -z "$PID" ]; then
-              echo 'Easy Education process died after launch'
-              adb logcat -d | grep -E -A 80 -B 20 'AndroidRuntime|FATAL EXCEPTION|Process: com.easyeducation.app' || true
-              exit 1
-            fi
-            echo "Easy Education startup alive with PID $PID"
+            adb shell am start -n com.easyeducation.app/.MainActivity
+            sleep 10
+            test -n "$(adb shell pidof com.easyeducation.app | tr -d '\r')" || (echo 'Easy Education process died after launch'; adb logcat -d | grep -E -A 100 -B 30 'AndroidRuntime|FATAL EXCEPTION|Process: com.easyeducation.app' || true; exit 1)
+            echo "Easy Education startup alive: $(adb shell pidof com.easyeducation.app | tr -d '\r')"
       - uses: actions/upload-artifact@v4
         with:
           name: easy-education-release-apk
