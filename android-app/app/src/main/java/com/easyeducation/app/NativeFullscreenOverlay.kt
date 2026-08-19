@@ -24,10 +24,9 @@ import kotlin.math.max
 
 /**
  * Single-activity fullscreen presentation of the same prepared ExoPlayer session.
- *
- * The black fullscreen scrim is separate from the video surface. During an exit drag only the video
- * follows the finger while the scrim fades, so the underlying watch page becomes visible exactly
- * during the gesture instead of appearing after an abrupt Activity transition.
+ * The black scrim and video surface are separate, so a pan reveals the already-rendered watch page
+ * underneath while the video follows the finger. The parent owns the exit pan after touch slop;
+ * the child player receives taps/double-taps/controls before that, avoiding double transforms.
  */
 @UnstableApi
 object NativeFullscreenOverlay {
@@ -245,10 +244,6 @@ object NativeFullscreenOverlay {
         }
     }
 
-    /**
-     * Transparent host with a separate black scrim. The watch page remains rendered underneath.
-     * A pan in any direction can exit when distance or velocity crosses the threshold.
-     */
     private class FullscreenShell(context: android.content.Context) : FrameLayout(context) {
         var target: View? = null
         var scrim: View? = null
@@ -262,12 +257,7 @@ object NativeFullscreenOverlay {
         private var progress = 0f
         private var velocity: VelocityTracker? = null
 
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            observe(event)
-            return super.dispatchTouchEvent(event)
-        }
-
-        private fun observe(event: MotionEvent) {
+        override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
@@ -277,44 +267,76 @@ object NativeFullscreenOverlay {
                     eligible = isSurfaceZone(event.x, event.y)
                     velocity?.recycle()
                     velocity = VelocityTracker.obtain().also { it.addMovement(event) }
+                    return false
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     velocity?.addMovement(event)
-                    if (!eligible) return
+                    if (!eligible) return false
                     val dx = event.x - downX
                     val dy = event.y - downY
                     val distance = hypot(dx, dy)
-                    if (!dragging && distance > touchSlop * 1.15f) dragging = true
+                    if (!dragging && distance > touchSlop * 1.15f) {
+                        dragging = true
+                    }
                     if (dragging) {
-                        val denominator = minOf(width, height).coerceAtLeast(dp(180)) * 0.56f
-                        progress = (distance / denominator).coerceIn(0f, 1f)
-                        applyTransform(dx, dy, progress)
+                        updateDrag(dx, dy)
+                        return true
                     }
                 }
 
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!dragging) {
+                        velocity?.recycle()
+                        velocity = null
+                        eligible = false
+                    }
+                }
+            }
+            return dragging
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (!dragging && event.actionMasked != MotionEvent.ACTION_DOWN) return super.onTouchEvent(event)
+            velocity?.addMovement(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    updateDrag(event.x - downX, event.y - downY)
+                    return true
+                }
+
                 MotionEvent.ACTION_UP -> {
-                    velocity?.addMovement(event)
                     velocity?.computeCurrentVelocity(1000)
                     val speed = hypot(velocity?.xVelocity ?: 0f, velocity?.yVelocity ?: 0f)
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    val commit = dragging && (progress >= EXIT_FRACTION || speed >= EXIT_VELOCITY_PX_S)
-                    velocity?.recycle()
-                    velocity = null
-                    eligible = false
-                    dragging = false
+                    val commit = progress >= EXIT_FRACTION || speed >= EXIT_VELOCITY_PX_S
+                    finishGestureState()
                     if (commit) onExitGesture?.invoke(dx, dy) else animateReset()
+                    return true
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
-                    velocity?.recycle()
-                    velocity = null
-                    eligible = false
-                    if (dragging) animateReset()
-                    dragging = false
+                    finishGestureState()
+                    animateReset()
+                    return true
                 }
             }
+            return true
+        }
+
+        private fun updateDrag(dx: Float, dy: Float) {
+            val distance = hypot(dx, dy)
+            val denominator = minOf(width, height).coerceAtLeast(dp(180)) * 0.56f
+            progress = (distance / denominator).coerceIn(0f, 1f)
+            applyTransform(dx, dy, progress)
+        }
+
+        private fun finishGestureState() {
+            velocity?.recycle()
+            velocity = null
+            eligible = false
+            dragging = false
         }
 
         private fun isSurfaceZone(x: Float, y: Float): Boolean {
