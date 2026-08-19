@@ -8,8 +8,13 @@ import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Cipher
@@ -26,16 +31,28 @@ data class SecureDownloadTask(
     val title: String,
     val courseTitle: String,
     val sourceUrl: String,
-    val height: Int = 480,
+    val height: Int = 0,
+    val qualityLabel: String = "",
+    val sourceKind: String = "",
+    val expectedBytes: Long = 0,
+    val sizeEstimated: Boolean = false,
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
     val chunkCount: Int = 0,
     val state: String = "queued",
+    val phase: String = "queued",
+    val phaseProgress: Int = 0,
+    val generation: Long = 0,
     val error: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     val progress: Int
-        get() = if (totalBytes > 0) ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100) else 0
+        get() = when {
+            state == "completed" -> 100
+            phaseProgress > 0 -> phaseProgress.coerceIn(0, 99)
+            totalBytes > 0 -> ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 99)
+            else -> 0
+        }
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -46,10 +63,17 @@ data class SecureDownloadTask(
         .put("courseTitle", courseTitle)
         .put("sourceUrl", sourceUrl)
         .put("height", height)
+        .put("qualityLabel", qualityLabel)
+        .put("sourceKind", sourceKind)
+        .put("expectedBytes", expectedBytes)
+        .put("sizeEstimated", sizeEstimated)
         .put("downloadedBytes", downloadedBytes)
         .put("totalBytes", totalBytes)
         .put("chunkCount", chunkCount)
         .put("state", state)
+        .put("phase", phase)
+        .put("phaseProgress", phaseProgress)
+        .put("generation", generation)
         .put("error", error)
         .put("updatedAt", updatedAt)
 
@@ -64,11 +88,18 @@ data class SecureDownloadTask(
                 title = json.optString("title", "Class video"),
                 courseTitle = json.optString("courseTitle"),
                 sourceUrl = json.optString("sourceUrl"),
-                height = json.optInt("height", 480),
+                height = json.optInt("height", 0),
+                qualityLabel = json.optString("qualityLabel"),
+                sourceKind = json.optString("sourceKind"),
+                expectedBytes = json.optLong("expectedBytes", 0),
+                sizeEstimated = json.optBoolean("sizeEstimated", false),
                 downloadedBytes = json.optLong("downloadedBytes", 0),
                 totalBytes = json.optLong("totalBytes", 0),
                 chunkCount = json.optInt("chunkCount", 0),
                 state = json.optString("state", "queued"),
+                phase = json.optString("phase", json.optString("state", "queued")),
+                phaseProgress = json.optInt("phaseProgress", 0),
+                generation = json.optLong("generation", 0),
                 error = json.optString("error").ifBlank { null },
                 updatedAt = json.optLong("updatedAt", 0),
             )
@@ -80,28 +111,31 @@ class SecureMediaStore(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun save(task: SecureDownloadTask) {
-        prefs.edit().putString(task.id, task.copy(updatedAt = System.currentTimeMillis()).toJson().toString()).apply()
+        val saved = task.copy(updatedAt = System.currentTimeMillis())
+        prefs.edit().putString(saved.id, saved.toJson().toString()).apply()
+        _changes.tryEmit(saved.id)
     }
 
     fun get(id: String): SecureDownloadTask? = prefs.getString(id, null)?.let(SecureDownloadTask::fromJson)
 
-    fun allForUser(uid: String): List<SecureDownloadTask> = prefs.all.values
-        .mapNotNull { (it as? String)?.let(SecureDownloadTask::fromJson) }
+    fun allForUser(uid: String): List<SecureDownloadTask> = all()
         .filter { it.userId == uid }
         .sortedByDescending { it.updatedAt }
 
-    fun pending(): List<SecureDownloadTask> = prefs.all.values
+    fun all(): List<SecureDownloadTask> = prefs.all.values
         .mapNotNull { (it as? String)?.let(SecureDownloadTask::fromJson) }
-        .filter { it.state in setOf("queued", "downloading") }
 
-    fun remove(id: String) {
-        secureDir(id).deleteRecursively()
-        prefs.edit().remove(id).apply()
+    fun pendingForUser(uid: String): List<SecureDownloadTask> = all()
+        .filter { it.userId == uid && it.state in setOf("queued", "downloading") }
+
+    fun remove(id: String): Boolean {
+        val removed = purgeDirectory(secureDir(id))
+        prefs.edit().remove(id).commit()
+        _changes.tryEmit(id)
+        return removed && !secureDir(id).exists()
     }
 
-    fun resetChunks(id: String) {
-        secureDir(id).deleteRecursively()
-    }
+    fun resetChunks(id: String): Boolean = purgeDirectory(secureDir(id))
 
     fun writeEncryptedChunk(task: SecureDownloadTask, index: Int, plain: ByteArray) {
         require(plain.isNotEmpty()) { "Cannot encrypt an empty chunk" }
@@ -111,16 +145,21 @@ class SecureMediaStore(private val context: Context) {
         val encrypted = cipher.doFinal(plain)
         val output = chunkFile(task.id, index)
         output.parentFile?.mkdirs()
-        output.outputStream().use { stream ->
+        val temp = File(output.parentFile, output.name + ".part")
+        if (temp.exists()) temp.delete()
+        FileOutputStream(temp).use { stream ->
             stream.write(cipher.iv)
             stream.write(encrypted)
+            stream.fd.sync()
         }
+        if (output.exists()) output.delete()
+        check(temp.renameTo(output)) { "Could not finalize encrypted media chunk" }
     }
 
     fun readDecryptedChunk(task: SecureDownloadTask, index: Int): ByteArray {
         require(task.userId.isNotBlank()) { "Download owner is missing" }
         val input = chunkFile(task.id, index).readBytes()
-        require(input.size > IV_BYTES) { "Encrypted media chunk is corrupt" }
+        require(input.size > IV_BYTES + GCM_TAG_BYTES) { "Encrypted media chunk is corrupt" }
         val iv = input.copyOfRange(0, IV_BYTES)
         val payload = input.copyOfRange(IV_BYTES, input.size)
         val cipher = Cipher.getInstance(CIPHER)
@@ -131,12 +170,31 @@ class SecureMediaStore(private val context: Context) {
 
     fun hasCompleteMedia(task: SecureDownloadTask): Boolean {
         if (task.state != "completed" || task.totalBytes <= 0 || task.chunkCount <= 0) return false
-        return (0 until task.chunkCount).all { chunkFile(task.id, it).exists() }
+        for (index in 0 until task.chunkCount) {
+            val file = chunkFile(task.id, index)
+            if (!file.exists()) return false
+            val plainBytes = if (index == task.chunkCount - 1) {
+                val consumed = index.toLong() * CHUNK_BYTES
+                (task.totalBytes - consumed).coerceAtLeast(0L)
+            } else CHUNK_BYTES.toLong()
+            val expectedEncryptedBytes = IV_BYTES.toLong() + plainBytes + GCM_TAG_BYTES
+            if (plainBytes <= 0 || file.length() != expectedEncryptedBytes) return false
+        }
+        return true
     }
 
     fun secureDir(id: String): File = File(context.filesDir, "secure_media/${safe(id)}")
 
     private fun chunkFile(id: String, index: Int): File = File(secureDir(id), "chunk-%06d.bin".format(index))
+
+    private fun purgeDirectory(dir: File): Boolean {
+        if (!dir.exists()) return true
+        val parent = dir.parentFile ?: return dir.deleteRecursively()
+        val tombstone = File(parent, ".deleted-${dir.name}-${System.nanoTime()}")
+        val target = if (dir.renameTo(tombstone)) tombstone else dir
+        val deleted = target.deleteRecursively()
+        return deleted && !dir.exists() && !tombstone.exists()
+    }
 
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -164,6 +222,14 @@ class SecureMediaStore(private val context: Context) {
         private const val KEY_ALIAS = "easy_education_offline_media_v2"
         private const val CIPHER = "AES/GCM/NoPadding"
         private const val IV_BYTES = 12
+        private const val GCM_TAG_BYTES = 16L
+
+        private val _changes = MutableSharedFlow<String>(
+            replay = 0,
+            extraBufferCapacity = 128,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+        val changes: SharedFlow<String> = _changes.asSharedFlow()
 
         fun downloadId(uid: String, classId: String): String = safe("$uid:$classId")
 
@@ -192,7 +258,7 @@ class SecureChunkDataSource(
         transferInitializing(dataSpec)
         val current = store.get(downloadId) ?: error("Offline download was not found")
         require(current.userId == expectedUid) { "This download belongs to another account" }
-        require(store.hasCompleteMedia(current)) { "Offline download is incomplete" }
+        require(store.hasCompleteMedia(current)) { "Offline download is damaged or incomplete. Please download it again." }
         task = current
         uri = dataSpec.uri
         readPosition = dataSpec.position
