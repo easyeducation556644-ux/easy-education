@@ -34,9 +34,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Inline presentation of the single process-local player session. Inline -> mini -> watch page and
- * inline -> fullscreen -> inline never re-resolve or re-prepare the current media item. Only a real
- * class change replaces the MediaSource.
+ * Inline presentation of the single process-local player session. Inline, mini, native PiP and
+ * fullscreen all hand off the same ExoPlayer; only an actual class change replaces MediaSource.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -76,7 +75,11 @@ fun NativeInlinePlayer(
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
                     PersistentNativePlayer.savePosition(context)
-                    if (!handedToMini && !handedToFullscreen && !NativeFullscreenOverlay.owns(exoPlayer)) {
+                    if (
+                        !handedToMini && !handedToFullscreen &&
+                        !NativeFullscreenOverlay.owns(exoPlayer) &&
+                        !NativeMiniPlayerOverlay.owns(exoPlayer)
+                    ) {
                         PersistentNativePlayer.pause()
                     }
                 }
@@ -90,6 +93,7 @@ fun NativeInlinePlayer(
             if (
                 !handedToMini && !handedToFullscreen &&
                 !NativeFullscreenOverlay.owns(exoPlayer) &&
+                !NativeMiniPlayerOverlay.owns(exoPlayer) &&
                 PersistentNativePlayer.currentClassId() == classId
             ) {
                 PersistentNativePlayer.pause()
@@ -176,6 +180,8 @@ fun NativeInlinePlayer(
             hostRef.get()?.resetPagePresentation()
             if (activeId.isNotBlank() && activeId != classId) {
                 onSharedSessionClassChanged?.invoke(activeId)
+            } else {
+                hostRef.get()?.playerSurface?.bindPlayer(exoPlayer)
             }
         }
         if (!NativeFullscreenOverlay.owns(exoPlayer)) {
@@ -222,7 +228,13 @@ fun NativeInlinePlayer(
                 hostRef.set(host)
                 host.playerSurface.apply {
                     setFullscreenPresentation(false)
-                    bindPlayer(if (handedToFullscreen || NativeFullscreenOverlay.owns(exoPlayer)) null else exoPlayer)
+                    bindPlayer(
+                        if (
+                            handedToFullscreen ||
+                            NativeFullscreenOverlay.owns(exoPlayer) ||
+                            NativeMiniPlayerOverlay.isPipPresentation()
+                        ) null else exoPlayer,
+                    )
                     setTitle(title)
                     setLoading(loading)
                     setNavigationAvailability(hasPrevious, hasNext)
