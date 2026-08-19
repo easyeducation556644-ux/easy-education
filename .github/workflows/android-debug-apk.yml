@@ -25,6 +25,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+      - name: Inspect protobuf runtime graph
+        shell: bash
+        working-directory: android-app
+        run: |
+          gradle :app:dependencies --configuration releaseRuntimeClasspath > /tmp/release-deps.txt
+          grep -i -C 5 'protobuf\|protolite\|NewPipeExtractor' /tmp/release-deps.txt || true
       - name: Restore release keystore
         shell: bash
         env:
