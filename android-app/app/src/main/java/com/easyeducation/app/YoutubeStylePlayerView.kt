@@ -7,11 +7,11 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
-import android.util.AttributeSet
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
@@ -31,50 +31,61 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /**
- * Unified Easy Education player surface. Interaction and placement follow familiar YouTube mobile
- * conventions while the implementation, assets and media pipeline are native Easy Education code.
+ * One native player surface for YouTube, Rumble and encrypted offline media. The UI follows the
+ * familiar YouTube mobile control hierarchy, while the implementation and assets are Easy
+ * Education's own. Vertical drag is intercepted at the parent player level, so the video follows
+ * the finger continuously instead of switching modes only after a threshold.
  */
 @UnstableApi
 class YoutubeStylePlayerView @JvmOverloads constructor(
     context: Context,
-    attrs: AttributeSet? = null,
+    attrs: android.util.AttributeSet? = null,
 ) : FrameLayout(context, attrs) {
 
     var onBack: (() -> Unit)? = null
     var onFullscreen: (() -> Unit)? = null
     var onMinimize: (() -> Unit)? = null
+    var onPrevious: (() -> Unit)? = null
+    var onNext: (() -> Unit)? = null
 
     private val handler = Handler(Looper.getMainLooper())
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val playerView: PlayerView
     private val controls: FrameLayout
     private val titleView: TextView
-    private val playPause: AppCompatImageButton
-    private val settingsButton: AppCompatImageButton
-    private val speedBadge: TextView
     private val timeText: TextView
     private val seekBar: SeekBar
     private val buffering: TextView
     private val leftHint: TextView
     private val rightHint: TextView
     private val fastBadge: TextView
+    private val speedBadge: TextView
+
+    private val backButton: AppCompatImageButton
+    private val settingsButton: AppCompatImageButton
+    private val minimizeButton: AppCompatImageButton
+    private val previousButton: AppCompatImageButton
+    private val playPause: AppCompatImageButton
+    private val nextButton: AppCompatImageButton
+    private val fullscreenButton: AppCompatImageButton
 
     private var attachedPlayer: ExoPlayer? = null
     private var controlsVisible = true
     private var isSeeking = false
-    private var downX = 0f
-    private var downY = 0f
-    private var moved = false
-    private var lastTapAt = 0L
-    private var lastTapSide = 0
-    private var rapidSeekSeconds = 0
     private var selectedSpeed = 1f
     private var holdSpeedActive = false
     private var holdRestoreSpeed = 1f
-    private var minimizing = false
-    private var minimizeProgress = 0f
-    private var singleTapRunnable: Runnable? = null
-    private var holdRunnable: Runnable? = null
-    private var rapidResetRunnable: Runnable? = null
+    private var hasPrevious = false
+    private var hasNext = false
+    private var lastPlayingVisual: Boolean? = null
+
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var draggingDown = false
+    private var dragProgress = 0f
+    private var downOnControl = false
+    private var minimizeCommitted = false
+    private var rapidSeekSeconds = 0
 
     private val hideControls = Runnable { setControlsVisible(false) }
     private val progressUpdater = object : Runnable {
@@ -98,7 +109,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            updatePlayPause(isPlaying)
+            updatePlayPause(isPlaying, animate = true)
             if (isPlaying) scheduleHide() else handler.removeCallbacks(hideControls)
         }
 
@@ -106,7 +117,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             buffering.visibility = if (playbackState == Player.STATE_BUFFERING) View.VISIBLE else View.INVISIBLE
             if (playbackState == Player.STATE_ENDED) {
                 setControlsVisible(true)
-                updatePlayPause(false)
+                updatePlayPause(false, animate = true)
             }
         }
 
@@ -117,10 +128,48 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         }
     }
 
+    private val gestureDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (draggingDown || downOnControl) return false
+                setControlsVisible(!controlsVisible)
+                if (controlsVisible) scheduleHide()
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (draggingDown || downOnControl) return false
+                handler.removeCallbacks(hideControls)
+                val side = if (e.x < width / 2f) -1 else 1
+                rapidSeekSeconds = (rapidSeekSeconds + 10).coerceAtMost(60)
+                seekBy(side * 10_000L)
+                showRapidSeek(side, rapidSeekSeconds)
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (draggingDown || downOnControl) return
+                val exo = attachedPlayer ?: return
+                if (holdSpeedActive) return
+                holdSpeedActive = true
+                holdRestoreSpeed = exo.playbackParameters.speed
+                val fast = max(2f, holdRestoreSpeed).coerceAtMost(4f)
+                exo.setPlaybackSpeed(fast)
+                fastBadge.text = "${speedLabel(fast)}  Hold"
+                fastBadge.visibility = View.VISIBLE
+                handler.removeCallbacks(hideControls)
+            }
+        },
+    )
+
     init {
         setBackgroundColor(Color.BLACK)
         clipChildren = false
         clipToPadding = false
+        isClickable = true
 
         playerView = PlayerView(context).apply {
             setBackgroundColor(Color.BLACK)
@@ -133,37 +182,26 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
 
-        val gestureLayer = View(context).apply {
-            isClickable = true
-            isFocusable = true
-            setBackgroundColor(Color.TRANSPARENT)
-            setOnTouchListener { view, event -> handleTouch(view, event) }
-        }
-        addView(
-            gestureLayer,
-            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-        )
-
         controls = FrameLayout(context)
         addView(controls, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val top = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(7), dp(7), dp(7))
-            background = verticalShade(0xB5000000.toInt(), 0x00000000)
+            setPadding(dp(4), dp(6), dp(6), dp(6))
+            background = verticalShade(0xB8000000.toInt(), 0x00000000)
         }
-
-        val back = iconButton(R.drawable.ic_player_back, "Back").apply {
+        backButton = iconButton(R.drawable.ic_player_back, "Back").apply {
             setOnClickListener { onBack?.invoke() }
         }
-        top.addView(back, LinearLayout.LayoutParams(dp(46), dp(46)))
+        top.addView(backButton, LinearLayout.LayoutParams(dp(46), dp(46)))
 
         titleView = TextView(context).apply {
-            textSize = 14f
+            textSize = 13.5f
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
             maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
             gravity = Gravity.CENTER_VERTICAL
         }
         top.addView(titleView, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(2) })
@@ -180,30 +218,49 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         }
         top.addView(settingsButton, LinearLayout.LayoutParams(dp(44), dp(44)))
 
-        val collapse = iconButton(R.drawable.ic_player_minimize, "Minimize player").apply {
+        minimizeButton = iconButton(R.drawable.ic_player_minimize, "Minimize player").apply {
             setOnClickListener { animateCommitMinimize() }
         }
-        top.addView(collapse, LinearLayout.LayoutParams(dp(44), dp(44)))
+        top.addView(minimizeButton, LinearLayout.LayoutParams(dp(44), dp(44)))
         controls.addView(top, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62), Gravity.TOP))
 
+        val center = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        previousButton = iconButton(R.drawable.ic_player_previous, "Previous class", circle = true).apply {
+            setOnClickListener {
+                if (hasPrevious) onPrevious?.invoke()
+                showControlsTemporarily()
+            }
+        }
         playPause = iconButton(R.drawable.ic_player_play, "Play or pause", circle = true).apply {
             setOnClickListener {
                 attachedPlayer?.let { exo -> if (exo.isPlaying) exo.pause() else exo.play() }
                 showControlsTemporarily()
             }
         }
-        controls.addView(playPause, LayoutParams(dp(68), dp(68), Gravity.CENTER))
+        nextButton = iconButton(R.drawable.ic_player_next, "Next class", circle = true).apply {
+            setOnClickListener {
+                if (hasNext) onNext?.invoke()
+                showControlsTemporarily()
+            }
+        }
+        center.addView(previousButton, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginEnd = dp(18) })
+        center.addView(playPause, LinearLayout.LayoutParams(dp(70), dp(70)))
+        center.addView(nextButton, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginStart = dp(18) })
+        controls.addView(center, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(76), Gravity.CENTER))
 
         buffering = pillText("Loading…").apply { visibility = View.INVISIBLE }
         controls.addView(
             buffering,
-            LayoutParams(dp(118), dp(38), Gravity.CENTER).apply { topMargin = dp(92) },
+            LayoutParams(dp(118), dp(38), Gravity.CENTER).apply { topMargin = dp(96) },
         )
 
         val bottom = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), 0, dp(6), dp(5))
-            background = verticalShade(0x00000000, 0xC0000000.toInt())
+            setPadding(dp(8), 0, dp(4), dp(4))
+            background = verticalShade(0x00000000, 0xC6000000.toInt())
         }
         seekBar = SeekBar(context).apply {
             max = 1000
@@ -236,9 +293,9 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 }
             })
         }
-        bottom.addView(seekBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)))
+        bottom.addView(seekBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(28)))
 
-        val row = LinearLayout(context).apply {
+        val bottomRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -248,36 +305,35 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER_VERTICAL
         }
-        row.addView(timeText, LinearLayout.LayoutParams(0, dp(38), 1f))
-
-        val fullscreen = iconButton(R.drawable.ic_player_fullscreen, "Full screen").apply {
+        bottomRow.addView(timeText, LinearLayout.LayoutParams(0, dp(38), 1f))
+        fullscreenButton = iconButton(R.drawable.ic_player_fullscreen, "Full screen").apply {
             setOnClickListener { onFullscreen?.invoke() }
         }
-        row.addView(fullscreen, LinearLayout.LayoutParams(dp(48), dp(38)))
-        bottom.addView(row)
-        controls.addView(bottom, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(74), Gravity.BOTTOM))
+        bottomRow.addView(fullscreenButton, LinearLayout.LayoutParams(dp(50), dp(40)))
+        bottom.addView(bottomRow)
+        controls.addView(bottom, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72), Gravity.BOTTOM))
 
         leftHint = seekHint().also {
             addView(
                 it,
-                LayoutParams(dp(148), dp(72), Gravity.CENTER_VERTICAL or Gravity.START).apply {
-                    marginStart = dp(24)
+                LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.START).apply {
+                    marginStart = dp(22)
                 },
             )
         }
         rightHint = seekHint().also {
             addView(
                 it,
-                LayoutParams(dp(148), dp(72), Gravity.CENTER_VERTICAL or Gravity.END).apply {
-                    marginEnd = dp(24)
+                LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.END).apply {
+                    marginEnd = dp(22)
                 },
             )
         }
         fastBadge = pillText("2×").apply { visibility = View.INVISIBLE }
         addView(
             fastBadge,
-            LayoutParams(dp(110), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                topMargin = dp(24)
+            LayoutParams(dp(116), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(22)
             },
         )
 
@@ -285,6 +341,77 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             .getFloat(SPEED_KEY, 1f)
             .coerceIn(0.25f, 4f)
         updateSpeedBadge()
+        setNavigationAvailability(false, false)
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = ev.x
+                touchDownY = ev.y
+                draggingDown = false
+                dragProgress = 0f
+                minimizeCommitted = false
+                rapidSeekSeconds = 0
+                downOnControl = interactiveControls().any { hit(it, ev.rawX, ev.rawY) }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (holdSpeedActive) finishHoldSpeed()
+            }
+        }
+        if (!downOnControl && !draggingDown) gestureDetector.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = ev.x
+                touchDownY = ev.y
+                draggingDown = false
+                dragProgress = 0f
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (downOnControl || isSeeking || minimizeCommitted) return false
+                val dx = ev.x - touchDownX
+                val dy = ev.y - touchDownY
+                if (!draggingDown && dy > touchSlop && abs(dy) > abs(dx) * 1.12f) {
+                    draggingDown = true
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    handler.removeCallbacks(hideControls)
+                    return true
+                }
+                if (draggingDown) return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (draggingDown) return true
+        }
+        return false
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!draggingDown) return super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                val dy = (event.y - touchDownY).coerceAtLeast(0f)
+                val denominator = (height.coerceAtLeast(dp(180)) * 0.70f)
+                dragProgress = (dy / denominator).coerceIn(0f, 1f)
+                applyDragTransform(dy, dragProgress)
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                val commit = dragProgress >= MINIMIZE_COMMIT_FRACTION
+                if (commit) animateCommitMinimize() else animateResetMinimize()
+                draggingDown = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                draggingDown = false
+                animateResetMinimize()
+                return true
+            }
+        }
+        return true
     }
 
     fun bindPlayer(player: ExoPlayer?) {
@@ -292,10 +419,11 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         attachedPlayer?.removeListener(listener)
         attachedPlayer = player
         playerView.player = player
+        lastPlayingVisual = null
         player?.let {
             it.addListener(listener)
             it.setPlaybackSpeed(selectedSpeed)
-            updatePlayPause(it.isPlaying)
+            updatePlayPause(it.isPlaying, animate = false)
         }
         handler.removeCallbacks(progressUpdater)
         handler.post(progressUpdater)
@@ -311,123 +439,70 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         buffering.visibility = if (value) View.VISIBLE else View.INVISIBLE
     }
 
-    private fun handleTouch(view: View, event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                animate().cancel()
-                downX = event.x
-                downY = event.y
-                moved = false
-                minimizing = false
-                minimizeProgress = 0f
-                holdSpeedActive = false
-                holdRunnable?.let(handler::removeCallbacks)
-                holdRunnable = Runnable {
-                    if (moved || minimizing) return@Runnable
-                    val exo = attachedPlayer ?: return@Runnable
-                    holdSpeedActive = true
-                    holdRestoreSpeed = exo.playbackParameters.speed
-                    val fast = max(2f, holdRestoreSpeed).coerceAtMost(4f)
-                    exo.setPlaybackSpeed(fast)
-                    fastBadge.text = "${speedLabel(fast)}  Hold"
-                    fastBadge.visibility = View.VISIBLE
-                    handler.removeCallbacks(hideControls)
-                }.also { handler.postDelayed(it, HOLD_MS) }
-                return true
-            }
-
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.x - downX
-                val dy = event.y - downY
-                if (abs(dx) > dp(12) || abs(dy) > dp(12)) {
-                    moved = true
-                    holdRunnable?.let(handler::removeCallbacks)
-                }
-                if (dy > dp(8) && abs(dy) > abs(dx) * 1.12f) {
-                    minimizing = true
-                    minimizeProgress = (dy / (height.coerceAtLeast(dp(180)) * 0.72f)).coerceIn(0f, 1f)
-                    applyMinimizeTransform(minimizeProgress)
-                }
-                return true
-            }
-
-            MotionEvent.ACTION_CANCEL -> {
-                holdRunnable?.let(handler::removeCallbacks)
-                finishHoldSpeed()
-                if (minimizing) animateResetMinimize()
-                return true
-            }
-
-            MotionEvent.ACTION_UP -> {
-                holdRunnable?.let(handler::removeCallbacks)
-                if (holdSpeedActive) {
-                    finishHoldSpeed()
-                    return true
-                }
-
-                if (minimizing) {
-                    val commit = minimizeProgress >= MINIMIZE_COMMIT_FRACTION
-                    if (commit) animateCommitMinimize() else animateResetMinimize()
-                    return true
-                }
-                if (moved) return true
-
-                val now = SystemClock.uptimeMillis()
-                val side = if (event.x < view.width / 2f) -1 else 1
-                if (now - lastTapAt <= DOUBLE_TAP_MS && side == lastTapSide) {
-                    singleTapRunnable?.let(handler::removeCallbacks)
-                    rapidSeekSeconds += 10
-                    seekBy(side * 10_000L)
-                    showRapidSeek(side, rapidSeekSeconds)
-                    lastTapAt = now
-                    lastTapSide = side
-                } else {
-                    rapidSeekSeconds = 0
-                    lastTapAt = now
-                    lastTapSide = side
-                    singleTapRunnable?.let(handler::removeCallbacks)
-                    singleTapRunnable = Runnable {
-                        if (SystemClock.uptimeMillis() - lastTapAt >= DOUBLE_TAP_MS) {
-                            setControlsVisible(!controlsVisible)
-                        }
-                    }.also { handler.postDelayed(it, DOUBLE_TAP_MS) }
-                }
-                view.performClick()
-                return true
-            }
-        }
-        return true
+    fun setNavigationAvailability(previous: Boolean, next: Boolean) {
+        hasPrevious = previous
+        hasNext = next
+        previousButton.isEnabled = previous
+        nextButton.isEnabled = next
+        previousButton.alpha = if (previous) 1f else 0.33f
+        nextButton.alpha = if (next) 1f else 0.33f
     }
 
-    private fun applyMinimizeTransform(progress: Float) {
-        val scale = 1f - (0.30f * progress)
+    private fun interactiveControls(): List<View> = listOf(
+        backButton,
+        settingsButton,
+        minimizeButton,
+        previousButton,
+        playPause,
+        nextButton,
+        seekBar,
+        fullscreenButton,
+        speedBadge,
+    )
+
+    private fun hit(view: View, rawX: Float, rawY: Float): Boolean {
+        if (view.visibility != View.VISIBLE || !view.isEnabled) return false
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return rawX >= location[0] && rawX <= location[0] + view.width &&
+            rawY >= location[1] && rawY <= location[1] + view.height
+    }
+
+    private fun applyDragTransform(dy: Float, progress: Float) {
+        val scale = 1f - 0.31f * progress
+        pivotX = width.toFloat()
+        pivotY = height.toFloat()
         scaleX = scale
         scaleY = scale
-        translationY = height * 0.22f * progress
-        translationX = width * 0.09f * progress
-        controls.alpha = (1f - progress * 0.82f).coerceAtLeast(0.18f)
-        setBackgroundColor(Color.argb((255 * (1f - progress * 0.5f)).toInt(), 0, 0, 0))
+        translationY = dy * 0.68f
+        translationX = width * 0.12f * progress
+        controls.alpha = (1f - progress * 0.90f).coerceAtLeast(0.08f)
+        elevation = dp(10).toFloat() * progress
     }
 
     private fun animateCommitMinimize() {
+        if (minimizeCommitted) return
+        minimizeCommitted = true
         handler.removeCallbacks(hideControls)
         animate().cancel()
+        controls.animate().alpha(0.05f).setDuration(90L).start()
         animate()
-            .scaleX(0.68f)
-            .scaleY(0.68f)
-            .translationX(width * 0.12f)
-            .translationY(height * 0.25f)
-            .alpha(0.9f)
+            .scaleX(0.66f)
+            .scaleY(0.66f)
+            .translationX(width * 0.16f)
+            .translationY(height * 0.34f)
+            .alpha(0.92f)
             .setInterpolator(DecelerateInterpolator())
-            .setDuration(115L)
+            .setDuration(120L)
             .withEndAction {
                 onMinimize?.invoke()
-                handler.postDelayed({ resetMinimizeImmediately() }, 180L)
+                handler.postDelayed({ resetMinimizeImmediately() }, 120L)
             }
             .start()
     }
 
     private fun animateResetMinimize() {
+        minimizeCommitted = false
         animate().cancel()
         controls.animate().alpha(1f).setDuration(150L).start()
         animate()
@@ -436,36 +511,31 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             .translationX(0f)
             .translationY(0f)
             .alpha(1f)
-            .setInterpolator(OvershootInterpolator(0.65f))
+            .setInterpolator(OvershootInterpolator(0.45f))
             .setDuration(220L)
             .withEndAction { resetMinimizeImmediately() }
             .start()
     }
 
     private fun resetMinimizeImmediately() {
-        minimizing = false
-        minimizeProgress = 0f
+        pivotX = width / 2f
+        pivotY = height / 2f
         scaleX = 1f
         scaleY = 1f
         translationX = 0f
         translationY = 0f
         alpha = 1f
+        elevation = 0f
         controls.alpha = 1f
-        setBackgroundColor(Color.BLACK)
+        draggingDown = false
+        dragProgress = 0f
+        minimizeCommitted = false
     }
 
     private fun seekBy(deltaMs: Long) {
         val exo = attachedPlayer ?: return
         val duration = exo.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
         exo.seekTo((exo.currentPosition + deltaMs).coerceIn(0L, duration))
-    }
-
-    private fun finishHoldSpeed() {
-        if (!holdSpeedActive) return
-        holdSpeedActive = false
-        attachedPlayer?.setPlaybackSpeed(holdRestoreSpeed)
-        fastBadge.visibility = View.INVISIBLE
-        showControlsTemporarily()
     }
 
     private fun showRapidSeek(side: Int, seconds: Int) {
@@ -475,13 +545,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         hint.text = if (side < 0) "↶  $seconds seconds" else "$seconds seconds  ↷"
         hint.alpha = 1f
         hint.visibility = View.VISIBLE
-        rapidResetRunnable?.let(handler::removeCallbacks)
-        rapidResetRunnable = Runnable {
+        handler.postDelayed({
             hint.animate().alpha(0f).setDuration(140L).withEndAction {
                 hint.visibility = View.INVISIBLE
+                rapidSeekSeconds = 0
             }.start()
-            rapidSeekSeconds = 0
-        }.also { handler.postDelayed(it, 700L) }
+        }, 680L)
+    }
+
+    private fun finishHoldSpeed() {
+        if (!holdSpeedActive) return
+        holdSpeedActive = false
+        attachedPlayer?.setPlaybackSpeed(holdRestoreSpeed)
+        fastBadge.visibility = View.INVISIBLE
+        showControlsTemporarily()
     }
 
     private fun showSpeedMenu(anchor: View) {
@@ -511,6 +588,37 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         speedBadge.visibility = if (selectedSpeed == 1f) View.GONE else View.VISIBLE
     }
 
+    private fun updatePlayPause(isPlaying: Boolean, animate: Boolean) {
+        if (lastPlayingVisual == isPlaying) return
+        lastPlayingVisual = isPlaying
+        val icon = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play
+        playPause.contentDescription = if (isPlaying) "Pause" else "Play"
+        if (!animate || !isAttachedToWindow) {
+            playPause.setImageResource(icon)
+            playPause.scaleX = 1f
+            playPause.scaleY = 1f
+            playPause.alpha = 1f
+            return
+        }
+        playPause.animate().cancel()
+        playPause.animate()
+            .scaleX(0.76f)
+            .scaleY(0.76f)
+            .alpha(0.35f)
+            .setDuration(65L)
+            .withEndAction {
+                playPause.setImageResource(icon)
+                playPause.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .alpha(1f)
+                    .setInterpolator(OvershootInterpolator(0.65f))
+                    .setDuration(145L)
+                    .start()
+            }
+            .start()
+    }
+
     private fun showControlsTemporarily() {
         setControlsVisible(true)
         scheduleHide()
@@ -518,7 +626,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
 
     private fun scheduleHide() {
         handler.removeCallbacks(hideControls)
-        if (attachedPlayer?.isPlaying == true) handler.postDelayed(hideControls, 3000L)
+        if (attachedPlayer?.isPlaying == true) handler.postDelayed(hideControls, 2800L)
     }
 
     private fun setControlsVisible(visible: Boolean) {
@@ -526,14 +634,10 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         controls.animate().cancel()
         controls.animate()
             .alpha(if (visible) 1f else 0f)
-            .setDuration(150L)
+            .setDuration(140L)
             .withStartAction { if (visible) controls.visibility = View.VISIBLE }
             .withEndAction { if (!visible) controls.visibility = View.INVISIBLE }
             .start()
-    }
-
-    private fun updatePlayPause(isPlaying: Boolean) {
-        playPause.setImageResource(if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play)
     }
 
     override fun onAttachedToWindow() {
@@ -545,21 +649,17 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         handler.removeCallbacks(progressUpdater)
         handler.removeCallbacks(hideControls)
-        holdRunnable?.let(handler::removeCallbacks)
-        singleTapRunnable?.let(handler::removeCallbacks)
-        rapidResetRunnable?.let(handler::removeCallbacks)
         super.onDetachedFromWindow()
     }
 
-    private fun iconButton(resource: Int, description: String, circle: Boolean = false) =
+    private fun iconButton(drawable: Int, description: String, circle: Boolean = false) =
         AppCompatImageButton(context).apply {
-            setImageResource(resource)
-            imageTintList = ColorStateList.valueOf(Color.WHITE)
+            setImageResource(drawable)
             contentDescription = description
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = if (circle) roundedBackground(Color.argb(150, 15, 15, 15), 100f) else null
-            isClickable = true
-            isFocusable = true
+            setBackgroundColor(Color.TRANSPARENT)
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(if (circle) 13 else 11), dp(if (circle) 13 else 11), dp(if (circle) 13 else 11), dp(if (circle) 13 else 11))
+            if (circle) background = roundedBackground(Color.argb(135, 15, 15, 15), 100f)
         }
 
     private fun pillText(value: String) = TextView(context).apply {
@@ -585,9 +685,9 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         cornerRadius = dp(radiusDp.toInt()).toFloat()
     }
 
-    private fun verticalShade(topColor: Int, bottomColor: Int) = GradientDrawable(
+    private fun verticalShade(start: Int, end: Int) = GradientDrawable(
         GradientDrawable.Orientation.TOP_BOTTOM,
-        intArrayOf(topColor, bottomColor),
+        intArrayOf(start, end),
     )
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -601,14 +701,11 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         else "%d:%02d".format(minutes, seconds)
     }
 
-    private fun speedLabel(speed: Float): String =
-        if (speed % 1f == 0f) "${speed.toInt()}×" else "${speed}×"
+    private fun speedLabel(speed: Float): String = if (speed % 1f == 0f) "${speed.toInt()}×" else "${speed}×"
 
     companion object {
         private const val PLAYER_PREFS = "native_player_positions_v2"
         private const val SPEED_KEY = "youtube_style_speed"
-        private const val DOUBLE_TAP_MS = 280L
-        private const val HOLD_MS = 450L
-        private const val MINIMIZE_COMMIT_FRACTION = 0.34f
+        private const val MINIMIZE_COMMIT_FRACTION = 0.28f
     }
 }
