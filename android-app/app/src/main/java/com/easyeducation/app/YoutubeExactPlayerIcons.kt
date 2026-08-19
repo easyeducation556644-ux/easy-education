@@ -19,7 +19,7 @@ object YoutubeExactPlayerIcons {
         (top?.child(3) as? AppCompatImageButton)?.apply { setExact(SETTINGS); setPadding(dp(10), dp(10), dp(10), dp(10)) }
         (top?.child(4) as? AppCompatImageButton)?.apply { setExact(MINIMIZE); setPadding(dp(10), dp(10), dp(10), dp(10)) }
         (center?.child(0) as? AppCompatImageButton)?.apply { setExact(PREVIOUS); setPadding(dp(4), dp(4), dp(4), dp(4)) }
-        (center?.child(1) as? AppCompatImageButton)?.setPadding(dp(7), dp(7), dp(7), dp(7))
+        (center?.child(1) as? AppCompatImageButton)?.apply { setPadding(dp(7), dp(7), dp(7), dp(7)) }
         (center?.child(2) as? AppCompatImageButton)?.apply { setExact(NEXT); setPadding(dp(4), dp(4), dp(4), dp(4)) }
         (bottomRow?.child(1) as? AppCompatImageButton)?.apply {
             setExact(if (fullscreen) FULLSCREEN_EXIT else FULLSCREEN)
