@@ -1,10 +1,13 @@
 package com.easyeducation.app
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -136,6 +139,7 @@ class MainActivity : ComponentActivity() {
             activeDeviceCount = 0
             NativeFullscreenOverlay.dismiss(immediate = true)
             NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
+            NativePlayerMediaSession.release()
             PersistentNativePlayer.resetForSignOut(this)
             return
         }
@@ -147,10 +151,53 @@ class MainActivity : ComponentActivity() {
                 activeDeviceCount = 0
                 NativeFullscreenOverlay.dismiss(immediate = true)
                 NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
+                NativePlayerMediaSession.release()
                 PersistentNativePlayer.resetForSignOut(this)
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             },
         )
+    }
+
+    /**
+     * YouTube-style app-background behavior: hand the already prepared player surface to Android's
+     * native Picture-in-Picture window. No resolver, MediaSource replacement or prepare() occurs.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        maybeEnterNativePip()
+    }
+
+    private fun maybeEnterNativePip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isInPictureInPictureMode) return
+        if (FirebaseAuth.getInstance().currentUser == null) return
+        if (PersistentNativePlayer.currentClassId().isBlank()) return
+
+        val exo = PersistentNativePlayer.player(this)
+        if (exo.mediaItemCount == 0) return
+
+        // If the user presses Home from fullscreen, first remove only that presentation. The player
+        // remains prepared, then the same session is stretched into the native PiP source surface.
+        if (NativeFullscreenOverlay.owns(exo)) NativeFullscreenOverlay.dismiss(immediate = true)
+        if (!NativeMiniPlayerOverlay.ensureForPip(this)) return
+        NativePlayerMediaSession.ensure(this)
+
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(true)
+        }
+        runCatching { enterPictureInPictureMode(builder.build()) }
+            .onFailure { NativeMiniPlayerOverlay.exitPipPresentation() }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (!isInPictureInPictureMode) {
+            NativeMiniPlayerOverlay.exitPipPresentation()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -163,6 +210,7 @@ class MainActivity : ComponentActivity() {
         deviceListener?.remove()
         FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
         NativeFullscreenOverlay.dismiss(immediate = true)
+        if (isFinishing) NativePlayerMediaSession.release()
         super.onDestroy()
     }
 
