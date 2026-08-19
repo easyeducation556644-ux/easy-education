@@ -104,8 +104,6 @@ fun NativeInlinePlayer(
             return@LaunchedEffect
         }
 
-        // Returning from the miniplayer must not flash a spinner or touch the resolver when this
-        // exact media item is already prepared/buffered.
         val alreadyPrepared = PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
             exoPlayer.mediaItemCount > 0
         NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
@@ -138,6 +136,7 @@ fun NativeInlinePlayer(
     fun minimizePlayer() {
         val activity = context.findActivity() ?: return
         val host = hostRef.get()
+        val sourceBounds = host?.globalBounds()
         PersistentNativePlayer.savePosition(context)
         handedToMini = true
         handedToFullscreen = false
@@ -149,6 +148,7 @@ fun NativeInlinePlayer(
             sourceUrl = sourceUrl,
             title = title,
             requestedHeight = requestedHeight,
+            sourceBounds = sourceBounds,
             onExpandToWatchPage = onExpandFromMini,
         )
         if (onMinimize != null) onMinimize()
@@ -162,8 +162,6 @@ fun NativeInlinePlayer(
         handedToMini = false
         handedToFullscreen = true
         val bounds = host?.globalBounds()
-        // Detach only the rendering surface; ExoPlayer, its MediaSource, buffer, position and speed
-        // remain untouched and are immediately attached to the fullscreen overlay.
         host?.playerSurface?.bindPlayer(null)
         NativeFullscreenOverlay.show(
             activity = activity,
