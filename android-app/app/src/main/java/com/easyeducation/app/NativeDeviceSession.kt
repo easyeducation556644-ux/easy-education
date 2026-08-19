@@ -50,10 +50,7 @@ object NativeDeviceSession {
         val id = deviceId(context)
         val metrics = context.resources.displayMetrics
         val now = Instant.now().toString()
-        val model = listOf(Build.MANUFACTURER, Build.MODEL)
-            .filter { it.isNotBlank() }
-            .joinToString(" ")
-            .ifBlank { "Android device" }
+        val model = hardwareName(Build.MANUFACTURER, Build.MODEL).ifBlank { "Android" }
         return mapOf(
             "id" to id,
             "fingerprint" to id,
@@ -205,11 +202,18 @@ object NativeDeviceSession {
         val userAgent = this["userAgent"]?.toString().orEmpty()
         val osFromAgent = Regex("Android\\s+([^;)]+)").find(userAgent)?.groupValues?.getOrNull(1).orEmpty()
         val appFromAgent = Regex("EasyEducationAndroid/([^\\s]+)").find(userAgent)?.groupValues?.getOrNull(1).orEmpty()
+        val storedName = this["deviceName"]?.toString().orEmpty().trim()
+        val manufacturer = this["manufacturer"]?.toString().orEmpty()
+        val model = this["model"]?.toString().orEmpty()
+        val hardware = hardwareName(manufacturer, model)
+        val modelFromAgent = parseModelFromAgent(userAgent)
+        val displayName = storedName.takeUnless(::isGenericAndroidName)
+            ?: hardware.takeIf { it.isNotBlank() }
+            ?: modelFromAgent.takeIf { it.isNotBlank() }
+            ?: "Android"
         return NativeActiveDevice(
             id = id,
-            name = this["deviceName"]?.toString().orEmpty()
-                .ifBlank { listOf(this["manufacturer"], this["model"]).joinToString(" ") { it?.toString().orEmpty() }.trim() }
-                .ifBlank { "Android device" },
+            name = displayName,
             platform = this["platform"]?.toString().orEmpty().ifBlank { "Android" },
             osVersion = this["osVersion"]?.toString().orEmpty().ifBlank { osFromAgent },
             appVersion = this["appVersion"]?.toString().orEmpty().ifBlank { appFromAgent },
@@ -218,6 +222,39 @@ object NativeDeviceSession {
             lastSeen = this["lastSeen"]?.toString().orEmpty()
                 .ifBlank { this["timestamp"]?.toString().orEmpty() },
             isCurrent = id.isNotBlank() && id == currentId,
+        )
+    }
+
+    private fun hardwareName(manufacturerRaw: String?, modelRaw: String?): String {
+        val manufacturer = manufacturerRaw.orEmpty().trim()
+        val model = modelRaw.orEmpty().trim()
+        if (model.isBlank()) return manufacturer
+        if (manufacturer.isBlank() || model.startsWith(manufacturer, ignoreCase = true)) return model
+        val friendlyManufacturer = manufacturer.replaceFirstChar { char ->
+            if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
+        }
+        return "$friendlyManufacturer $model".trim()
+    }
+
+    private fun parseModelFromAgent(userAgent: String): String {
+        if (userAgent.isBlank()) return ""
+        val native = Regex("EasyEducationAndroid/[^\\s]+\\s*\\(Android\\s+[^;)]*;\\s*([^;)]+)", RegexOption.IGNORE_CASE)
+            .find(userAgent)?.groupValues?.getOrNull(1).orEmpty().trim()
+        if (native.isNotBlank()) return native.substringBefore(" Build/").trim()
+        return Regex("Android\\s+[^;)]*;\\s*([^;)]+)", RegexOption.IGNORE_CASE)
+            .find(userAgent)?.groupValues?.getOrNull(1).orEmpty()
+            .substringBefore(" Build/")
+            .trim()
+    }
+
+    private fun isGenericAndroidName(value: String): Boolean {
+        val normalized = value.trim().lowercase(Locale.ROOT)
+        return normalized.isBlank() || normalized in setOf(
+            "android",
+            "android device",
+            "android phone",
+            "unknown",
+            "unknown device",
         )
     }
 }

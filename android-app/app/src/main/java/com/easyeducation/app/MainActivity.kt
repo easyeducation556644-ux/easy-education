@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        NativeCourseStoreWebViewFixer.start(this)
 
         runCatching { SecureDownloadCoordinator.resumePending(this) }
         if (FirebaseAuth.getInstance().currentUser != null) {
@@ -126,6 +127,29 @@ class MainActivity : ComponentActivity() {
                 }
                 runCatching { NativePushRegistrar.register(this@MainActivity) }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!PersistentNativePlayer.consumeMiniRequest()) return
+        // NativePlayerActivity may still be completing its final surface detach during this
+        // lifecycle callback. Post the handoff one frame so the same decoder can move cleanly.
+        window.decorView.post {
+            val classId = PersistentNativePlayer.currentClassId()
+            val sourceUrl = PersistentNativePlayer.currentSourceUrl()
+            if (classId.isBlank() || sourceUrl.isBlank()) return@post
+            val exo = PersistentNativePlayer.player(this)
+            if (exo.mediaItemCount == 0) return@post
+            NativeMiniPlayerOverlay.show(
+                activity = this,
+                exoPlayer = exo,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                title = PersistentNativePlayer.currentTitle(),
+                requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
+                onExpandToWatchPage = null,
+            )
         }
     }
 
@@ -234,7 +258,7 @@ class MainActivity : ComponentActivity() {
                         exoPlayer = exo,
                         classId = classId,
                         sourceUrl = PersistentNativePlayer.currentSourceUrl(),
-                        title = "",
+                        title = PersistentNativePlayer.currentTitle(),
                         requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
                     )
                 }
@@ -252,6 +276,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        NativeCourseStoreWebViewFixer.stop(this)
         deviceListener?.remove()
         FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
         NativeFullscreenOverlay.dismiss(immediate = true)

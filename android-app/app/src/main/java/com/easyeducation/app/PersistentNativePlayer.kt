@@ -3,7 +3,10 @@
 package com.easyeducation.app
 
 import android.content.Context
+import android.net.Uri
+import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +41,8 @@ object PersistentNativePlayer {
     @Volatile private var activeClassId: String = ""
     @Volatile private var activeSourceUrl: String = ""
     @Volatile private var activeHeight: Int = 0
+    @Volatile private var activeTitle: String = ""
+    @Volatile private var miniRequestPending: Boolean = false
 
     fun player(context: Context): ExoPlayer {
         playerInstance?.let { return it }
@@ -62,6 +67,7 @@ object PersistentNativePlayer {
     fun currentClassId(): String = activeClassId
     fun currentSourceUrl(): String = activeSourceUrl
     fun currentHeight(): Int = activeHeight
+    fun currentTitle(): String = activeTitle
 
     suspend fun ensureOnline(
         context: Context,
@@ -98,17 +104,72 @@ object PersistentNativePlayer {
                 .getLong("class:$classId", 0L)
             exo.prepare()
             if (saved > 0L) exo.seekTo(saved)
-            val speed = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-                .getFloat(SPEED_KEY, 1f)
-                .coerceIn(0.25f, 4f)
-            exo.setPlaybackSpeed(speed)
+            restoreSpeed(app, exo)
             exo.playWhenReady = autoPlay
             activeClassId = classId
             activeSourceUrl = sourceUrl
             activeHeight = requestedHeight
+            activeTitle = ""
+            miniRequestPending = false
         }
         pruneWarmSources(now)
         exo
+    }
+
+    /**
+     * Offline playback uses the same process-local ExoPlayer as online playback. This lets the
+     * encrypted SecureChunkDataSource survive fullscreen -> mini-player -> PiP presentation changes
+     * without decrypting to a temporary file or creating a second decoder.
+     */
+    suspend fun ensureOffline(
+        context: Context,
+        task: SecureDownloadTask,
+        autoPlay: Boolean,
+    ): ExoPlayer = mutex.withLock {
+        val app = context.applicationContext
+        val exo = player(app)
+        val secureUrl = "secure://easy-education/${task.id}"
+        val requestedHeight = task.height.takeIf { it > 0 } ?: 480
+        val sameSession = matches(task.classId, secureUrl, requestedHeight) && exo.mediaItemCount > 0
+        if (sameSession) {
+            withContext(Dispatchers.Main.immediate) {
+                activeTitle = task.title
+                if (autoPlay) exo.playWhenReady = true
+            }
+            return@withLock exo
+        }
+
+        withContext(Dispatchers.Main.immediate) { saveActivePosition(app, exo) }
+        val mediaSource = ProgressiveMediaSource.Factory(
+            SecureChunkDataSource.Factory(app, task.id, task.userId),
+        ).createMediaSource(MediaItem.fromUri(Uri.parse(secureUrl)))
+
+        withContext(Dispatchers.Main.immediate) {
+            exo.setMediaSource(mediaSource)
+            val saved = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                .getLong("class:${task.classId}", 0L)
+            exo.prepare()
+            if (saved > 0L) exo.seekTo(saved)
+            restoreSpeed(app, exo)
+            exo.playWhenReady = autoPlay
+            activeClassId = task.classId
+            activeSourceUrl = secureUrl
+            activeHeight = requestedHeight
+            activeTitle = task.title
+            miniRequestPending = false
+        }
+        exo
+    }
+
+    fun requestMiniAfterActivity(title: String = "") {
+        if (title.isNotBlank()) activeTitle = title
+        miniRequestPending = activeClassId.isNotBlank() && activeSourceUrl.isNotBlank()
+    }
+
+    fun consumeMiniRequest(): Boolean = synchronized(this) {
+        val pending = miniRequestPending
+        miniRequestPending = false
+        pending
     }
 
     /** Resolves URLs/metadata only. It never changes the active player's MediaSource. */
@@ -123,7 +184,6 @@ object PersistentNativePlayer {
         val now = System.currentTimeMillis()
         warmSources[key]?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }?.let { return }
         if (inFlightResolves[key]?.isActive == true) return
-        val app = context.applicationContext
         val deferred = scope.async(Dispatchers.IO) {
             runCatching {
                 NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
@@ -160,6 +220,8 @@ object PersistentNativePlayer {
         activeClassId = ""
         activeSourceUrl = ""
         activeHeight = 0
+        activeTitle = ""
+        miniRequestPending = false
     }
 
     fun stopIfOwned(context: Context, exoPlayer: ExoPlayer) {
@@ -173,6 +235,13 @@ object PersistentNativePlayer {
         inFlightResolves.clear()
         PlayerChapterQueue.clear()
         stopSession(context, savePosition = true)
+    }
+
+    private fun restoreSpeed(context: Context, exo: ExoPlayer) {
+        val speed = context.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+            .getFloat(SPEED_KEY, 1f)
+            .coerceIn(0.25f, 4f)
+        exo.setPlaybackSpeed(speed)
     }
 
     private fun saveActivePosition(context: Context, exo: ExoPlayer) {

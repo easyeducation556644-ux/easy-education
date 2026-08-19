@@ -7,6 +7,8 @@ import com.google.firebase.auth.FirebaseAuth
 import java.net.URI
 
 object SecureDownloadCoordinator {
+    private const val NETWORK_WAIT_PHASE = "waiting-network"
+
     fun isHlsSource(value: String): Boolean = runCatching {
         URI(value).path?.lowercase()?.endsWith(".m3u8") == true
     }.getOrDefault(value.substringBefore('?').lowercase().endsWith(".m3u8"))
@@ -48,26 +50,17 @@ object SecureDownloadCoordinator {
         if (!DownloadPreferences.networkAllowed(context)) {
             val paused = task.copy(
                 state = "paused",
-                phase = "paused",
+                phase = NETWORK_WAIT_PHASE,
                 error = "Waiting for Wi-Fi because Wi-Fi only downloads are enabled.",
             )
             store.save(paused)
             DownloadNotifier(context).paused(paused)
             return
         }
-        DownloadRuntime.cancel(id)
-        val queued = task.copy(
-            generation = nextGeneration(task),
-            state = "queued",
-            phase = "preparing",
-            phaseProgress = task.progress.coerceAtMost(95),
-            error = null,
-        )
-        store.save(queued)
-        DownloadNotifier(context).cancelState(id)
-        launch(context, queued)
+        queueAndLaunch(context, store, task)
     }
 
+    /** Explicit user pause. It is never selected by resumePending(). */
     fun pause(context: Context, id: String) {
         DownloadRuntime.cancel(id)
         SecureHlsDownloadService.cancelActiveTransform(id)
@@ -79,6 +72,22 @@ object SecureDownloadCoordinator {
         DownloadNotifier(context).paused(paused)
     }
 
+    /** Automatic pause used only by connectivity / Wi-Fi-policy transitions. */
+    fun pauseForNetwork(context: Context, id: String, message: String) {
+        DownloadRuntime.cancel(id)
+        SecureHlsDownloadService.cancelActiveTransform(id)
+        val store = SecureMediaStore(context)
+        val task = store.get(id) ?: return
+        if (task.state !in setOf("queued", "downloading")) return
+        val paused = task.copy(
+            state = "paused",
+            phase = NETWORK_WAIT_PHASE,
+            error = message,
+        )
+        store.save(paused)
+        DownloadNotifier(context).paused(paused)
+    }
+
     fun remove(context: Context, id: String) {
         DownloadRuntime.cancel(id)
         SecureHlsDownloadService.cancelActiveTransform(id)
@@ -86,7 +95,6 @@ object SecureDownloadCoordinator {
         store.get(id)?.let { store.save(it.copy(state = "deleting", phase = "deleting")) }
         purgeWorkingFiles(context, id)
         store.remove(id)
-        // Repeat after workers unwind so no stale app-private temp path survives deletion.
         purgeWorkingFiles(context, id)
         store.secureDir(id).deleteRecursively()
         DownloadNotifier(context).cancelAll(id)
@@ -95,11 +103,34 @@ object SecureDownloadCoordinator {
     fun resumePending(context: Context) {
         if (!DownloadPreferences.networkAllowed(context)) return
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        SecureMediaStore(context).pendingForUser(uid).forEach { task ->
-            val refreshed = task.copy(generation = nextGeneration(task), state = "queued", phase = "preparing")
-            SecureMediaStore(context).save(refreshed)
-            launch(context, refreshed)
-        }
+        val store = SecureMediaStore(context)
+        store.allForUser(uid)
+            .filter { task ->
+                task.state in setOf("queued", "downloading") ||
+                    (task.state == "paused" && task.phase == NETWORK_WAIT_PHASE) ||
+                    (task.state == "failed" && isRetryableNetworkMessage(task.error))
+            }
+            .forEach { task -> queueAndLaunch(context, store, task) }
+    }
+
+    fun isRetryableNetworkMessage(message: String?): Boolean {
+        val value = message.orEmpty()
+        if (value.isBlank()) return false
+        return NETWORK_ERROR_PATTERNS.any { pattern -> value.contains(pattern, ignoreCase = true) }
+    }
+
+    private fun queueAndLaunch(context: Context, store: SecureMediaStore, task: SecureDownloadTask) {
+        DownloadRuntime.cancel(task.id)
+        val refreshed = task.copy(
+            generation = nextGeneration(task),
+            state = "queued",
+            phase = "preparing",
+            phaseProgress = task.progress.coerceAtMost(95),
+            error = null,
+        )
+        store.save(refreshed)
+        DownloadNotifier(context).cancelState(task.id)
+        launch(context, refreshed)
     }
 
     private fun launch(context: Context, task: SecureDownloadTask) {
@@ -125,4 +156,20 @@ object SecureDownloadCoordinator {
 
     private fun nextGeneration(task: SecureDownloadTask?): Long =
         ((task?.generation ?: 0L) + 1L).coerceAtLeast(System.currentTimeMillis())
+
+    private val NETWORK_ERROR_PATTERNS = listOf(
+        "unable to resolve host",
+        "failed to connect",
+        "network is unreachable",
+        "no route to host",
+        "connection reset",
+        "connection abort",
+        "software caused connection abort",
+        "unexpected end of stream",
+        "stream was reset",
+        "socket closed",
+        "timeout",
+        "timed out",
+        "network error",
+    )
 }
