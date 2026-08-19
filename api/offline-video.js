@@ -3,7 +3,7 @@ import { Readable } from "node:stream"
 import { requireVerifiedUser } from "./utils/firebase-admin.js"
 
 const DEFAULT_HEIGHT = 360
-const MAX_HEIGHT = 1080
+const MAX_HEIGHT = 2160
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024
 const RUMBLE_HOST_PATTERN = /(^|\.)rumble\.com$/i
 const REQUEST_HEADERS = {
@@ -135,43 +135,98 @@ async function fetchRumbleEmbedId(videoUrl) {
   return ""
 }
 
-function getRumbleFormatCandidates(payload) {
-  const formats = []
+function inferHeight(value, keyHint = "", url = "", fallback = 0) {
+  const candidates = [
+    value?.meta?.h,
+    value?.meta?.height,
+    value?.h,
+    value?.height,
+    String(value?.resolution || "").split("x")[1],
+    /^\d{3,4}$/.test(String(keyHint)) ? keyHint : "",
+    String(keyHint).match(/(\d{3,4})p/i)?.[1],
+    String(url).match(/(?:^|[-_/])(\d{3,4})p(?:[-_.?/]|$)/i)?.[1],
+    fallback,
+  ]
+  for (const candidate of candidates) {
+    const height = Number.parseInt(String(candidate || ""), 10)
+    if (Number.isFinite(height) && height >= 144 && height <= MAX_HEIGHT) return height
+  }
+  return 0
+}
 
-  const addGroup = (container) => {
-    for (const [type, group] of Object.entries(container || {})) {
-      if (type !== "mp4") continue
-      const entries = Array.isArray(group)
-        ? group
-        : group?.url
-          ? [group]
-          : group && typeof group === "object"
-            ? Object.entries(group).map(([height, item]) => ({
-                ...item,
-                meta: { ...(item?.meta || {}), h: item?.meta?.h || height },
-              }))
-            : []
+function inferKind(url, keyHint = "", object = null) {
+  const normalizedUrl = String(url || "").toLowerCase()
+  const hint = String(keyHint || "").toLowerCase()
+  const type = String(object?.type || object?.mime || object?.mimeType || "").toLowerCase()
+  if (normalizedUrl.includes(".m3u8") || hint.includes("hls") || type.includes("mpegurl")) return "hls"
+  if (normalizedUrl.includes(".mp4") || hint.includes("mp4") || type.includes("video/mp4")) return "mp4"
+  return ""
+}
 
-      for (const entry of entries) {
-        const height = Number.parseInt(
-          String(entry?.meta?.h || payload?.h || DEFAULT_HEIGHT),
-          10,
-        )
-        if (!entry?.url || !Number.isFinite(height) || height > MAX_HEIGHT) continue
-        formats.push({
-          height,
-          contentLength: Number.parseInt(String(entry?.meta?.size || ""), 10),
-          bitrate: Number(entry?.meta?.bitrate || 0),
-          url: entry.url,
-          mimeType: "video/mp4",
-        })
-      }
+function collectMediaEntries(node, output, context = {}, seenObjects = new Set()) {
+  if (node == null) return
+  if (typeof node === "string") {
+    if (!/^https?:\/\//i.test(node)) return
+    const kind = inferKind(node, context.keyHint)
+    if (!kind) return
+    output.push({
+      kind,
+      url: node,
+      height: inferHeight(context.parent, context.keyHint, node, context.fallbackHeight),
+      contentLength: 0,
+      bitrate: Number(context.parent?.meta?.bitrate || context.parent?.bitrate || 0),
+    })
+    return
+  }
+  if (typeof node !== "object") return
+  if (seenObjects.has(node)) return
+  seenObjects.add(node)
+
+  if (Array.isArray(node)) {
+    node.forEach((entry, index) => collectMediaEntries(entry, output, {
+      ...context,
+      keyHint: context.keyHint || String(index),
+      parent: entry,
+    }, seenObjects))
+    return
+  }
+
+  if (typeof node.url === "string" && /^https?:\/\//i.test(node.url)) {
+    const kind = inferKind(node.url, context.keyHint, node)
+    if (kind) {
+      output.push({
+        kind,
+        url: node.url,
+        height: inferHeight(node, context.keyHint, node.url, context.fallbackHeight),
+        contentLength: Number.parseInt(String(node?.meta?.size || node?.size || node?.contentLength || ""), 10),
+        bitrate: Number(node?.meta?.bitrate || node?.bitrate || 0),
+      })
     }
   }
 
-  addGroup(payload?.ua)
-  addGroup(payload?.u)
-  return formats
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "url") continue
+    collectMediaEntries(value, output, {
+      keyHint: key,
+      parent: typeof value === "object" && value ? value : node,
+      fallbackHeight: inferHeight(node, context.keyHint, node.url, context.fallbackHeight),
+    }, seenObjects)
+  }
+}
+
+function getRumbleRawCandidates(payload) {
+  const entries = []
+  const fallbackHeight = inferHeight(payload, "", "", DEFAULT_HEIGHT)
+  collectMediaEntries(payload?.ua, entries, { fallbackHeight })
+  collectMediaEntries(payload?.u, entries, { fallbackHeight })
+  const byKey = new Map()
+  for (const entry of entries) {
+    if (!entry.url || !entry.kind) continue
+    const key = `${entry.kind}:${entry.url}`
+    const previous = byKey.get(key)
+    if (!previous || (!previous.height && entry.height)) byKey.set(key, entry)
+  }
+  return [...byKey.values()]
 }
 
 async function discoverContentLength(format, videoUrl) {
@@ -197,24 +252,14 @@ async function discoverContentLength(format, videoUrl) {
   return { ...format, contentLength }
 }
 
-async function getRumbleFormats(payload, videoUrl) {
+async function getRumbleMp4Formats(payload, videoUrl) {
+  const candidates = getRumbleRawCandidates(payload).filter((item) => item.kind === "mp4")
   const discovered = await Promise.all(
-    getRumbleFormatCandidates(payload).map((format) => discoverContentLength(format, videoUrl)),
+    candidates.map((format) => discoverContentLength(format, videoUrl).catch(() => format)),
   )
-  return discovered.filter(
-    (format) => Number.isFinite(format.contentLength) && format.contentLength > 0,
-  )
-}
-
-function getHlsMasterUrl(payload) {
-  const candidates = [payload?.ua?.hls, payload?.u?.hls]
-  for (const group of candidates) {
-    if (group?.url) return group.url
-    for (const entry of Object.values(group || {})) {
-      if (entry?.url) return entry.url
-    }
-  }
-  return ""
+  return discovered
+    .filter((format) => format.height > 0 && Number.isFinite(format.contentLength) && format.contentLength > 0)
+    .map((format) => ({ ...format, kind: "mp4", mimeType: "video/mp4" }))
 }
 
 function parseHlsAttribute(line, name) {
@@ -233,16 +278,43 @@ function getSegmentLength(segmentUrl) {
   }
 }
 
-async function getHlsFormats(payload, videoUrl) {
-  const masterUrl = getHlsMasterUrl(payload)
-  if (!masterUrl) return []
+function estimatePlaylistLength(playlistText, playlistUrl) {
+  const segmentUrls = playlistText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => new URL(line, playlistUrl).toString())
+  const contentLength = segmentUrls.reduce(
+    (total, segmentUrl) => total + getSegmentLength(segmentUrl),
+    0,
+  )
+  return { segmentUrls, contentLength }
+}
 
-  const response = await fetch(masterUrl, {
+async function expandHlsCandidate(candidate, videoUrl) {
+  const response = await fetch(candidate.url, {
     headers: { ...REQUEST_HEADERS, Referer: videoUrl },
+    redirect: "follow",
   })
   if (!response.ok) return []
+  const text = await response.text()
+  const lines = text.split(/\r?\n/)
+  const master = lines.some((line) => line.startsWith("#EXT-X-STREAM-INF:"))
 
-  const lines = (await response.text()).split(/\r?\n/)
+  if (!master) {
+    const { segmentUrls, contentLength } = estimatePlaylistLength(text, candidate.url)
+    if (!segmentUrls.length) return []
+    const height = candidate.height || DEFAULT_HEIGHT
+    return [{
+      height,
+      bitrate: Number(candidate.bitrate || 0),
+      playlistUrl: candidate.url,
+      contentLength,
+      kind: "hls",
+      mimeType: "application/vnd.apple.mpegurl",
+    }]
+  }
+
   const variants = []
   for (let index = 0; index < lines.length; index += 1) {
     if (!lines[index].startsWith("#EXT-X-STREAM-INF:")) continue
@@ -255,25 +327,19 @@ async function getHlsFormats(payload, videoUrl) {
     variants.push({
       height,
       bitrate: Number.isFinite(bitrate) ? bitrate : 0,
-      playlistUrl: new URL(source, masterUrl).toString(),
+      playlistUrl: new URL(source, candidate.url).toString(),
     })
   }
 
   return Promise.all(variants.map(async (variant) => {
     const playlistResponse = await fetch(variant.playlistUrl, {
       headers: { ...REQUEST_HEADERS, Referer: videoUrl },
+      redirect: "follow",
     })
     if (!playlistResponse.ok) return null
     const playlistText = await playlistResponse.text()
-    const segmentUrls = playlistText
-      .split(/\r?\n/)
-      .filter((line) => line && !line.startsWith("#"))
-      .map((line) => new URL(line, variant.playlistUrl).toString())
-    const contentLength = segmentUrls.reduce(
-      (total, segmentUrl) => total + getSegmentLength(segmentUrl),
-      0,
-    )
-    if (!segmentUrls.length || !contentLength) return null
+    const { segmentUrls, contentLength } = estimatePlaylistLength(playlistText, variant.playlistUrl)
+    if (!segmentUrls.length) return null
     return {
       ...variant,
       contentLength,
@@ -283,33 +349,46 @@ async function getHlsFormats(payload, videoUrl) {
   })).then((items) => items.filter(Boolean))
 }
 
+async function getHlsFormats(payload, videoUrl) {
+  const candidates = getRumbleRawCandidates(payload).filter((item) => item.kind === "hls")
+  const groups = await Promise.all(candidates.map((candidate) =>
+    expandHlsCandidate(candidate, videoUrl).catch(() => []),
+  ))
+  return groups.flat()
+}
+
 function getOptions(formats) {
-  const byHeight = new Map()
+  const byKindAndHeight = new Map()
   for (const format of formats) {
-    const current = byHeight.get(format.height)
+    if (!format.height || !format.kind) continue
+    const key = `${format.kind}:${format.height}`
+    const current = byKindAndHeight.get(key)
     if (
       !current
-      || (
-        format.bitrate > 0
-        && (current.bitrate <= 0 || format.bitrate < current.bitrate)
-      )
-    ) byHeight.set(format.height, format)
+      || (!current.contentLength && format.contentLength)
+      || (format.bitrate > current.bitrate)
+    ) byKindAndHeight.set(key, format)
   }
-  return [...byHeight.values()]
-    .sort((a, b) => a.height - b.height)
-    .map(({ height, contentLength, mimeType, kind, playlistUrl }) => ({
+  return [...byKindAndHeight.values()]
+    .sort((a, b) => a.height - b.height || (a.kind === "mp4" ? -1 : 1))
+    .map(({ height, contentLength, mimeType, kind, playlistUrl, bitrate }) => ({
       height,
-      contentLength,
+      contentLength: Number(contentLength || 0),
       mimeType,
-      kind: kind || "mp4",
+      kind,
+      bitrate: Number(bitrate || 0),
       ...(playlistUrl ? { playlistUrl } : {}),
     }))
 }
 
-function selectFormat(formats, requestedHeight) {
-  const sorted = [...formats].sort((a, b) => a.height - b.height)
+function selectMp4Format(formats, requestedHeight) {
+  const sorted = formats
+    .filter((format) => format.kind === "mp4")
+    .sort((a, b) => a.height - b.height)
   if (!sorted.length) return null
-  return sorted.filter((format) => format.height <= requestedHeight).at(-1) || sorted[0]
+  return sorted.find((format) => format.height === requestedHeight)
+    || sorted.filter((format) => format.height <= requestedHeight).at(-1)
+    || sorted[0]
 }
 
 async function getRumbleInfo(videoUrl) {
@@ -343,11 +422,13 @@ async function getRumbleInfo(videoUrl) {
     throw error
   }
 
-  const mp4Formats = await getRumbleFormats(payload, videoUrl)
-  const hlsFormats = await getHlsFormats(payload, videoUrl)
+  const [mp4Formats, hlsFormats] = await Promise.all([
+    getRumbleMp4Formats(payload, videoUrl),
+    getHlsFormats(payload, videoUrl),
+  ])
   const formats = [...mp4Formats, ...hlsFormats]
   if (!formats.length) {
-    const error = new Error("No downloadable Rumble MP4 quality is available")
+    const error = new Error("Rumble did not expose a playable MP4 or HLS quality")
     error.statusCode = 422
     throw error
   }
@@ -399,7 +480,7 @@ export default async function offlineVideoHandler(req, res) {
     const options = getOptions(formats)
 
     if (req.query?.options === "1") {
-      const recommended = options.filter((option) => option.height <= 360).at(-1)
+      const recommended = options.filter((option) => option.height <= 480).at(-1)
         || options[0]
         || null
       return res.status(200).json({
@@ -411,11 +492,8 @@ export default async function offlineVideoHandler(req, res) {
     }
 
     const requestedHeight = parseHeight(req.query?.height)
-    const format = selectFormat(formats, requestedHeight)
-    if (!format) return sendError(res, 422, "No downloadable Rumble quality is available")
-    if (format.kind === "hls") {
-      return sendError(res, 400, "HLS segments must be downloaded directly by the browser")
-    }
+    const format = selectMp4Format(formats, requestedHeight)
+    if (!format) return sendError(res, 422, "No progressive Rumble quality is available for ranged download")
 
     const totalLength = format.contentLength
     const start = Number.parseInt(String(req.query?.start ?? ""), 10)
