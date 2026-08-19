@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
@@ -68,11 +69,15 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            EasyEducationNativeApp(
-                viewModel = viewModel,
-                onGoogleSignIn = ::launchGoogleSignIn,
-                initialPath = initialPath,
-            )
+            // Re-key on notification/deep-link target so tapping Downloads while the app
+            // is already open rebuilds the native nav graph at the requested destination.
+            key(initialPath) {
+                EasyEducationSecureRoot(
+                    viewModel = viewModel,
+                    onGoogleSignIn = ::launchGoogleSignIn,
+                    initialPath = initialPath,
+                )
+            }
         }
         SecureDownloadService.resumePending(this)
         if (FirebaseAuth.getInstance().currentUser != null) {
