@@ -25,6 +25,8 @@ data class NativeUiState(
     val courses: List<NativeCourse> = emptyList(),
     val courseContent: Map<String, NativeCourseContent> = emptyMap(),
     val downloads: List<SecureDownloadTask> = emptyList(),
+    val qualityOptions: Map<String, List<DownloadQualityOption>> = emptyMap(),
+    val qualityLoadingClassId: String? = null,
     val online: Boolean = false,
     val syncing: Boolean = false,
     val error: String? = null,
@@ -34,6 +36,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     private val auth = FirebaseAuth.getInstance()
     private val repository = NativeRepository(application)
     private val downloads = SecureMediaStore(application)
+    private val qualityResolver = DownloadQualityResolver(application)
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private val _state = MutableStateFlow(NativeUiState(online = isOnlineNow()))
     val state: StateFlow<NativeUiState> = _state.asStateFlow()
@@ -48,6 +51,8 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 courses = emptyList(),
                 courseContent = emptyMap(),
                 downloads = emptyList(),
+                qualityOptions = emptyMap(),
+                qualityLoadingClassId = null,
             )
         } else {
             loadUser(user.uid)
@@ -63,6 +68,13 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         auth.addAuthStateListener(authListener)
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+        SecureHlsDownloadService.cleanupPlaintext(application)
+        viewModelScope.launch {
+            SecureMediaStore.changes.collect {
+                val uid = auth.currentUser?.uid ?: return@collect
+                refreshDownloadsNow(uid)
+            }
+        }
         auth.currentUser?.let { loadUser(it.uid) }
     }
 
@@ -84,7 +96,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             val cachedProfile = repository.cachedProfile(uid)
             val cachedCourses = repository.cachedCourses(uid)
-            val cachedDownloads = withContext(Dispatchers.IO) { downloads.allForUser(uid) }
+            val cachedDownloads = withContext(Dispatchers.IO) { healthyDownloads(uid) }
             _state.value = _state.value.copy(
                 profile = cachedProfile,
                 restrictionMessage = cachedProfile.restrictionMessage(),
@@ -164,13 +176,66 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshDownloads() {
         val uid = auth.currentUser?.uid ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val list = downloads.allForUser(uid)
-            withContext(Dispatchers.Main) { _state.value = _state.value.copy(downloads = list) }
+        viewModelScope.launch { refreshDownloadsNow(uid) }
+    }
+
+    private suspend fun refreshDownloadsNow(uid: String) {
+        val list = withContext(Dispatchers.IO) { healthyDownloads(uid) }
+        _state.value = _state.value.copy(downloads = list)
+    }
+
+    private fun healthyDownloads(uid: String): List<SecureDownloadTask> {
+        return downloads.allForUser(uid).map { task ->
+            if (task.state == "completed" && !downloads.hasCompleteMedia(task)) {
+                val broken = task.copy(
+                    state = "failed",
+                    phase = "failed",
+                    error = "Offline file is incomplete or damaged. Delete it and download again.",
+                )
+                downloads.save(broken)
+                broken
+            } else task
         }
     }
 
-    fun startDownload(context: Context, course: NativeCourse, item: NativeClassItem, height: Int) {
+    fun loadDownloadQualities(item: NativeClassItem) {
+        if (item.id.isBlank() || item.downloadUrl.isBlank()) {
+            _state.value = _state.value.copy(error = "This class has no downloadable video source")
+            return
+        }
+        if (!_state.value.online) {
+            _state.value = _state.value.copy(error = "Connect to the internet to check available qualities")
+            return
+        }
+        if (_state.value.qualityLoadingClassId == item.id) return
+        _state.value = _state.value.copy(qualityLoadingClassId = item.id, error = null)
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { qualityResolver.resolve(item.id, item.downloadUrl) }
+            }.onSuccess { options ->
+                _state.value = _state.value.copy(
+                    qualityLoadingClassId = null,
+                    qualityOptions = _state.value.qualityOptions + (item.id to options),
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    qualityLoadingClassId = null,
+                    error = error.message ?: "Could not load video qualities",
+                )
+            }
+        }
+    }
+
+    fun clearDownloadQualities(classId: String) {
+        _state.value = _state.value.copy(qualityOptions = _state.value.qualityOptions - classId)
+    }
+
+    fun startDownload(
+        context: Context,
+        course: NativeCourse,
+        item: NativeClassItem,
+        option: DownloadQualityOption,
+    ) {
         val uid = auth.currentUser?.uid ?: return
         if (_state.value.restrictionMessage != null) {
             _state.value = _state.value.copy(error = "This account cannot download classes right now")
@@ -180,13 +245,15 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = "Connect to the internet to start a new download")
             return
         }
-        if (item.downloadUrl.isBlank()) {
-            _state.value = _state.value.copy(error = "This class has no downloadable video source")
+        val storage = DownloadStoragePolicy.check(context, option)
+        if (!storage.allowed) {
+            _state.value = _state.value.copy(error = storage.message)
             return
         }
         val id = SecureMediaStore.downloadId(uid, item.id)
         val existing = downloads.get(id)
-        val sameSource = existing?.sourceUrl == item.downloadUrl && existing.height == height
+        val sameSource = existing?.sourceUrl == item.downloadUrl &&
+            existing.height == option.height && existing.sourceKind == option.kind
         val task = SecureDownloadTask(
             id = id,
             userId = uid,
@@ -195,23 +262,24 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             title = item.title,
             courseTitle = course.title,
             sourceUrl = item.downloadUrl,
-            height = height,
-            downloadedBytes = existing?.takeIf { sameSource }?.downloadedBytes ?: 0,
-            totalBytes = existing?.takeIf { sameSource }?.totalBytes ?: 0,
-            chunkCount = existing?.takeIf { sameSource }?.chunkCount ?: 0,
+            height = option.height,
+            qualityLabel = option.label,
+            sourceKind = option.kind,
+            expectedBytes = option.sizeBytes,
+            sizeEstimated = option.estimated,
+            downloadedBytes = existing?.takeIf { sameSource && it.state != "completed" }?.downloadedBytes ?: 0,
+            totalBytes = existing?.takeIf { sameSource && it.state != "completed" }?.totalBytes
+                ?: option.sizeBytes,
+            chunkCount = existing?.takeIf { sameSource && it.state != "completed" }?.chunkCount ?: 0,
             state = "queued",
+            phase = "preparing",
         )
-        if (existing != null && !sameSource) {
-            downloads.resetChunks(id)
-            SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
-        }
         SecureDownloadCoordinator.start(context, task)
-        refreshDownloads()
+        clearDownloadQualities(item.id)
     }
 
     fun pauseDownload(context: Context, id: String) {
         SecureDownloadCoordinator.pause(context, id)
-        refreshDownloads()
     }
 
     fun resumeDownload(context: Context, id: String) {
@@ -224,12 +292,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         SecureDownloadCoordinator.resume(context, id)
-        refreshDownloads()
     }
 
     fun removeDownload(context: Context, id: String) {
         SecureDownloadCoordinator.remove(context, id)
-        refreshDownloads()
     }
 
     fun clearError() {
