@@ -53,6 +53,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // v1 kept playable MP4 files in filesDir/offline. Remove them before any v2
+        // download state is loaded so the app has a strict encrypted-only offline store.
+        LegacyDownloadCleanup.runOnce(this)
+        SecureHlsDownloadService.cleanupPlaintext(this)
+
         initialPath = intent?.getStringExtra(EXTRA_OPEN_PATH)
         viewModel = ViewModelProvider(this)[NativeAppViewModel::class.java]
 
@@ -69,8 +74,6 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            // Re-key on notification/deep-link target so tapping Downloads while the app
-            // is already open rebuilds the native nav graph at the requested destination.
             key(initialPath) {
                 EasyEducationSecureRoot(
                     viewModel = viewModel,
