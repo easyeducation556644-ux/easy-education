@@ -13,8 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "2.7.2-native"
+        versionCode = 26
+        versionName = "2.8.0-native"
     }
 
     buildFeatures {
@@ -100,5 +100,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
+    implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-transformer:$media3Version")
 }
