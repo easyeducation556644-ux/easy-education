@@ -13,8 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "2.3.0-native"
+        versionCode = 19
+        versionName = "2.3.1-native"
     }
 
     buildFeatures {
@@ -53,13 +53,6 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
-// NewPipeExtractor ships the full protobuf-javalite runtime. Firebase also pulls a small
-// protolite bundle containing overlapping well-known protobuf classes. Keep the full runtime as
-// the single source of truth so release builds do not package duplicate DescriptorProtos classes.
-configurations.configureEach {
-    exclude(group = "com.google.firebase", module = "protolite-well-known-types")
-}
-
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
@@ -89,17 +82,13 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-messaging")
-    // Compile-only because the PO-token implementation does not use Crashlytics at runtime; this
-    // only keeps an optional diagnostic import source-compatible while the integration settles.
-    compileOnly("com.google.firebase:firebase-crashlytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
-    // Mature YouTube extraction engine: signatureCipher + n-parameter deobfuscation,
-    // adaptive DASH streams, current player client handling. Easy Education keeps its own
-    // encrypted downloader/player; this dependency is used only to resolve media streams.
-    implementation("com.github.libre-tube:NewPipeExtractor:738c3d4")
+    // NewPipe and its protobuf 4.x runtime are bundled in a shaded project artifact. The protobuf
+    // package is relocated inside that artifact so Firebase Firestore keeps its own 3.25.x runtime.
+    implementation(project(path = ":youtube-extractor-shaded", configuration = "shadedExtractor"))
 
     val media3Version = "1.9.4"
     implementation("androidx.media3:media3-common:$media3Version")
