@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -118,7 +119,8 @@ fun NativeInlinePlayer(
             title = title,
             requestedHeight = requestedHeight,
         )
-        onMinimize?.invoke()
+        if (onMinimize != null) onMinimize()
+        else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
     }
 
     // The same ExoPlayer is now rendering in the persistent overlay. Removing this slot makes the
