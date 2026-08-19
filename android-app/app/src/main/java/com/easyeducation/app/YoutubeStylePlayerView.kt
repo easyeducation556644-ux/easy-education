@@ -31,10 +31,9 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /**
- * One native player surface for YouTube, Rumble and encrypted offline media. The UI follows the
- * familiar YouTube mobile control hierarchy, while the implementation and assets are Easy
- * Education's own. Vertical drag is intercepted at the parent player level, so the video follows
- * the finger continuously instead of switching modes only after a threshold.
+ * Easy Education's clean-room YouTube-style player surface. The full non-control video area owns
+ * its gesture stream from ACTION_DOWN, preventing a parent LazyColumn from stealing a vertical drag
+ * before the drag-to-miniplayer/fullscreen-exit interaction can begin.
  */
 @UnstableApi
 class YoutubeStylePlayerView @JvmOverloads constructor(
@@ -45,6 +44,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     var onBack: (() -> Unit)? = null
     var onFullscreen: (() -> Unit)? = null
     var onMinimize: (() -> Unit)? = null
+    var onExitFullscreenGesture: (() -> Unit)? = null
     var onPrevious: (() -> Unit)? = null
     var onNext: (() -> Unit)? = null
 
@@ -78,12 +78,14 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     private var hasPrevious = false
     private var hasNext = false
     private var lastPlayingVisual: Boolean? = null
+    private var fullscreenPresentation = false
 
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var draggingDown = false
     private var dragProgress = 0f
     private var downOnControl = false
+    private var surfaceGestureOwned = false
     private var minimizeCommitted = false
     private var rapidSeekSeconds = 0
 
@@ -177,10 +179,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             keepScreenOn = true
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         }
-        addView(
-            playerView,
-            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-        )
+        addView(playerView, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         controls = FrameLayout(context)
         addView(controls, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -192,7 +191,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             background = verticalShade(0xB8000000.toInt(), 0x00000000)
         }
         backButton = iconButton(R.drawable.ic_player_back, "Back").apply {
-            setOnClickListener { onBack?.invoke() }
+            setOnClickListener { pulse(this) { onBack?.invoke() } }
         }
         top.addView(backButton, LinearLayout.LayoutParams(dp(46), dp(46)))
 
@@ -214,7 +213,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         top.addView(speedBadge, LinearLayout.LayoutParams(dp(48), dp(30)).apply { marginEnd = dp(2) })
 
         settingsButton = iconButton(R.drawable.ic_player_settings, "Playback settings").apply {
-            setOnClickListener { showSpeedMenu(this) }
+            setOnClickListener { pulse(this) { showSpeedMenu(this) } }
         }
         top.addView(settingsButton, LinearLayout.LayoutParams(dp(44), dp(44)))
 
@@ -230,19 +229,21 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         }
         previousButton = iconButton(R.drawable.ic_player_previous, "Previous class", circle = true).apply {
             setOnClickListener {
-                if (hasPrevious) onPrevious?.invoke()
+                if (hasPrevious) pulse(this, strong = true) { onPrevious?.invoke() }
                 showControlsTemporarily()
             }
         }
         playPause = iconButton(R.drawable.ic_player_play, "Play or pause", circle = true).apply {
             setOnClickListener {
-                attachedPlayer?.let { exo -> if (exo.isPlaying) exo.pause() else exo.play() }
+                pulse(this, strong = true) {
+                    attachedPlayer?.let { exo -> if (exo.isPlaying) exo.pause() else exo.play() }
+                }
                 showControlsTemporarily()
             }
         }
         nextButton = iconButton(R.drawable.ic_player_next, "Next class", circle = true).apply {
             setOnClickListener {
-                if (hasNext) onNext?.invoke()
+                if (hasNext) pulse(this, strong = true) { onNext?.invoke() }
                 showControlsTemporarily()
             }
         }
@@ -252,10 +253,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         controls.addView(center, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(76), Gravity.CENTER))
 
         buffering = pillText("Loading…").apply { visibility = View.INVISIBLE }
-        controls.addView(
-            buffering,
-            LayoutParams(dp(118), dp(38), Gravity.CENTER).apply { topMargin = dp(96) },
-        )
+        controls.addView(buffering, LayoutParams(dp(118), dp(38), Gravity.CENTER).apply { topMargin = dp(96) })
 
         val bottom = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -285,9 +283,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
                     val exo = attachedPlayer
                     val duration = exo?.duration?.takeIf { it > 0L } ?: 0L
-                    if (exo != null && duration > 0L) {
-                        exo.seekTo(duration * (seekBar?.progress ?: 0) / 1000L)
-                    }
+                    if (exo != null && duration > 0L) exo.seekTo(duration * (seekBar?.progress ?: 0) / 1000L)
                     isSeeking = false
                     showControlsTemporarily()
                 }
@@ -307,35 +303,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         }
         bottomRow.addView(timeText, LinearLayout.LayoutParams(0, dp(38), 1f))
         fullscreenButton = iconButton(R.drawable.ic_player_fullscreen, "Full screen").apply {
-            setOnClickListener { onFullscreen?.invoke() }
+            setOnClickListener { pulse(this, strong = true) { onFullscreen?.invoke() } }
         }
         bottomRow.addView(fullscreenButton, LinearLayout.LayoutParams(dp(50), dp(40)))
         bottom.addView(bottomRow)
         controls.addView(bottom, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72), Gravity.BOTTOM))
 
         leftHint = seekHint().also {
-            addView(
-                it,
-                LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.START).apply {
-                    marginStart = dp(22)
-                },
-            )
+            addView(it, LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.START).apply { marginStart = dp(22) })
         }
         rightHint = seekHint().also {
-            addView(
-                it,
-                LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.END).apply {
-                    marginEnd = dp(22)
-                },
-            )
+            addView(it, LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.END).apply { marginEnd = dp(22) })
         }
         fastBadge = pillText("2×").apply { visibility = View.INVISIBLE }
-        addView(
-            fastBadge,
-            LayoutParams(dp(116), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                topMargin = dp(22)
-            },
-        )
+        addView(fastBadge, LayoutParams(dp(116), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(22) })
 
         selectedSpeed = context.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
             .getFloat(SPEED_KEY, 1f)
@@ -344,6 +325,11 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         setNavigationAvailability(false, false)
     }
 
+    /**
+     * Non-control touches are consumed here from ACTION_DOWN. This is intentionally before child
+     * dispatch/interception: Compose LazyColumn otherwise starts a vertical scroll and cancels the
+     * player's later MOVE events before a drag-to-miniplayer threshold can ever be reached.
+     */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -354,65 +340,60 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 minimizeCommitted = false
                 rapidSeekSeconds = 0
                 downOnControl = interactiveControls().any { hit(it, ev.rawX, ev.rawY) }
+                surfaceGestureOwned = !downOnControl && !isSeeking
+                if (surfaceGestureOwned) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    gestureDetector.onTouchEvent(ev)
+                    return true
+                }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+
+            MotionEvent.ACTION_MOVE -> if (surfaceGestureOwned) {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                val dx = ev.x - touchDownX
+                val dy = ev.y - touchDownY
+                if (!draggingDown && dy > touchSlop && abs(dy) > abs(dx) * 1.05f) {
+                    draggingDown = true
+                    handler.removeCallbacks(hideControls)
+                }
+                if (draggingDown) {
+                    val dragY = dy.coerceAtLeast(0f)
+                    val denominator = height.coerceAtLeast(dp(180)) *
+                        if (fullscreenPresentation) 0.58f else 0.70f
+                    dragProgress = (dragY / denominator).coerceIn(0f, 1f)
+                    applyDragTransform(dragY, dragProgress)
+                } else {
+                    gestureDetector.onTouchEvent(ev)
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> if (surfaceGestureOwned) {
+                gestureDetector.onTouchEvent(ev)
                 if (holdSpeedActive) finishHoldSpeed()
+                parent?.requestDisallowInterceptTouchEvent(false)
+                surfaceGestureOwned = false
+                if (draggingDown) {
+                    val commit = dragProgress >= if (fullscreenPresentation) FULLSCREEN_EXIT_FRACTION else MINIMIZE_COMMIT_FRACTION
+                    draggingDown = false
+                    if (commit) animateCommitMinimize() else animateResetMinimize()
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> if (surfaceGestureOwned) {
+                if (holdSpeedActive) finishHoldSpeed()
+                parent?.requestDisallowInterceptTouchEvent(false)
+                surfaceGestureOwned = false
+                if (draggingDown) animateResetMinimize()
+                draggingDown = false
+                return true
             }
         }
-        if (!downOnControl && !draggingDown) gestureDetector.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
     }
 
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                touchDownX = ev.x
-                touchDownY = ev.y
-                draggingDown = false
-                dragProgress = 0f
-                return false
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (downOnControl || isSeeking || minimizeCommitted) return false
-                val dx = ev.x - touchDownX
-                val dy = ev.y - touchDownY
-                if (!draggingDown && dy > touchSlop && abs(dy) > abs(dx) * 1.12f) {
-                    draggingDown = true
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                    handler.removeCallbacks(hideControls)
-                    return true
-                }
-                if (draggingDown) return true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (draggingDown) return true
-        }
-        return false
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!draggingDown) return super.onTouchEvent(event)
-        when (event.actionMasked) {
-            MotionEvent.ACTION_MOVE -> {
-                val dy = (event.y - touchDownY).coerceAtLeast(0f)
-                val denominator = (height.coerceAtLeast(dp(180)) * 0.70f)
-                dragProgress = (dy / denominator).coerceIn(0f, 1f)
-                applyDragTransform(dy, dragProgress)
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                val commit = dragProgress >= MINIMIZE_COMMIT_FRACTION
-                if (commit) animateCommitMinimize() else animateResetMinimize()
-                draggingDown = false
-                return true
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                draggingDown = false
-                animateResetMinimize()
-                return true
-            }
-        }
-        return true
-    }
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = false
 
     fun bindPlayer(player: ExoPlayer?) {
         if (attachedPlayer === player) return
@@ -437,6 +418,13 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     fun setLoading(value: Boolean) {
         buffering.text = "Loading…"
         buffering.visibility = if (value) View.VISIBLE else View.INVISIBLE
+    }
+
+    fun setFullscreenPresentation(value: Boolean) {
+        fullscreenPresentation = value
+        fullscreenButton.visibility = if (value) View.INVISIBLE else View.VISIBLE
+        minimizeButton.contentDescription = if (value) "Exit full screen" else "Minimize player"
+        resetMinimizeImmediately()
     }
 
     fun setNavigationAvailability(previous: Boolean, next: Boolean) {
@@ -469,6 +457,19 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     }
 
     private fun applyDragTransform(dy: Float, progress: Float) {
+        if (fullscreenPresentation) {
+            val scale = 1f - 0.14f * progress
+            pivotX = width / 2f
+            pivotY = height / 2f
+            scaleX = scale
+            scaleY = scale
+            translationX = 0f
+            translationY = dy * 0.56f
+            alpha = 1f - 0.18f * progress
+            controls.alpha = (1f - progress * 0.92f).coerceAtLeast(0.05f)
+            elevation = dp(12).toFloat() * progress
+            return
+        }
         val scale = 1f - 0.31f * progress
         pivotX = width.toFloat()
         pivotY = height.toFloat()
@@ -485,7 +486,23 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         minimizeCommitted = true
         handler.removeCallbacks(hideControls)
         animate().cancel()
-        controls.animate().alpha(0.05f).setDuration(90L).start()
+        controls.animate().alpha(0.04f).setDuration(90L).start()
+        if (fullscreenPresentation) {
+            animate()
+                .scaleX(0.84f)
+                .scaleY(0.84f)
+                .translationX(0f)
+                .translationY(height * 0.22f)
+                .alpha(0.50f)
+                .setInterpolator(DecelerateInterpolator())
+                .setDuration(165L)
+                .withEndAction {
+                    onExitFullscreenGesture?.invoke() ?: onBack?.invoke()
+                    handler.postDelayed({ resetMinimizeImmediately() }, 80L)
+                }
+                .start()
+            return
+        }
         animate()
             .scaleX(0.66f)
             .scaleY(0.66f)
@@ -493,10 +510,10 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             .translationY(height * 0.34f)
             .alpha(0.92f)
             .setInterpolator(DecelerateInterpolator())
-            .setDuration(120L)
+            .setDuration(150L)
             .withEndAction {
                 onMinimize?.invoke()
-                handler.postDelayed({ resetMinimizeImmediately() }, 120L)
+                handler.postDelayed({ resetMinimizeImmediately() }, 100L)
             }
             .start()
     }
@@ -511,8 +528,8 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             .translationX(0f)
             .translationY(0f)
             .alpha(1f)
-            .setInterpolator(OvershootInterpolator(0.45f))
-            .setDuration(220L)
+            .setInterpolator(OvershootInterpolator(0.35f))
+            .setDuration(230L)
             .withEndAction { resetMinimizeImmediately() }
             .start()
     }
@@ -530,6 +547,27 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         draggingDown = false
         dragProgress = 0f
         minimizeCommitted = false
+    }
+
+    private fun pulse(view: View, strong: Boolean = false, action: () -> Unit) {
+        val target = if (strong) 0.80f else 0.88f
+        view.animate().cancel()
+        view.animate()
+            .scaleX(target)
+            .scaleY(target)
+            .alpha(0.64f)
+            .setDuration(58L)
+            .withEndAction {
+                action()
+                view.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .alpha(if (view.isEnabled) 1f else 0.33f)
+                    .setInterpolator(OvershootInterpolator(0.55f))
+                    .setDuration(145L)
+                    .start()
+            }
+            .start()
     }
 
     private fun seekBy(deltaMs: Long) {
@@ -602,18 +640,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         }
         playPause.animate().cancel()
         playPause.animate()
-            .scaleX(0.76f)
-            .scaleY(0.76f)
-            .alpha(0.35f)
-            .setDuration(65L)
+            .rotation(if (isPlaying) 7f else -7f)
+            .scaleX(0.70f)
+            .scaleY(0.70f)
+            .alpha(0.28f)
+            .setDuration(70L)
             .withEndAction {
                 playPause.setImageResource(icon)
                 playPause.animate()
+                    .rotation(0f)
                     .scaleX(1f)
                     .scaleY(1f)
                     .alpha(1f)
-                    .setInterpolator(OvershootInterpolator(0.65f))
-                    .setDuration(145L)
+                    .setInterpolator(OvershootInterpolator(0.75f))
+                    .setDuration(155L)
                     .start()
             }
             .start()
@@ -634,7 +674,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         controls.animate().cancel()
         controls.animate()
             .alpha(if (visible) 1f else 0f)
-            .setDuration(140L)
+            .setDuration(150L)
             .withStartAction { if (visible) controls.visibility = View.VISIBLE }
             .withEndAction { if (!visible) controls.visibility = View.INVISIBLE }
             .start()
@@ -647,6 +687,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        parent?.requestDisallowInterceptTouchEvent(false)
         handler.removeCallbacks(progressUpdater)
         handler.removeCallbacks(hideControls)
         super.onDetachedFromWindow()
@@ -706,6 +747,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     companion object {
         private const val PLAYER_PREFS = "native_player_positions_v2"
         private const val SPEED_KEY = "youtube_style_speed"
-        private const val MINIMIZE_COMMIT_FRACTION = 0.28f
+        private const val MINIMIZE_COMMIT_FRACTION = 0.24f
+        private const val FULLSCREEN_EXIT_FRACTION = 0.22f
     }
 }
