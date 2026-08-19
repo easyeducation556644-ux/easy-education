@@ -22,17 +22,22 @@ object YoutubeExactPlayPauseFrames {
     @Synchronized
     fun bind(surface: YoutubeStylePlayerView, player: ExoPlayer) {
         val existing = bindings[surface]
-        if (existing?.player === player) return
+        if (existing?.player === player) {
+            surface.post { setFinal(surface, pause = player.isPlaying) }
+            return
+        }
         if (existing != null) existing.player.removeListener(existing.listener)
 
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                animate(surface, toPause = isPlaying)
+                // YoutubeStylePlayerView also updates accessibility/chrome from its own listener.
+                // Post the permitted frame animation so it is the final visual update for this event.
+                surface.post { animate(surface, toPause = isPlaying) }
             }
         }
         bindings[surface] = Binding(player, listener)
         player.addListener(listener)
-        setFinal(surface, pause = player.isPlaying)
+        surface.post { setFinal(surface, pause = player.isPlaying) }
     }
 
     @Synchronized
@@ -43,8 +48,10 @@ object YoutubeExactPlayPauseFrames {
     private fun animate(surface: YoutubeStylePlayerView, toPause: Boolean) {
         val button = playPauseButton(surface) ?: return
         button.animate().cancel()
+        button.rotation = 0f
         button.scaleX = 1f
         button.scaleY = 1f
+        button.alpha = 1f
         val order = if (toPause) FRAMES.indices.reversed() else FRAMES.indices
         val animation = AnimationDrawable().apply {
             isOneShot = true
@@ -58,6 +65,11 @@ object YoutubeExactPlayPauseFrames {
 
     private fun setFinal(surface: YoutubeStylePlayerView, pause: Boolean) {
         val button = playPauseButton(surface) ?: return
+        button.animate().cancel()
+        button.rotation = 0f
+        button.scaleX = 1f
+        button.scaleY = 1f
+        button.alpha = 1f
         val index = if (pause) 0 else FRAMES.lastIndex
         button.setImageDrawable(frameDrawable(button, FRAMES[index]))
     }
