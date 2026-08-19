@@ -82,10 +82,10 @@ object NativeMiniPlayerOverlay {
         normalHeight = baseHeight
 
         val shell = FrameLayout(activity).apply {
-            elevation = dp(activity, 20).toFloat()
+            elevation = dp(activity, YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
             clipToOutline = true
             outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            background = miniBackground(activity, 12)
+            background = miniBackground(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP)
         }
         container = shell
 
@@ -146,7 +146,7 @@ object NativeMiniPlayerOverlay {
                 .alpha(0f)
                 .scaleX(0.82f)
                 .scaleY(0.82f)
-                .setDuration(145L)
+                .setDuration(YoutubeParityMotion.WATCH_DOWN_OUT_MS)
                 .withEndAction { dismiss(releasePlayer = true) }
                 .start()
         }
@@ -179,7 +179,10 @@ object NativeMiniPlayerOverlay {
                     val currentRoot = root ?: return false
                     val currentWidth = currentShell.width.takeIf { it > 0 } ?: normalWidth
                     val minWidth = dp(activity, 176)
-                    val maxWidth = min(currentRoot.width - dp(activity, 12), dp(activity, 430)).coerceAtLeast(minWidth)
+                    val maxWidth = min(
+                        currentRoot.width - dp(activity, YoutubeParityMotion.MINI_INSET_DP),
+                        dp(activity, YoutubeParityMotion.MINI_MAX_SIZE_DP),
+                    ).coerceAtLeast(minWidth)
                     val targetWidth = (currentWidth * detector.scaleFactor).toInt().coerceIn(minWidth, maxWidth)
                     val targetHeight = (targetWidth * 9f / 16f).toInt()
                     val lp = currentShell.layoutParams as FrameLayout.LayoutParams
@@ -224,7 +227,6 @@ object NativeMiniPlayerOverlay {
 
                 MotionEvent.ACTION_UP -> {
                     if (!dragging) view.performClick()
-                    // Moving the mini-player never means open/dismiss. Explicit buttons own those actions.
                     clampInsideRoot(contentRoot, shell, animate = true)
                     true
                 }
@@ -241,7 +243,7 @@ object NativeMiniPlayerOverlay {
         contentRoot.addView(
             shell,
             FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.BOTTOM or Gravity.END).apply {
-                marginEnd = dp(activity, 10)
+                marginEnd = dp(activity, YoutubeParityMotion.MINI_INSET_DP)
                 bottomMargin = dp(activity, 82)
             },
         )
@@ -271,13 +273,18 @@ object NativeMiniPlayerOverlay {
                     .y(targetY)
                     .scaleX(1f)
                     .scaleY(1f)
-                    .setDuration(230L)
+                    .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
                     .start()
             } else {
                 shell.alpha = 0f
                 shell.scaleX = 0.82f
                 shell.scaleY = 0.82f
-                shell.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(190L).start()
+                shell.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(YoutubeParityMotion.WATCH_REVEAL_FROM_BOTTOM_MS)
+                    .start()
             }
         }
 
@@ -314,7 +321,7 @@ object NativeMiniPlayerOverlay {
             .scaleX(targetScale)
             .scaleY(targetScale)
             .alpha(1f)
-            .setDuration(220L)
+            .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
             .withEndAction {
                 if (callback != null) {
                     dismiss(releasePlayer = false)
@@ -336,7 +343,6 @@ object NativeMiniPlayerOverlay {
             .start()
     }
 
-    /** Expand the same shared player view to fill MainActivity before Android enters system PiP. */
     fun enterPipPresentation(): Boolean {
         val activity = host ?: return false
         val currentRoot = root ?: return false
@@ -382,7 +388,7 @@ object NativeMiniPlayerOverlay {
         val width = normalWidth.coerceAtLeast(dp(activity, 176))
         val height = normalHeight.coerceAtLeast((width * 9f / 16f).toInt())
         shell.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.TOP or Gravity.START)
-        shell.background = miniBackground(activity, 12)
+        shell.background = miniBackground(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP)
         shell.x = normalX
         shell.y = normalY
         clampInsideRoot(currentRoot, shell)
@@ -507,8 +513,9 @@ object NativeMiniPlayerOverlay {
         val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
         val targetX = shell.x.coerceIn(0f, maxX)
         val targetY = shell.y.coerceIn(0f, maxY)
-        if (animate) shell.animate().x(targetX).y(targetY).setDuration(150L).start()
-        else {
+        if (animate) {
+            shell.animate().x(targetX).y(targetY).setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS).start()
+        } else {
             shell.x = targetX
             shell.y = targetY
         }
