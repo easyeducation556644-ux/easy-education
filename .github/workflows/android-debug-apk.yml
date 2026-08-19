@@ -56,7 +56,20 @@ jobs:
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs android-app/app/build/outputs/apk/release/app-release.apk
-      - name: Emulator launch smoke test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-release-apk
+          path: android-app/app/build/outputs/apk/release/app-release.apk
+
+  startup-smoke:
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: easy-education-release-apk
+          path: apk
+      - name: Signed APK launch smoke test
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -64,7 +77,7 @@ jobs:
           arch: x86_64
           disable-animations: true
           script: |
-            adb install -r android-app/app/build/outputs/apk/release/app-release.apk
+            adb install -r apk/app-release.apk
             adb shell pm grant com.easyeducation.app android.permission.POST_NOTIFICATIONS || true
             adb logcat -c
             adb shell am force-stop com.easyeducation.app
@@ -72,7 +85,3 @@ jobs:
             sleep 10
             test -n "$(adb shell pidof com.easyeducation.app | tr -d '\r')" || (echo 'Easy Education process died after launch'; adb logcat -d | grep -E -A 100 -B 30 'AndroidRuntime|FATAL EXCEPTION|Process: com.easyeducation.app' || true; exit 1)
             echo "Easy Education startup alive: $(adb shell pidof com.easyeducation.app | tr -d '\r')"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: easy-education-release-apk
-          path: android-app/app/build/outputs/apk/release/app-release.apk
