@@ -26,6 +26,12 @@ object NativeInlineSurfaceRegistry {
     }
 
     @Synchronized
+    fun canRestore(): Boolean {
+        return hostRef.get() != null && classId.isNotBlank() &&
+            classId == PersistentNativePlayer.currentClassId()
+    }
+
+    @Synchronized
     fun restore(player: ExoPlayer): Boolean {
         val host = hostRef.get() ?: return false
         if (classId.isBlank() || classId != PersistentNativePlayer.currentClassId()) return false
