@@ -18,27 +18,21 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.google.firebase.auth.FirebaseAuth
 import kotlin.math.abs
 import kotlin.math.min
 
 /**
- * YouTube-style in-app mini-player presentation backed by the one process-local ExoPlayer.
- *
- * Important interaction rules:
- * - dragging only moves the mini-player; it never implicitly opens the watch page
- * - pinch-to-resize is supported inside the app
- * - play/pause, close and expand are explicit controls
- * - PiP reuses this exact PlayerView/ExoPlayer session, so media is not resolved/prepared again
+ * Movable/resizable in-app mini-player and Android PiP staging surface. The exact same
+ * YoutubeStylePlayerView used by the watch page/fullscreen is reparented here; only the shell and
+ * controls change. Dragging never opens the class. Play/pause, close and expand are explicit.
  */
 @UnstableApi
 object NativeMiniPlayerOverlay {
     private var host: Activity? = null
     private var root: FrameLayout? = null
     private var container: FrameLayout? = null
-    private var videoView: PlayerView? = null
+    private var playerSurface: YoutubeStylePlayerView? = null
     private var player: ExoPlayer? = null
     private var lifecycleOwner: LifecycleOwner? = null
     private var lifecycleObserver: DefaultLifecycleObserver? = null
@@ -95,16 +89,14 @@ object NativeMiniPlayerOverlay {
         }
         container = shell
 
-        val pv = PlayerView(activity).apply {
-            useController = false
-            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-            keepScreenOn = true
-            player = exoPlayer
-            setBackgroundColor(Color.BLACK)
-        }
-        videoView = pv
+        val surface = NativeSharedPlayerSurface.detach() ?: NativeSharedPlayerSurface.obtain(activity)
+        surface.bindPlayer(exoPlayer)
+        surface.setTitle(title)
+        surface.setLoading(false)
+        NativeSharedPlayerSurface.setMiniPresentation(surface, true)
+        playerSurface = surface
         shell.addView(
-            pv,
+            surface,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
 
@@ -125,10 +117,7 @@ object NativeMiniPlayerOverlay {
             "Play or pause",
         )
         playButton = play
-        shell.addView(
-            play,
-            FrameLayout.LayoutParams(dp(activity, 50), dp(activity, 50), Gravity.CENTER),
-        )
+        shell.addView(play, FrameLayout.LayoutParams(dp(activity, 50), dp(activity, 50), Gravity.CENTER))
 
         val close = miniButton(activity, R.drawable.ic_player_close, "Close mini player")
         closeButton = close
@@ -150,9 +139,7 @@ object NativeMiniPlayerOverlay {
             },
         )
 
-        play.setOnClickListener {
-            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-        }
+        play.setOnClickListener { if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play() }
         close.setOnClickListener {
             shell.animate().cancel()
             shell.animate()
@@ -237,8 +224,7 @@ object NativeMiniPlayerOverlay {
 
                 MotionEvent.ACTION_UP -> {
                     if (!dragging) view.performClick()
-                    // YouTube-style rule: moving the mini-player never means "open" or "dismiss".
-                    // The user must use the explicit expand/close controls.
+                    // Moving the mini-player never means open/dismiss. Explicit buttons own those actions.
                     clampInsideRoot(contentRoot, shell, animate = true)
                     true
                 }
@@ -316,40 +302,41 @@ object NativeMiniPlayerOverlay {
         PersistentNativePlayer.savePosition(activity)
         suppressNextPause = true
         val callback = expandCallback
-        if (callback != null) {
-            shell.animate().cancel()
-            shell.animate()
-                .scaleX(1.06f)
-                .scaleY(1.06f)
-                .alpha(0f)
-                .setDuration(150L)
-                .withEndAction {
+
+        shell.animate().cancel()
+        val rootWidth = root?.width?.takeIf { it > 0 } ?: shell.width
+        val targetScale = (rootWidth.toFloat() / shell.width.coerceAtLeast(1)).coerceAtLeast(1f)
+        shell.pivotX = 0f
+        shell.pivotY = 0f
+        shell.animate()
+            .x(0f)
+            .y(0f)
+            .scaleX(targetScale)
+            .scaleY(targetScale)
+            .alpha(1f)
+            .setDuration(220L)
+            .withEndAction {
+                if (callback != null) {
                     dismiss(releasePlayer = false)
                     callback.invoke()
+                } else {
+                    val bounds = globalBounds(shell)
+                    dismiss(releasePlayer = false)
+                    NativeFullscreenOverlay.show(
+                        activity = activity,
+                        exoPlayer = exoPlayer,
+                        classId = classId,
+                        sourceUrl = sourceUrl,
+                        title = title,
+                        requestedHeight = requestedHeight,
+                        sourceBounds = bounds,
+                    ) { }
                 }
-                .start()
-            return
-        }
-
-        // Fallback if no watch-route callback is available: expand the same prepared session into
-        // the in-activity fullscreen presentation. No URL resolution or prepare() occurs here.
-        val bounds = globalBounds(shell)
-        dismiss(releasePlayer = false)
-        NativeFullscreenOverlay.show(
-            activity = activity,
-            exoPlayer = exoPlayer,
-            classId = classId,
-            sourceUrl = sourceUrl,
-            title = title,
-            requestedHeight = requestedHeight,
-            sourceBounds = bounds,
-        ) { }
+            }
+            .start()
     }
 
-    /**
-     * Converts the existing in-app mini surface into a borderless full-activity surface immediately
-     * before Android enters native Picture-in-Picture. The ExoPlayer/PlayerView are not replaced.
-     */
+    /** Expand the same shared player view to fill MainActivity before Android enters system PiP. */
     fun enterPipPresentation(): Boolean {
         val activity = host ?: return false
         val currentRoot = root ?: return false
@@ -385,7 +372,6 @@ object NativeMiniPlayerOverlay {
         return true
     }
 
-    /** Restores the movable/resizable in-app mini-player after leaving system PiP. */
     fun exitPipPresentation() {
         val activity = host ?: return
         val currentRoot = root ?: return
@@ -404,7 +390,6 @@ object NativeMiniPlayerOverlay {
         closeButton?.visibility = View.VISIBLE
         expandButton?.visibility = View.VISIBLE
         dragLayer?.isEnabled = true
-        videoView?.player = player
         shell.bringToFront()
     }
 
@@ -423,7 +408,7 @@ object NativeMiniPlayerOverlay {
                 sourceUrl = sourceUrl,
                 title = "",
                 requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
-                sourceBounds = null,
+                sourceBounds = NativeInlineSurfaceRegistry.targetBounds(),
                 onExpandToWatchPage = null,
             )
         }
@@ -505,13 +490,15 @@ object NativeMiniPlayerOverlay {
     }
 
     private fun removeContainerOnly() {
-        videoView?.player = null
-        videoView = null
+        val shell = container
+        val surface = playerSurface
+        if (shell != null && surface?.parent === shell) shell.removeView(surface)
+        playerSurface = null
         playButton = null
         closeButton = null
         expandButton = null
         dragLayer = null
-        container?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+        shell?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
         container = null
     }
 
@@ -520,9 +507,8 @@ object NativeMiniPlayerOverlay {
         val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
         val targetX = shell.x.coerceIn(0f, maxX)
         val targetY = shell.y.coerceIn(0f, maxY)
-        if (animate) {
-            shell.animate().x(targetX).y(targetY).setDuration(150L).start()
-        } else {
+        if (animate) shell.animate().x(targetX).y(targetY).setDuration(150L).start()
+        else {
             shell.x = targetX
             shell.y = targetY
         }
