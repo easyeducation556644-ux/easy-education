@@ -9,6 +9,7 @@ import { hasNativeDownloader, nativeRequest } from "./nativeAndroid"
 const DOWNLOADS_KEY = "easy-education-download-jobs-v1"
 const DOWNLOADS_EVENT = "easy-education-downloads-changed"
 const activeDownloads = new Map()
+const RETRYABLE_NETWORK_ERROR_PATTERN = /Cache\.put|network error|Failed to fetch|Load failed|did not respond|Unable to resolve host|Network is unreachable|No route to host|failed to connect|connection (?:reset|abort|shutdown)|Software caused connection abort|unexpected end of stream|stream was reset|socket closed|timeout|timed out/i
 
 function readJobs() {
   try {
@@ -36,6 +37,15 @@ function updateJob(id, patch) {
 
 function getJobId(userId, classId) {
   return `${userId}:${classId}`
+}
+
+function isRetryableNetworkError(errorOrMessage) {
+  const message = typeof errorOrMessage === "string"
+    ? errorOrMessage
+    : errorOrMessage?.message || ""
+  if (typeof errorOrMessage === "object" && errorOrMessage?.name === "AbortError") return true
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return true
+  return RETRYABLE_NETWORK_ERROR_PATTERN.test(message)
 }
 
 function nativeStatusToJobStatus(state) {
@@ -146,10 +156,7 @@ export async function startOfflineDownload({ user, job }) {
     } catch (error) {
       const message = error?.message || "Download failed"
       const intentionallyPaused = activeDownloads.get(id)?.intentionalPause === true
-      const reloadOrNetworkInterruption = !intentionallyPaused && (
-        error?.name === "AbortError"
-        || /Cache\.put|network error|Failed to fetch|Load failed|did not respond/i.test(message)
-      )
+      const reloadOrNetworkInterruption = !intentionallyPaused && isRetryableNetworkError(error)
       updateJob(id, {
         status: intentionallyPaused
           ? "paused"
@@ -240,10 +247,7 @@ export function resumeOfflineDownload(user, classId) {
 export function resumePendingDownloads(user) {
   if (!user?.uid) return
   for (const job of getDownloadJobs(user.uid)) {
-    const reloadError = (
-      job.status === "error"
-      && /Cache\.put|network error|Failed to fetch|Load failed|did not respond/i.test(job.error || "")
-    )
+    const reloadError = job.status === "error" && isRetryableNetworkError(job.error || "")
     if (["queued", "downloading", "converting"].includes(job.status) || reloadError) {
       startOfflineDownload({ user, job })
     }
