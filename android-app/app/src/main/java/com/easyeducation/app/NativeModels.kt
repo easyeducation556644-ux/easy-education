@@ -45,6 +45,15 @@ private fun JSONObject.firstString(vararg keys: String): String {
     return ""
 }
 
+private fun JSONObject.millis(key: String): Long {
+    val raw = opt(key)
+    return when (raw) {
+        is Number -> raw.toLong()
+        is String -> raw.toLongOrNull() ?: 0L
+        else -> 0L
+    }
+}
+
 data class NativeCourse(
     val id: String,
     val title: String,
@@ -109,6 +118,7 @@ data class NativeClassItem(
     val order: Int,
     val duration: String,
     val sourceUrl: String,
+    val downloadUrl: String,
     val teacherName: String,
 ) {
     companion object {
@@ -121,12 +131,23 @@ data class NativeClassItem(
             chapters = json.stringList("chapter", "chapters"),
             order = json.optInt("order", 0),
             duration = json.optString("duration"),
+            // Prefer the site's streaming source for normal online playback.
             sourceUrl = json.firstString(
                 "hlsLink",
                 "videoURL",
                 "videoUrl",
                 "youtubeLink",
                 "rumbleLink",
+                "driveLink",
+                "dailymotionLink",
+            ),
+            // Prefer sources that can be turned into an encrypted progressive offline copy.
+            downloadUrl = json.firstString(
+                "youtubeLink",
+                "rumbleLink",
+                "videoURL",
+                "videoUrl",
+                "hlsLink",
                 "driveLink",
                 "dailymotionLink",
             ),
@@ -155,12 +176,27 @@ data class NativeUserProfile(
     val uid: String,
     val name: String,
     val email: String,
+    val role: String,
+    val banned: Boolean,
+    val permanentBan: Boolean,
+    val banExpiresAt: Long,
 ) {
+    fun restrictionMessage(now: Long = System.currentTimeMillis()): String? {
+        if (permanentBan) return "This account is permanently restricted. Please contact support."
+        if (banned && banExpiresAt <= 0L) return "This account has been restricted by an administrator. Please contact support."
+        if (banExpiresAt > now) return "This account is temporarily restricted. Please try again after the restriction expires."
+        return null
+    }
+
     companion object {
         fun from(uid: String, json: JSONObject?) = NativeUserProfile(
             uid = uid,
             name = json?.firstString("name", "displayName") ?: "",
             email = json?.optString("email") ?: "",
+            role = json?.optString("role", "user") ?: "user",
+            banned = json?.optBoolean("banned", false) ?: false,
+            permanentBan = json?.optBoolean("permanentBan", false) ?: false,
+            banExpiresAt = json?.millis("banExpiresAt") ?: 0L,
         )
     }
 }
