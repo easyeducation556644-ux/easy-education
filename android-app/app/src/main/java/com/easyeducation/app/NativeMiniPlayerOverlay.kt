@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
@@ -24,13 +25,18 @@ import kotlin.math.abs
 import kotlin.math.min
 
 /**
- * In-app miniplayer backed by the same ExoPlayer session. Tapping/dragging upward expands the mini
- * surface first, then restores the class route; it never launches a second fullscreen Activity and
- * never calls the resolver/prepare path for the current media item.
+ * YouTube-style in-app mini-player presentation backed by the one process-local ExoPlayer.
+ *
+ * Important interaction rules:
+ * - dragging only moves the mini-player; it never implicitly opens the watch page
+ * - pinch-to-resize is supported inside the app
+ * - play/pause, close and expand are explicit controls
+ * - PiP reuses this exact PlayerView/ExoPlayer session, so media is not resolved/prepared again
  */
 @UnstableApi
 object NativeMiniPlayerOverlay {
     private var host: Activity? = null
+    private var root: FrameLayout? = null
     private var container: FrameLayout? = null
     private var videoView: PlayerView? = null
     private var player: ExoPlayer? = null
@@ -38,9 +44,20 @@ object NativeMiniPlayerOverlay {
     private var lifecycleObserver: DefaultLifecycleObserver? = null
     private var authListener: FirebaseAuth.AuthStateListener? = null
     private var playerListener: Player.Listener? = null
-    private var suppressNextPause = false
     private var expandCallback: (() -> Unit)? = null
+    private var suppressNextPause = false
     private var expanding = false
+    private var inPipPresentation = false
+
+    private var playButton: AppCompatImageButton? = null
+    private var closeButton: AppCompatImageButton? = null
+    private var expandButton: AppCompatImageButton? = null
+    private var dragLayer: View? = null
+
+    private var normalWidth = 0
+    private var normalHeight = 0
+    private var normalX = 0f
+    private var normalY = 0f
 
     fun show(
         activity: Activity,
@@ -52,26 +69,29 @@ object NativeMiniPlayerOverlay {
         sourceBounds: Rect? = null,
         onExpandToWatchPage: (() -> Unit)? = null,
     ) {
-        if (host !== activity) dismiss(releasePlayer = true)
+        if (host !== activity) dismiss(releasePlayer = false)
         removeContainerOnly()
         detachPlayerListener()
+
         host = activity
         player = exoPlayer
         expandCallback = onExpandToWatchPage
         suppressNextPause = false
         expanding = false
+        inPipPresentation = false
 
-        val root = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
-        val width = dp(activity, if (activity.resources.configuration.smallestScreenWidthDp >= 600) 330 else 252)
-        val height = (width * 9f / 16f).toInt()
+        val contentRoot = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
+        root = contentRoot
+        val baseWidth = dp(activity, if (activity.resources.configuration.smallestScreenWidthDp >= 600) 340 else 252)
+        val baseHeight = (baseWidth * 9f / 16f).toInt()
+        normalWidth = baseWidth
+        normalHeight = baseHeight
+
         val shell = FrameLayout(activity).apply {
-            elevation = dp(activity, 18).toFloat()
+            elevation = dp(activity, 20).toFloat()
             clipToOutline = true
             outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
-            background = GradientDrawable().apply {
-                setColor(Color.BLACK)
-                cornerRadius = dp(activity, 12).toFloat()
-            }
+            background = miniBackground(activity, 12)
         }
         container = shell
 
@@ -88,42 +108,14 @@ object NativeMiniPlayerOverlay {
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
 
-        fun expandToWatchPage() {
-            if (expanding) return
-            expanding = true
-            PersistentNativePlayer.savePosition(activity)
-            suppressNextPause = true
-            shell.animate().cancel()
-
-            val composePage = root.getChildAt(0)?.takeIf { it !== shell }
-            composePage?.animate()?.cancel()
-            composePage?.animate()?.alpha(0.62f)?.setDuration(170L)?.start()
-
-            val targetScale = (root.width.toFloat() / shell.width.coerceAtLeast(1)).coerceAtLeast(1f)
-            shell.pivotX = 0f
-            shell.pivotY = 0f
-            shell.animate()
-                .x(0f)
-                .y(0f)
-                .scaleX(targetScale)
-                .scaleY(targetScale)
-                .alpha(1f)
-                .setDuration(235L)
-                .withEndAction {
-                    composePage?.alpha = 1f
-                    val callback = expandCallback
-                    dismiss(releasePlayer = false)
-                    callback?.invoke()
-                }
-                .start()
-        }
-
-        val dragLayer = View(activity).apply {
+        val gestureLayer = View(activity).apply {
             setBackgroundColor(Color.TRANSPARENT)
             isClickable = true
+            contentDescription = "Move or resize mini player"
         }
+        dragLayer = gestureLayer
         shell.addView(
-            dragLayer,
+            gestureLayer,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
 
@@ -132,16 +124,28 @@ object NativeMiniPlayerOverlay {
             if (exoPlayer.isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
             "Play or pause",
         )
+        playButton = play
         shell.addView(
             play,
             FrameLayout.LayoutParams(dp(activity, 50), dp(activity, 50), Gravity.CENTER),
         )
 
         val close = miniButton(activity, R.drawable.ic_player_close, "Close mini player")
+        closeButton = close
         shell.addView(
             close,
-            FrameLayout.LayoutParams(dp(activity, 42), dp(activity, 42), Gravity.TOP or Gravity.END).apply {
+            FrameLayout.LayoutParams(dp(activity, 40), dp(activity, 40), Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(activity, 4)
+                marginEnd = dp(activity, 4)
+            },
+        )
+
+        val expand = miniButton(activity, R.drawable.ic_player_fullscreen, "Open class player")
+        expandButton = expand
+        shell.addView(
+            expand,
+            FrameLayout.LayoutParams(dp(activity, 42), dp(activity, 42), Gravity.BOTTOM or Gravity.END).apply {
+                bottomMargin = dp(activity, 4)
                 marginEnd = dp(activity, 4)
             },
         )
@@ -155,18 +159,18 @@ object NativeMiniPlayerOverlay {
                 .alpha(0f)
                 .scaleX(0.82f)
                 .scaleY(0.82f)
-                .translationY(dp(activity, 70).toFloat())
-                .setDuration(150L)
+                .setDuration(145L)
                 .withEndAction { dismiss(releasePlayer = true) }
                 .start()
         }
+        expand.setOnClickListener { expandExplicitly(activity, shell, exoPlayer, classId, sourceUrl, title, requestedHeight) }
 
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 play.animate().cancel()
                 play.animate().scaleX(0.82f).scaleY(0.82f).setDuration(55L).withEndAction {
                     play.setImageResource(if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play)
-                    play.animate().scaleX(1f).scaleY(1f).setDuration(115L).start()
+                    play.animate().scaleX(1f).scaleY(1f).setDuration(105L).start()
                 }.start()
             }
         }
@@ -180,7 +184,33 @@ object NativeMiniPlayerOverlay {
         var startY = 0f
         var dragging = false
 
-        dragLayer.setOnTouchListener { view, event ->
+        val scaler = ScaleGestureDetector(
+            activity,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val currentShell = container ?: return false
+                    val currentRoot = root ?: return false
+                    val currentWidth = currentShell.width.takeIf { it > 0 } ?: normalWidth
+                    val minWidth = dp(activity, 176)
+                    val maxWidth = min(currentRoot.width - dp(activity, 12), dp(activity, 430)).coerceAtLeast(minWidth)
+                    val targetWidth = (currentWidth * detector.scaleFactor).toInt().coerceIn(minWidth, maxWidth)
+                    val targetHeight = (targetWidth * 9f / 16f).toInt()
+                    val lp = currentShell.layoutParams as FrameLayout.LayoutParams
+                    lp.width = targetWidth
+                    lp.height = targetHeight
+                    currentShell.layoutParams = lp
+                    normalWidth = targetWidth
+                    normalHeight = targetHeight
+                    clampInsideRoot(currentRoot, currentShell)
+                    return true
+                }
+            },
+        )
+
+        gestureLayer.setOnTouchListener { view, event ->
+            scaler.onTouchEvent(event)
+            if (scaler.isInProgress) return@setOnTouchListener true
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
@@ -197,58 +227,24 @@ object NativeMiniPlayerOverlay {
                     val dy = event.rawY - downRawY
                     if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) dragging = true
                     if (dragging) {
-                        val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
-                        val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
+                        val maxX = (contentRoot.width - shell.width).coerceAtLeast(0).toFloat()
+                        val maxY = (contentRoot.height - shell.height).coerceAtLeast(0).toFloat()
                         shell.x = (startX + dx).coerceIn(0f, maxX)
                         shell.y = (startY + dy).coerceIn(0f, maxY)
-                        shell.scaleX = (1f - (dy.coerceAtLeast(0f) / root.height.coerceAtLeast(1)) * 0.15f)
-                            .coerceIn(0.86f, 1f)
-                        shell.scaleY = shell.scaleX
-                        shell.alpha = (1f - (dy.coerceAtLeast(0f) / root.height.coerceAtLeast(1)) * 0.72f)
-                            .coerceIn(0.50f, 1f)
                     }
                     true
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    val dx = event.rawX - downRawX
-                    val dy = event.rawY - downRawY
-                    when {
-                        !dragging -> {
-                            view.performClick()
-                            expandToWatchPage()
-                        }
-                        dy < -dp(activity, 72) && abs(dy) > abs(dx) * 0.75f -> expandToWatchPage()
-                        dy > dp(activity, 132) && abs(dy) > abs(dx) * 0.72f -> {
-                            shell.animate()
-                                .alpha(0f)
-                                .scaleX(0.78f)
-                                .scaleY(0.78f)
-                                .translationY(dp(activity, 120).toFloat())
-                                .setDuration(145L)
-                                .withEndAction { dismiss(releasePlayer = true) }
-                                .start()
-                        }
-                        else -> {
-                            val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
-                            val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
-                            val targetX = if (shell.x + shell.width / 2f < root.width / 2f) 0f else maxX
-                            val targetY = shell.y.coerceIn(0f, maxY)
-                            shell.animate()
-                                .x(targetX)
-                                .y(targetY)
-                                .scaleX(1f)
-                                .scaleY(1f)
-                                .alpha(1f)
-                                .setDuration(190L)
-                                .start()
-                        }
-                    }
+                    if (!dragging) view.performClick()
+                    // YouTube-style rule: moving the mini-player never means "open" or "dismiss".
+                    // The user must use the explicit expand/close controls.
+                    clampInsideRoot(contentRoot, shell, animate = true)
                     true
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
-                    shell.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(140L).start()
+                    clampInsideRoot(contentRoot, shell, animate = true)
                     true
                 }
 
@@ -256,28 +252,28 @@ object NativeMiniPlayerOverlay {
             }
         }
 
-        root.addView(
+        contentRoot.addView(
             shell,
-            FrameLayout.LayoutParams(width, height, Gravity.BOTTOM or Gravity.END).apply {
+            FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.BOTTOM or Gravity.END).apply {
                 marginEnd = dp(activity, 10)
                 bottomMargin = dp(activity, 82)
             },
         )
 
-        if (sourceBounds != null && !sourceBounds.isEmpty) {
-            shell.alpha = 1f
-            shell.post {
-                if (container !== shell) return@post
-                val targetX = shell.x
-                val targetY = shell.y
+        shell.post {
+            normalX = shell.x
+            normalY = shell.y
+            if (sourceBounds != null && !sourceBounds.isEmpty) {
                 val rootLocation = IntArray(2)
-                root.getLocationOnScreen(rootLocation)
+                contentRoot.getLocationOnScreen(rootLocation)
                 val sourceX = (sourceBounds.left - rootLocation[0]).toFloat()
                 val sourceY = (sourceBounds.top - rootLocation[1]).toFloat()
                 val sourceScale = min(
                     sourceBounds.width().toFloat() / shell.width.coerceAtLeast(1),
                     sourceBounds.height().toFloat() / shell.height.coerceAtLeast(1),
-                ).coerceIn(0.60f, 1.65f)
+                ).coerceIn(0.60f, 1.75f)
+                val targetX = shell.x
+                val targetY = shell.y
                 shell.pivotX = 0f
                 shell.pivotY = 0f
                 shell.x = sourceX
@@ -289,29 +285,154 @@ object NativeMiniPlayerOverlay {
                     .y(targetY)
                     .scaleX(1f)
                     .scaleY(1f)
-                    .alpha(1f)
                     .setDuration(230L)
                     .start()
+            } else {
+                shell.alpha = 0f
+                shell.scaleX = 0.82f
+                shell.scaleY = 0.82f
+                shell.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(190L).start()
             }
-        } else {
-            shell.alpha = 0f
-            shell.scaleX = 0.72f
-            shell.scaleY = 0.72f
-            shell.translationY = dp(activity, 76).toFloat()
-            shell.animate()
-                .alpha(1f)
-                .scaleX(1f)
-                .scaleY(1f)
-                .translationY(0f)
-                .setDuration(220L)
-                .start()
         }
 
         play.bringToFront()
         close.bringToFront()
+        expand.bringToFront()
         attachLifecycle(activity, exoPlayer, play)
         attachAuthListener(exoPlayer)
     }
+
+    private fun expandExplicitly(
+        activity: Activity,
+        shell: FrameLayout,
+        exoPlayer: ExoPlayer,
+        classId: String,
+        sourceUrl: String,
+        title: String,
+        requestedHeight: Int,
+    ) {
+        if (expanding) return
+        expanding = true
+        PersistentNativePlayer.savePosition(activity)
+        suppressNextPause = true
+        val callback = expandCallback
+        if (callback != null) {
+            shell.animate().cancel()
+            shell.animate()
+                .scaleX(1.06f)
+                .scaleY(1.06f)
+                .alpha(0f)
+                .setDuration(150L)
+                .withEndAction {
+                    dismiss(releasePlayer = false)
+                    callback.invoke()
+                }
+                .start()
+            return
+        }
+
+        // Fallback if no watch-route callback is available: expand the same prepared session into
+        // the in-activity fullscreen presentation. No URL resolution or prepare() occurs here.
+        val bounds = globalBounds(shell)
+        dismiss(releasePlayer = false)
+        NativeFullscreenOverlay.show(
+            activity = activity,
+            exoPlayer = exoPlayer,
+            classId = classId,
+            sourceUrl = sourceUrl,
+            title = title,
+            requestedHeight = requestedHeight,
+            sourceBounds = bounds,
+        ) { }
+    }
+
+    /**
+     * Converts the existing in-app mini surface into a borderless full-activity surface immediately
+     * before Android enters native Picture-in-Picture. The ExoPlayer/PlayerView are not replaced.
+     */
+    fun enterPipPresentation(): Boolean {
+        val activity = host ?: return false
+        val currentRoot = root ?: return false
+        val shell = container ?: return false
+        if (inPipPresentation) return true
+
+        suppressNextPause = true
+        inPipPresentation = true
+        normalX = shell.x
+        normalY = shell.y
+        normalWidth = shell.width.takeIf { it > 0 } ?: normalWidth
+        normalHeight = shell.height.takeIf { it > 0 } ?: normalHeight
+
+        playButton?.visibility = View.GONE
+        closeButton?.visibility = View.GONE
+        expandButton?.visibility = View.GONE
+        dragLayer?.isEnabled = false
+        shell.background = miniBackground(activity, 0)
+        shell.animate().cancel()
+        shell.x = 0f
+        shell.y = 0f
+        shell.scaleX = 1f
+        shell.scaleY = 1f
+        shell.alpha = 1f
+        shell.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.CENTER,
+        )
+        shell.requestLayout()
+        shell.bringToFront()
+        currentRoot.requestLayout()
+        return true
+    }
+
+    /** Restores the movable/resizable in-app mini-player after leaving system PiP. */
+    fun exitPipPresentation() {
+        val activity = host ?: return
+        val currentRoot = root ?: return
+        val shell = container ?: return
+        if (!inPipPresentation) return
+        inPipPresentation = false
+
+        val width = normalWidth.coerceAtLeast(dp(activity, 176))
+        val height = normalHeight.coerceAtLeast((width * 9f / 16f).toInt())
+        shell.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.TOP or Gravity.START)
+        shell.background = miniBackground(activity, 12)
+        shell.x = normalX
+        shell.y = normalY
+        clampInsideRoot(currentRoot, shell)
+        playButton?.visibility = View.VISIBLE
+        closeButton?.visibility = View.VISIBLE
+        expandButton?.visibility = View.VISIBLE
+        dragLayer?.isEnabled = true
+        videoView?.player = player
+        shell.bringToFront()
+    }
+
+    fun ensureForPip(activity: Activity): Boolean {
+        val classId = PersistentNativePlayer.currentClassId()
+        val sourceUrl = PersistentNativePlayer.currentSourceUrl()
+        if (classId.isBlank() || sourceUrl.isBlank()) return false
+        val exo = PersistentNativePlayer.player(activity)
+        if (exo.mediaItemCount == 0) return false
+
+        if (host !== activity || container == null || player !== exo) {
+            show(
+                activity = activity,
+                exoPlayer = exo,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                title = "",
+                requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
+                sourceBounds = null,
+                onExpandToWatchPage = null,
+            )
+        }
+        return enterPipPresentation()
+    }
+
+    fun isVisible(): Boolean = container != null
+    fun isPipPresentation(): Boolean = inPipPresentation
+    fun owns(exoPlayer: ExoPlayer): Boolean = player === exoPlayer && container != null
 
     fun dismiss(releasePlayer: Boolean = true) {
         val currentHost = host
@@ -321,25 +442,25 @@ object NativeMiniPlayerOverlay {
         player = null
         expandCallback = null
         expanding = false
+        inPipPresentation = false
         detachLifecycle()
         detachAuthListener()
         host = null
+        root = null
         if (releasePlayer && currentHost != null && currentPlayer != null) {
             PersistentNativePlayer.stopIfOwned(currentHost, currentPlayer)
         }
     }
 
-    fun owns(exoPlayer: ExoPlayer): Boolean = player === exoPlayer && container != null
-
-    private fun attachLifecycle(activity: Activity, exoPlayer: ExoPlayer, playButton: AppCompatImageButton) {
+    private fun attachLifecycle(activity: Activity, exoPlayer: ExoPlayer, play: AppCompatImageButton) {
         detachLifecycle()
         val owner = activity as? LifecycleOwner ?: return
         val observer = object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
-                if (player === exoPlayer && !suppressNextPause) {
+                if (player === exoPlayer && !suppressNextPause && !inPipPresentation) {
                     PersistentNativePlayer.savePosition(activity)
                     exoPlayer.pause()
-                    playButton.setImageResource(R.drawable.ic_player_play)
+                    play.setImageResource(R.drawable.ic_player_play)
                 }
                 suppressNextPause = false
             }
@@ -386,19 +507,47 @@ object NativeMiniPlayerOverlay {
     private fun removeContainerOnly() {
         videoView?.player = null
         videoView = null
+        playButton = null
+        closeButton = null
+        expandButton = null
+        dragLayer = null
         container?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
         container = null
+    }
+
+    private fun clampInsideRoot(root: FrameLayout, shell: FrameLayout, animate: Boolean = false) {
+        val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
+        val maxY = (root.height - shell.height).coerceAtLeast(0).toFloat()
+        val targetX = shell.x.coerceIn(0f, maxX)
+        val targetY = shell.y.coerceIn(0f, maxY)
+        if (animate) {
+            shell.animate().x(targetX).y(targetY).setDuration(150L).start()
+        } else {
+            shell.x = targetX
+            shell.y = targetY
+        }
+    }
+
+    private fun globalBounds(view: View): Rect {
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return Rect(location[0], location[1], location[0] + view.width, location[1] + view.height)
     }
 
     private fun miniButton(context: Context, drawable: Int, description: String) = AppCompatImageButton(context).apply {
         setImageResource(drawable)
         contentDescription = description
         scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
-        setPadding(dp(context, 11), dp(context, 11), dp(context, 11), dp(context, 11))
+        setPadding(dp(context, 10), dp(context, 10), dp(context, 10), dp(context, 10))
         background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.argb(155, 10, 10, 10))
+            setColor(Color.argb(158, 8, 8, 8))
         }
+    }
+
+    private fun miniBackground(context: Context, radiusDp: Int) = GradientDrawable().apply {
+        setColor(Color.BLACK)
+        cornerRadius = dp(context, radiusDp).toFloat()
     }
 
     private fun dp(context: Context, value: Int): Int =
