@@ -21,6 +21,7 @@ data class NativeUiState(
     val authReady: Boolean = false,
     val user: FirebaseUser? = null,
     val profile: NativeUserProfile? = null,
+    val restrictionMessage: String? = null,
     val courses: List<NativeCourse> = emptyList(),
     val courseContent: Map<String, NativeCourseContent> = emptyMap(),
     val downloads: List<SecureDownloadTask> = emptyList(),
@@ -41,7 +42,13 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val user = firebaseAuth.currentUser
         _state.value = _state.value.copy(user = user, authReady = true, error = null)
         if (user == null) {
-            _state.value = _state.value.copy(profile = null, courses = emptyList(), courseContent = emptyMap(), downloads = emptyList())
+            _state.value = _state.value.copy(
+                profile = null,
+                restrictionMessage = null,
+                courses = emptyList(),
+                courseContent = emptyMap(),
+                downloads = emptyList(),
+            )
         } else {
             loadUser(user.uid)
         }
@@ -80,6 +87,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             val cachedDownloads = withContext(Dispatchers.IO) { downloads.allForUser(uid) }
             _state.value = _state.value.copy(
                 profile = cachedProfile,
+                restrictionMessage = cachedProfile.restrictionMessage(),
                 courses = cachedCourses,
                 downloads = cachedDownloads,
                 authReady = true,
@@ -90,16 +98,30 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshOnline(uid: String = auth.currentUser?.uid.orEmpty()) {
         if (uid.isBlank() || !_state.value.online || _state.value.syncing) return
+        val firebaseUser = auth.currentUser ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(syncing = true, error = null)
             runCatching {
-                val profile = repository.refreshProfile(uid)
+                val profile = repository.refreshProfile(
+                    uid = uid,
+                    fallbackName = firebaseUser.displayName.orEmpty(),
+                    fallbackEmail = firebaseUser.email.orEmpty(),
+                    fallbackPhotoUrl = firebaseUser.photoUrl?.toString().orEmpty(),
+                )
+                if (profile.restrictionMessage() != null) {
+                    return@runCatching Triple(profile, emptyList<NativeCourse>(), profile.restrictionMessage())
+                }
                 val courses = repository.refreshEnrollments(uid)
                 repository.syncChangedOnly(uid)
                 val finalCourses = repository.cachedCourses(uid)
-                profile to (if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses)
-            }.onSuccess { (profile, courses) ->
-                _state.value = _state.value.copy(profile = profile, courses = courses, syncing = false)
+                Triple(profile, if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses, null)
+            }.onSuccess { (profile, courses, restriction) ->
+                _state.value = _state.value.copy(
+                    profile = profile,
+                    restrictionMessage = restriction,
+                    courses = courses,
+                    syncing = false,
+                )
             }.onFailure { error ->
                 _state.value = _state.value.copy(syncing = false, error = error.message ?: "Sync failed")
             }
@@ -107,7 +129,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun loadCourse(courseId: String, force: Boolean = false) {
-        if (courseId.isBlank()) return
+        if (courseId.isBlank() || _state.value.restrictionMessage != null) return
         viewModelScope.launch {
             val cached = repository.cachedCourseContent(courseId)
             _state.value = _state.value.copy(
@@ -130,6 +152,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun hasOfflineLease(courseId: String): Boolean {
+        if (_state.value.restrictionMessage != null) return false
         val uid = auth.currentUser?.uid ?: return false
         return repository.hasOfflineLease(uid, courseId)
     }
@@ -149,16 +172,21 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startDownload(context: Context, course: NativeCourse, item: NativeClassItem, height: Int) {
         val uid = auth.currentUser?.uid ?: return
+        if (_state.value.restrictionMessage != null) {
+            _state.value = _state.value.copy(error = "This account cannot download classes right now")
+            return
+        }
         if (!_state.value.online) {
             _state.value = _state.value.copy(error = "Connect to the internet to start a new download")
             return
         }
-        if (item.sourceUrl.isBlank()) {
+        if (item.downloadUrl.isBlank()) {
             _state.value = _state.value.copy(error = "This class has no downloadable video source")
             return
         }
         val id = SecureMediaStore.downloadId(uid, item.id)
         val existing = downloads.get(id)
+        val sameSource = existing?.sourceUrl == item.downloadUrl && existing.height == height
         val task = SecureDownloadTask(
             id = id,
             userId = uid,
@@ -166,14 +194,14 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             classId = item.id,
             title = item.title,
             courseTitle = course.title,
-            sourceUrl = item.sourceUrl,
+            sourceUrl = item.downloadUrl,
             height = height,
-            downloadedBytes = existing?.takeIf { it.height == height }?.downloadedBytes ?: 0,
-            totalBytes = existing?.takeIf { it.height == height }?.totalBytes ?: 0,
-            chunkCount = existing?.takeIf { it.height == height }?.chunkCount ?: 0,
+            downloadedBytes = existing?.takeIf { sameSource }?.downloadedBytes ?: 0,
+            totalBytes = existing?.takeIf { sameSource }?.totalBytes ?: 0,
+            chunkCount = existing?.takeIf { sameSource }?.chunkCount ?: 0,
             state = "queued",
         )
-        if (existing != null && existing.height != height) downloads.resetChunks(id)
+        if (existing != null && !sameSource) downloads.resetChunks(id)
         SecureDownloadService.start(context, task)
         refreshDownloads()
     }
@@ -184,6 +212,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun resumeDownload(context: Context, id: String) {
+        if (_state.value.restrictionMessage != null) {
+            _state.value = _state.value.copy(error = "This account cannot resume downloads right now")
+            return
+        }
         if (!_state.value.online) {
             _state.value = _state.value.copy(error = "Connect to resume this download")
             return
