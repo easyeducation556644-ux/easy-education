@@ -24,8 +24,9 @@ import com.google.firebase.auth.FirebaseAuth
 import kotlin.math.abs
 
 /**
- * Small persistent in-app player hosted directly by MainActivity's decor view. The inline player
- * hands the same ExoPlayer instance here, avoiding a second resolve/rebuffer during minimize.
+ * Persistent in-app miniplayer. The watch page hands the same ExoPlayer instance here so buffer,
+ * decoder state, position and speed survive the transition. Expand hands that same session to the
+ * fullscreen activity instead of releasing and resolving again.
  */
 @UnstableApi
 object NativeMiniPlayerOverlay {
@@ -36,6 +37,7 @@ object NativeMiniPlayerOverlay {
     private var lifecycleOwner: LifecycleOwner? = null
     private var lifecycleObserver: DefaultLifecycleObserver? = null
     private var authListener: FirebaseAuth.AuthStateListener? = null
+    private var suppressNextPause = false
 
     fun show(
         activity: Activity,
@@ -49,6 +51,7 @@ object NativeMiniPlayerOverlay {
         removeContainerOnly()
         host = activity
         player = exoPlayer
+        suppressNextPause = false
 
         val root = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
         val width = dp(activity, if (activity.resources.configuration.smallestScreenWidthDp >= 600) 320 else 244)
@@ -73,16 +76,38 @@ object NativeMiniPlayerOverlay {
             setBackgroundColor(Color.BLACK)
         }
         videoView = pv
-        shell.addView(pv, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
+        shell.addView(
+            pv,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
 
-        val shade = View(activity).apply { setBackgroundColor(Color.argb(35, 0, 0, 0)) }
-        shell.addView(shade, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        ))
+        val shade = View(activity).apply { setBackgroundColor(Color.argb(28, 0, 0, 0)) }
+        shell.addView(
+            shade,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        fun expandSharedPlayer() {
+            savePosition(activity, classId, exoPlayer.currentPosition)
+            suppressNextPause = true
+            dismiss(releasePlayer = false)
+            activity.startActivity(
+                Intent(activity, NativePlayerActivity::class.java)
+                    .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
+                    .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
+                    .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
+                    .putExtra(NativePlayerActivity.EXTRA_TITLE, title)
+                    .putExtra(NativePlayerActivity.EXTRA_SHARED_SESSION, true),
+            )
+            @Suppress("DEPRECATION")
+            activity.overridePendingTransition(0, 0)
+        }
 
         val play = TextView(activity).apply {
             text = if (exoPlayer.isPlaying) "❚❚" else "▶"
@@ -107,16 +132,19 @@ object NativeMiniPlayerOverlay {
             contentDescription = "Close mini player"
             setOnClickListener { dismiss(releasePlayer = true) }
         }
-        shell.addView(close, FrameLayout.LayoutParams(dp(activity, 38), dp(activity, 38), Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(activity, 5)
-            marginEnd = dp(activity, 5)
-        })
+        shell.addView(
+            close,
+            FrameLayout.LayoutParams(dp(activity, 38), dp(activity, 38), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(activity, 5)
+                marginEnd = dp(activity, 5)
+            },
+        )
 
         val titleBar = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(activity, 9), 0, dp(activity, 48), 0)
-            setBackgroundColor(Color.argb(90, 0, 0, 0))
+            setBackgroundColor(Color.argb(86, 0, 0, 0))
         }
         val label = TextView(activity).apply {
             text = title.ifBlank { "Class" }
@@ -126,35 +154,29 @@ object NativeMiniPlayerOverlay {
             setTypeface(typeface, Typeface.BOLD)
         }
         titleBar.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        shell.addView(titleBar, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(activity, 42),
-            Gravity.TOP,
-        ))
+        shell.addView(
+            titleBar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(activity, 42),
+                Gravity.TOP,
+            ),
+        )
 
         val expandTap = View(activity).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener {
-                val position = exoPlayer.currentPosition
-                savePosition(activity, classId, position)
-                dismiss(releasePlayer = false)
-                exoPlayer.release()
-                activity.startActivity(
-                    Intent(activity, NativePlayerActivity::class.java)
-                        .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
-                        .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
-                        .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
-                        .putExtra(NativePlayerActivity.EXTRA_TITLE, title),
-                )
-            }
+            setOnClickListener { expandSharedPlayer() }
         }
-        shell.addView(expandTap, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        ).apply {
-            topMargin = dp(activity, 42)
-            bottomMargin = dp(activity, 48)
-        })
+        shell.addView(
+            expandTap,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ).apply {
+                topMargin = dp(activity, 42)
+                bottomMargin = dp(activity, 48)
+            },
+        )
 
         play.bringToFront()
         titleBar.bringToFront()
@@ -173,8 +195,10 @@ object NativeMiniPlayerOverlay {
                     startX = shell.x
                     startY = shell.y
                     downAt = SystemClock.uptimeMillis()
+                    shell.animate().cancel()
                     true
                 }
+
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downRawX
                     val dy = event.rawY - downRawY
@@ -184,42 +208,67 @@ object NativeMiniPlayerOverlay {
                     shell.y = (startY + dy).coerceIn(0f, maxY)
                     true
                 }
+
                 MotionEvent.ACTION_UP -> {
-                    val moved = abs(event.rawX - downRawX) > dp(activity, 8) || abs(event.rawY - downRawY) > dp(activity, 8)
-                    if (!moved && SystemClock.uptimeMillis() - downAt < 250L) view.performClick()
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    val moved = abs(dx) > dp(activity, 8) || abs(dy) > dp(activity, 8)
+                    when {
+                        dy < -dp(activity, 86) && abs(dy) > abs(dx) -> expandSharedPlayer()
+                        dy > dp(activity, 118) && abs(dy) > abs(dx) -> dismiss(releasePlayer = true)
+                        moved -> {
+                            val maxX = (root.width - shell.width).coerceAtLeast(0).toFloat()
+                            val targetX = if (shell.x + shell.width / 2f < root.width / 2f) 0f else maxX
+                            shell.animate().x(targetX).setDuration(170L).start()
+                        }
+                        SystemClock.uptimeMillis() - downAt < 250L -> view.performClick()
+                    }
                     true
                 }
+
+                MotionEvent.ACTION_CANCEL -> true
                 else -> true
             }
         }
 
-        root.addView(shell, FrameLayout.LayoutParams(width, height, Gravity.BOTTOM or Gravity.END).apply {
-            marginEnd = dp(activity, 12)
-            bottomMargin = dp(activity, 86)
-        })
+        root.addView(
+            shell,
+            FrameLayout.LayoutParams(width, height, Gravity.BOTTOM or Gravity.END).apply {
+                marginEnd = dp(activity, 12)
+                bottomMargin = dp(activity, 86)
+            },
+        )
         shell.alpha = 0f
-        shell.scaleX = 0.9f
-        shell.scaleY = 0.9f
-        shell.translationY = dp(activity, 28).toFloat()
+        shell.scaleX = 0.86f
+        shell.scaleY = 0.86f
+        shell.translationY = dp(activity, 36).toFloat()
         shell.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
             .translationY(0f)
-            .setDuration(180L)
+            .setDuration(190L)
             .start()
 
         attachLifecycle(activity, exoPlayer, play)
         attachAuthListener(exoPlayer)
     }
 
+    /**
+     * releasePlayer=true means the user explicitly closed playback. PersistentNativePlayer is not
+     * released as an object; its media session is stopped/cleared so the singleton remains reusable.
+     */
     fun dismiss(releasePlayer: Boolean = true) {
+        val currentHost = host
+        val currentPlayer = player
         removeContainerOnly()
-        if (releasePlayer) player?.release()
         player = null
         detachLifecycle()
         detachAuthListener()
         host = null
+        if (releasePlayer && currentHost != null && currentPlayer != null) {
+            PersistentNativePlayer.stopIfOwned(currentHost, currentPlayer)
+        }
     }
 
     fun owns(exoPlayer: ExoPlayer): Boolean = player === exoPlayer && container != null
@@ -229,10 +278,12 @@ object NativeMiniPlayerOverlay {
         val owner = activity as? LifecycleOwner ?: return
         val observer = object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
-                if (player === exoPlayer) {
+                if (player === exoPlayer && !suppressNextPause) {
+                    PersistentNativePlayer.savePosition(activity)
                     exoPlayer.pause()
                     playButton.text = "▶"
                 }
+                suppressNextPause = false
             }
 
             override fun onDestroy(owner: LifecycleOwner) {
