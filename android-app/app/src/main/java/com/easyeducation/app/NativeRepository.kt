@@ -8,6 +8,7 @@ import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.security.MessageDigest
 
 class NativeRepository(context: Context) {
@@ -48,12 +49,7 @@ class NativeRepository(context: Context) {
     }
 
     suspend fun cachedCourses(uid: String): List<NativeCourse> = withContext(Dispatchers.IO) {
-        val courseIds = cache.listDocs("userCourses", userId = uid)
-            .map(NativeEnrollment::from)
-            .map { it.courseId }
-            .filter { it.isNotBlank() }
-            .toSet()
-        courseIds.mapNotNull { id -> cache.getDoc("courses", id)?.let(NativeCourse::from) }
+        cachedCourseIds(uid).mapNotNull { id -> cache.getDoc("courses", id)?.let(NativeCourse::from) }
             .sortedBy { it.title.lowercase() }
     }
 
@@ -65,15 +61,34 @@ class NativeRepository(context: Context) {
     }
 
     suspend fun refreshEnrollments(uid: String): List<NativeCourse> {
-        val snapshot = firestore.collection("userCourses")
+        val canonicalSnapshot = firestore.collection("userCourses")
             .whereEqualTo("userId", uid)
             .get(Source.SERVER)
             .await()
-        val enrollmentJson = snapshot.documents.map(DocumentSnapshot::toCacheJson)
-        val courseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.distinct()
+        val enrollmentJson = canonicalSnapshot.documents.map(DocumentSnapshot::toCacheJson).toMutableList()
+        val canonicalCourseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.toMutableSet()
+
+        // Compatibility for old approved payments that pre-date deterministic userCourses docs.
+        val approvedPayments = firestore.collection("payments")
+            .whereEqualTo("userId", uid)
+            .whereEqualTo("status", "approved")
+            .get(Source.SERVER)
+            .await()
+        val legacyCourseIds = approvedPayments.documents.flatMap(::paymentCourseIds).distinct()
+        legacyCourseIds.filter { it !in canonicalCourseIds }.forEach { courseId ->
+            enrollmentJson += JSONObject()
+                .put("id", "legacy_${stableId("$uid:$courseId")}")
+                .put("userId", uid)
+                .put("courseId", courseId)
+                .put("legacyPaymentAccess", true)
+            canonicalCourseIds += courseId
+        }
+
+        val courseIds = canonicalCourseIds.filter { it.isNotBlank() }.distinct()
         withContext(Dispatchers.IO) {
             cache.replaceUserCollection("userCourses", uid, enrollmentJson)
             cache.setString(enrollmentPrimeKey(uid), "1")
+            cache.setLong(enrollmentValidationKey(uid), System.currentTimeMillis())
             leaseStore.refresh(uid, courseIds)
         }
 
@@ -194,12 +209,27 @@ class NativeRepository(context: Context) {
         val snapshot = firestore.collection("users").document(uid).get(Source.SERVER).await()
         if (!snapshot.exists()) return
         withContext(Dispatchers.IO) { cache.putDoc("users", uid, snapshot.toCacheJson()) }
-        val syncFeed = snapshot.get("syncFeed") as? Map<*, *> ?: return
+        val syncFeed = snapshot.get("syncFeed") as? Map<*, *>
+        if (syncFeed == null) {
+            // Legacy profile with no event feed: do a cheap periodic authoritative check.
+            val lastValidation = withContext(Dispatchers.IO) { cache.getLong(enrollmentValidationKey(uid)) }
+            if (System.currentTimeMillis() - lastValidation >= LEGACY_ENTITLEMENT_RECHECK_MS) {
+                refreshEnrollments(uid)
+            } else {
+                renewCachedLeases(uid)
+            }
+            return
+        }
+
         val currentSeq = (syncFeed["seq"] as? Number)?.toLong() ?: 0L
         val key = "sync:user:$uid:v1"
         val lastSeq = withContext(Dispatchers.IO) { cache.getLong(key) }
         if (lastSeq == 0L) {
-            withContext(Dispatchers.IO) { cache.setLong(key, currentSeq) }
+            withContext(Dispatchers.IO) {
+                cache.setLong(key, currentSeq)
+                cache.setLong(enrollmentValidationKey(uid), System.currentTimeMillis())
+            }
+            renewCachedLeases(uid)
             return
         }
         if (currentSeq < lastSeq) {
@@ -209,7 +239,13 @@ class NativeRepository(context: Context) {
         }
         val events = feedEvents(syncFeed, lastSeq)
         if (events.isEmpty()) {
-            if (currentSeq > lastSeq) refreshEnrollments(uid)
+            if (currentSeq > lastSeq) {
+                // Sequence advanced but the retained feed cannot prove continuity.
+                refreshEnrollments(uid)
+            } else {
+                renewCachedLeases(uid)
+                withContext(Dispatchers.IO) { cache.setLong(enrollmentValidationKey(uid), System.currentTimeMillis()) }
+            }
             withContext(Dispatchers.IO) { cache.setLong(key, currentSeq) }
             return
         }
@@ -218,6 +254,8 @@ class NativeRepository(context: Context) {
             withContext(Dispatchers.IO) { cache.setLong(key, currentSeq) }
             return
         }
+
+        var paymentEntitlementChanged = false
         for (event in events) {
             if (event.collection == "userCourses") {
                 val courseId = event.docId.removePrefix("${uid}_")
@@ -233,6 +271,7 @@ class NativeRepository(context: Context) {
                     if (cachedCourse == null) refreshSingleDoc("courses", courseId)
                 }
             }
+            if (event.collection == "payments") paymentEntitlementChanged = true
             if (event.collection == "userProgress") {
                 if (event.action == "deleted") {
                     withContext(Dispatchers.IO) { cache.deleteDoc("userProgress", event.docId) }
@@ -242,15 +281,39 @@ class NativeRepository(context: Context) {
             }
             withContext(Dispatchers.IO) { cache.setLong(key, event.seq) }
         }
+
+        if (paymentEntitlementChanged) refreshEnrollments(uid) else renewCachedLeases(uid)
+        withContext(Dispatchers.IO) { cache.setLong(enrollmentValidationKey(uid), System.currentTimeMillis()) }
+    }
+
+    private suspend fun renewCachedLeases(uid: String) {
+        val courseIds = withContext(Dispatchers.IO) { cachedCourseIds(uid) }
+        withContext(Dispatchers.IO) { leaseStore.refresh(uid, courseIds) }
+    }
+
+    private fun cachedCourseIds(uid: String): List<String> = cache.listDocs("userCourses", userId = uid)
+        .map(NativeEnrollment::from)
+        .map { it.courseId }
+        .filter { it.isNotBlank() }
+        .distinct()
+
+    private fun paymentCourseIds(snapshot: DocumentSnapshot): List<String> = buildList {
+        snapshot.getString("courseId")?.takeIf { it.isNotBlank() }?.let(::add)
+        val courses = snapshot.get("courses") as? List<*> ?: return@buildList
+        for (entry in courses) {
+            when (entry) {
+                is String -> entry.takeIf { it.isNotBlank() }?.let(::add)
+                is Map<*, *> -> {
+                    val id = entry["id"]?.toString()?.takeIf { it.isNotBlank() }
+                        ?: entry["courseId"]?.toString()?.takeIf { it.isNotBlank() }
+                    if (id != null) add(id)
+                }
+            }
+        }
     }
 
     private suspend fun recoverCachedCourseContent(uid: String) {
-        val courseIds = withContext(Dispatchers.IO) {
-            cache.listDocs("userCourses", userId = uid)
-                .map(NativeEnrollment::from)
-                .map { it.courseId }
-                .filter { it.isNotBlank() }
-        }
+        val courseIds = withContext(Dispatchers.IO) { cachedCourseIds(uid) }
         for (courseId in courseIds) {
             val wasPrimed = withContext(Dispatchers.IO) { cache.getString(contentPrimeKey(courseId)) == "1" }
             if (wasPrimed) ensureCourseContent(courseId, force = true)
@@ -303,10 +366,13 @@ class NativeRepository(context: Context) {
     private fun isContiguous(events: List<FeedEvent>): Boolean =
         events.zipWithNext().all { (a, b) -> b.seq == a.seq + 1 }
 
-    private fun enrollmentPrimeKey(uid: String) = "prime:enrollments:v2:$uid"
+    private fun enrollmentPrimeKey(uid: String) = "prime:enrollments:v3:$uid"
+    private fun enrollmentValidationKey(uid: String) = "validation:enrollments:v3:$uid"
     private fun contentPrimeKey(courseId: String) = "prime:course-content:v2:$courseId"
 
     companion object {
+        private const val LEGACY_ENTITLEMENT_RECHECK_MS = 24L * 60L * 60L * 1000L
+
         private fun stableId(value: String): String = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray())
             .joinToString("") { "%02x".format(it) }
