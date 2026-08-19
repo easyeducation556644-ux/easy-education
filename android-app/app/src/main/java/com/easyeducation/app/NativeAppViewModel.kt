@@ -111,7 +111,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile.restrictionMessage() != null) {
                     return@runCatching Triple(profile, emptyList<NativeCourse>(), profile.restrictionMessage())
                 }
-                val courses = repository.refreshEnrollments(uid)
+                val courses = repository.ensureEnrollments(uid)
                 repository.syncChangedOnly(uid)
                 val finalCourses = repository.cachedCourses(uid)
                 Triple(profile, if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses, null)
