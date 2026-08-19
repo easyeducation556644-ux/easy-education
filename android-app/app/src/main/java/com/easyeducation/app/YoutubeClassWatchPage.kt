@@ -71,8 +71,14 @@ fun YoutubeClassWatchPage(
 ) {
     val context = LocalContext.current
     val content = state.courseContent[courseId]
-    val classItem = content?.classes?.firstOrNull { it.id == classId }
-    val course = content?.course ?: state.courses.firstOrNull { it.id == courseId }
+    if (content == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    val classItem = content.classes.firstOrNull { it.id == classId }
+    val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
     if (classItem == null || course == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
@@ -98,6 +104,16 @@ fun YoutubeClassWatchPage(
             .distinctBy { it.id }
             .sortedBy { it.order }
             .take(24)
+    }
+
+    // Keep only one next class warm. It gives the familiar instant next-video feel without resolving
+    // every class in a chapter or wasting mobile data on a large background queue.
+    LaunchedEffect(classId, relatedClasses.firstOrNull()?.id, state.online) {
+        if (state.online) {
+            relatedClasses.firstOrNull()?.let { next ->
+                PersistentNativePlayer.prefetch(context, next.id, next.sourceUrl, 480)
+            }
+        }
     }
 
     LazyColumn(
@@ -180,8 +196,6 @@ fun YoutubeClassWatchPage(
                     }
                 }
 
-                NativeClassSocial(classId = classItem.id, user = state.user)
-
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -234,6 +248,8 @@ fun YoutubeClassWatchPage(
                         enabled = classItem.resourceLinks.isNotEmpty(),
                     ) { resourcesSheet = true }
                 }
+
+                NativeClassSocial(classId = classItem.id, user = state.user)
 
                 if (task != null) {
                     Text(
@@ -457,7 +473,7 @@ private fun TeacherAvatar(url: String, modifier: Modifier) {
         )
     } else {
         Surface(modifier = modifier, shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-            Box(contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Person, null, Modifier.size(21.dp))
             }
         }
