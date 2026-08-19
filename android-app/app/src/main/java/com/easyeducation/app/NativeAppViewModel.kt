@@ -112,7 +112,15 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val context = getApplication<Application>()
         _state.value.downloads
             .filter { it.state in setOf("queued", "downloading") }
-            .forEach { task -> runCatching { SecureDownloadCoordinator.pause(context, task.id) } }
+            .forEach { task ->
+                runCatching {
+                    SecureDownloadCoordinator.pauseForNetwork(
+                        context,
+                        task.id,
+                        "Waiting for Wi-Fi because Wi-Fi only downloads are enabled.",
+                    )
+                }
+            }
     }
 
     private fun isOnlineNow(): Boolean = runCatching {
