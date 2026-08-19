@@ -28,7 +28,7 @@ class DownloadQualityResolver(
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
+        .callTimeout(40, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build(),
 ) {
@@ -37,14 +37,19 @@ class DownloadQualityResolver(
         require(url.startsWith("https://")) { "This class does not have a secure downloadable source" }
         val raw = when {
             YoutubeDeviceResolver.isYoutubeUrl(url) -> resolveYouTube(url)
-            isRumblePage(url) -> resolveRumbleMp4(classId, url)
+            isRumblePage(url) -> resolveRumble(classId, url)
             SecureDownloadCoordinator.isHlsSource(url) -> resolveHls(url)
             else -> resolveDirect(url)
         }
         require(raw.isNotEmpty()) { "No downloadable quality was found for this class" }
         val unique = raw
-            .groupBy { it.height to it.kind }
-            .map { (_, choices) -> choices.maxByOrNull { it.sizeBytes } ?: choices.first() }
+            .groupBy { it.height }
+            .map { (_, choices) ->
+                choices.firstOrNull { it.kind == "rumble" }
+                    ?: choices.firstOrNull { it.kind == "youtube" }
+                    ?: choices.maxByOrNull { it.sizeBytes }
+                    ?: choices.first()
+            }
             .sortedWith(compareBy<DownloadQualityOption> { it.height.takeIf { h -> h > 0 } ?: Int.MAX_VALUE })
         val recommendedHeight = unique.filter { it.height in 1..480 }.maxOfOrNull { it.height }
             ?: unique.firstOrNull()?.height
@@ -53,18 +58,18 @@ class DownloadQualityResolver(
 
     private fun resolveYouTube(url: String): List<DownloadQualityOption> {
         val result = YoutubeDeviceResolver(http).resolve(url)
-        return result.formats.map { format ->
+        return result.variants.map { variant ->
             DownloadQualityOption(
-                height = format.height,
-                label = format.qualityLabel.ifBlank { "${format.height}p" },
-                sizeBytes = format.contentLength,
-                estimated = format.contentLength <= 0,
+                height = variant.height,
+                label = variant.qualityLabel.ifBlank { "${variant.height}p" },
+                sizeBytes = variant.transferBytes,
+                estimated = variant.transferBytes <= 0L,
                 kind = "youtube",
             )
         }
     }
 
-    private fun resolveRumbleMp4(classId: String, url: String): List<DownloadQualityOption> {
+    private fun resolveRumble(classId: String, url: String): List<DownloadQualityOption> {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val endpoint = APP_ORIGIN + "/api/offline-video?options=1" +
@@ -72,25 +77,42 @@ class DownloadQualityResolver(
         val payload = http.newCall(
             Request.Builder().url(endpoint).header("Authorization", "Bearer $token").build(),
         ).execute().use { response ->
-            if (!response.isSuccessful) error("Video quality lookup failed (${response.code})")
+            if (!response.isSuccessful) {
+                val detail = runCatching { JSONObject(response.body?.string().orEmpty()).optString("error") }.getOrNull()
+                error(detail?.takeIf { it.isNotBlank() } ?: "Rumble quality lookup failed (${response.code})")
+            }
             JSONObject(response.body?.string().orEmpty())
         }
         val options = payload.optJSONArray("options") ?: return emptyList()
-        val mp4 = buildList {
+        return buildList {
             for (index in 0 until options.length()) {
                 val item = options.optJSONObject(index) ?: continue
-                if (item.optString("kind", "mp4") != "mp4") continue
+                val kind = item.optString("kind", "mp4")
                 val height = item.optInt("height", 0)
                 if (height <= 0) continue
-                val size = item.optLong("contentLength", 0)
-                if (size <= 0) continue
-                add(DownloadQualityOption(height, "${height}p", size, false, "rumble"))
+                val size = item.optLong("contentLength", 0L)
+                when (kind) {
+                    "mp4" -> add(
+                        DownloadQualityOption(
+                            height = height,
+                            label = "${height}p",
+                            sizeBytes = size,
+                            estimated = size <= 0L,
+                            kind = "rumble",
+                        ),
+                    )
+                    "hls" -> add(
+                        DownloadQualityOption(
+                            height = height,
+                            label = "${height}p",
+                            sizeBytes = size,
+                            estimated = true,
+                            kind = "rumble-hls",
+                        ),
+                    )
+                }
             }
         }
-        require(mp4.isNotEmpty()) {
-            "This Rumble class does not currently expose a secure progressive quality for offline use."
-        }
-        return mp4
     }
 
     private fun resolveHls(url: String): List<DownloadQualityOption> {
@@ -181,7 +203,8 @@ object DownloadStoragePolicy {
         val base = option.sizeBytes
         val required = when {
             base <= 0L -> MIN_UNKNOWN_FREE_BYTES
-            option.kind == "hls" -> (base * 3.25).toLong() + SAFETY_BYTES
+            option.kind.contains("hls") -> (base * 3.25).toLong() + SAFETY_BYTES
+            option.kind == "youtube" -> (base * 2.35).toLong() + SAFETY_BYTES
             else -> (base * 1.15).toLong() + SAFETY_BYTES
         }
         return if (available >= required) {
@@ -207,6 +230,6 @@ object DownloadStoragePolicy {
         return check(context, option)
     }
 
-    private const val SAFETY_BYTES = 96L * 1024L * 1024L
-    private const val MIN_UNKNOWN_FREE_BYTES = 512L * 1024L * 1024L
+    private const val SAFETY_BYTES = 128L * 1024L * 1024L
+    private const val MIN_UNKNOWN_FREE_BYTES = 768L * 1024L * 1024L
 }
