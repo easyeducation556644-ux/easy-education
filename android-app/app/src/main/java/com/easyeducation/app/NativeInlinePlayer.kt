@@ -5,7 +5,6 @@ package com.easyeducation.app
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -32,10 +31,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Inline presentation of the process-local persistent player. Inline, fullscreen and miniplayer all
- * bind to the same ExoPlayer session; presentation changes do not re-resolve YouTube/Rumble media.
+ * Inline presentation of the single process-local player session. Inline -> mini -> watch page and
+ * inline -> fullscreen -> inline never re-resolve or re-prepare the current media item. Only a real
+ * class change replaces the MediaSource.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -51,39 +52,33 @@ fun NativeInlinePlayer(
     onNext: (() -> Unit)? = null,
     onBack: (() -> Unit)? = null,
     onMinimize: (() -> Unit)? = null,
+    onExpandFromMini: (() -> Unit)? = null,
     onFullscreen: (() -> Unit)? = null,
     onSharedSessionClassChanged: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val exoPlayer = remember { PersistentNativePlayer.player(context) }
+    val hostRef = remember { AtomicReference<YoutubeWatchGestureHost?>() }
+
+    val preparedAtEntry = remember(classId, sourceUrl, requestedHeight) {
+        PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) && exoPlayer.mediaItemCount > 0
+    }
     var handedToMini by remember(classId) { mutableStateOf(false) }
     var handedToFullscreen by remember(classId) { mutableStateOf(false) }
-    var loading by remember(classId, sourceUrl) { mutableStateOf(sourceUrl.isNotBlank() && online) }
+    var loading by remember(classId, sourceUrl, requestedHeight) {
+        mutableStateOf(sourceUrl.isNotBlank() && online && !preparedAtEntry)
+    }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
 
     DisposableEffect(lifecycleOwner, classId) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> {
-                    // Only reconcile a changed shared class after an actual fullscreen handoff.
-                    // A newly navigated watch route may briefly see the old active player class while
-                    // its own source resolves; treating that as a return used to navigate straight
-                    // back to the old class and caused the visible next/previous flash rollback.
-                    if (handedToFullscreen) {
-                        val active = PersistentNativePlayer.currentClassId()
-                        handedToFullscreen = false
-                        if (
-                            active.isNotBlank() && active != classId &&
-                            PlayerChapterQueue.contains(active)
-                        ) {
-                            onSharedSessionClassChanged?.invoke(active)
-                        }
-                    }
-                }
                 Lifecycle.Event.ON_STOP -> {
                     PersistentNativePlayer.savePosition(context)
-                    if (!handedToMini && !handedToFullscreen) PersistentNativePlayer.pause()
+                    if (!handedToMini && !handedToFullscreen && !NativeFullscreenOverlay.owns(exoPlayer)) {
+                        PersistentNativePlayer.pause()
+                    }
                 }
                 else -> Unit
             }
@@ -94,6 +89,7 @@ fun NativeInlinePlayer(
             PersistentNativePlayer.savePosition(context)
             if (
                 !handedToMini && !handedToFullscreen &&
+                !NativeFullscreenOverlay.owns(exoPlayer) &&
                 PersistentNativePlayer.currentClassId() == classId
             ) {
                 PersistentNativePlayer.pause()
@@ -107,8 +103,20 @@ fun NativeInlinePlayer(
             errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
+
+        // Returning from the miniplayer must not flash a spinner or touch the resolver when this
+        // exact media item is already prepared/buffered.
+        val alreadyPrepared = PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
+            exoPlayer.mediaItemCount > 0
         NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
         handedToMini = false
+        if (alreadyPrepared) {
+            loading = false
+            errorText = null
+            exoPlayer.playWhenReady = true
+            return@LaunchedEffect
+        }
+
         loading = true
         errorText = null
         runCatching {
@@ -129,9 +137,11 @@ fun NativeInlinePlayer(
 
     fun minimizePlayer() {
         val activity = context.findActivity() ?: return
+        val host = hostRef.get()
         PersistentNativePlayer.savePosition(context)
         handedToMini = true
         handedToFullscreen = false
+        host?.resetPagePresentation()
         NativeMiniPlayerOverlay.show(
             activity = activity,
             exoPlayer = exoPlayer,
@@ -139,6 +149,7 @@ fun NativeInlinePlayer(
             sourceUrl = sourceUrl,
             title = title,
             requestedHeight = requestedHeight,
+            onExpandToWatchPage = onExpandFromMini,
         )
         if (onMinimize != null) onMinimize()
         else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
@@ -146,19 +157,34 @@ fun NativeInlinePlayer(
 
     fun fullscreenPlayer() {
         val activity = context.findActivity() ?: return
+        val host = hostRef.get()
         PersistentNativePlayer.savePosition(context)
+        handedToMini = false
         handedToFullscreen = true
-        onFullscreen?.invoke() ?: run {
-            activity.startActivity(
-                Intent(activity, NativePlayerActivity::class.java)
-                    .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, sourceUrl)
-                    .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classId)
-                    .putExtra(NativePlayerActivity.EXTRA_HEIGHT, requestedHeight)
-                    .putExtra(NativePlayerActivity.EXTRA_TITLE, title)
-                    .putExtra(NativePlayerActivity.EXTRA_SHARED_SESSION, true),
-            )
-            @Suppress("DEPRECATION")
-            activity.overridePendingTransition(R.anim.ee_player_fullscreen_enter, R.anim.ee_player_background_hold)
+        val bounds = host?.globalBounds()
+        // Detach only the rendering surface; ExoPlayer, its MediaSource, buffer, position and speed
+        // remain untouched and are immediately attached to the fullscreen overlay.
+        host?.playerSurface?.bindPlayer(null)
+        NativeFullscreenOverlay.show(
+            activity = activity,
+            exoPlayer = exoPlayer,
+            classId = classId,
+            sourceUrl = sourceUrl,
+            title = title,
+            requestedHeight = requestedHeight,
+            sourceBounds = bounds,
+        ) { activeId ->
+            handedToFullscreen = false
+            hostRef.get()?.resetPagePresentation()
+            if (activeId.isNotBlank() && activeId != classId) {
+                onSharedSessionClassChanged?.invoke(activeId)
+            }
+        }
+        if (!NativeFullscreenOverlay.owns(exoPlayer)) {
+            handedToFullscreen = false
+            host?.playerSurface?.bindPlayer(exoPlayer)
+        } else {
+            onFullscreen?.invoke()
         }
     }
 
@@ -174,15 +200,37 @@ fun NativeInlinePlayer(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                YoutubeStylePlayerView(ctx).apply {
+                YoutubeWatchGestureHost(ctx).apply {
+                    hostRef.set(this)
+                    playerSurface.apply {
+                        setFullscreenPresentation(false)
+                        bindPlayer(if (handedToFullscreen || NativeFullscreenOverlay.owns(exoPlayer)) null else exoPlayer)
+                        setTitle(title)
+                        setLoading(loading)
+                        setNavigationAvailability(hasPrevious, hasNext)
+                        this.onBack = {
+                            onBack?.invoke()
+                                ?: (ctx.findActivity() as? ComponentActivity)
+                                    ?.onBackPressedDispatcher?.onBackPressed()
+                        }
+                        this.onPrevious = onPrevious
+                        this.onNext = onNext
+                        this.onMinimize = { minimizePlayer() }
+                        this.onFullscreen = { fullscreenPlayer() }
+                    }
+                }
+            },
+            update = { host ->
+                hostRef.set(host)
+                host.playerSurface.apply {
                     setFullscreenPresentation(false)
-                    bindPlayer(if (handedToFullscreen) null else exoPlayer)
+                    bindPlayer(if (handedToFullscreen || NativeFullscreenOverlay.owns(exoPlayer)) null else exoPlayer)
                     setTitle(title)
                     setLoading(loading)
                     setNavigationAvailability(hasPrevious, hasNext)
                     this.onBack = {
                         onBack?.invoke()
-                            ?: (ctx.findActivity() as? ComponentActivity)
+                            ?: (context.findActivity() as? ComponentActivity)
                                 ?.onBackPressedDispatcher?.onBackPressed()
                     }
                     this.onPrevious = onPrevious
@@ -190,22 +238,6 @@ fun NativeInlinePlayer(
                     this.onMinimize = { minimizePlayer() }
                     this.onFullscreen = { fullscreenPlayer() }
                 }
-            },
-            update = { view ->
-                view.setFullscreenPresentation(false)
-                view.bindPlayer(if (handedToFullscreen) null else exoPlayer)
-                view.setTitle(title)
-                view.setLoading(loading)
-                view.setNavigationAvailability(hasPrevious, hasNext)
-                view.onBack = {
-                    onBack?.invoke()
-                        ?: (context.findActivity() as? ComponentActivity)
-                            ?.onBackPressedDispatcher?.onBackPressed()
-                }
-                view.onPrevious = onPrevious
-                view.onNext = onNext
-                view.onMinimize = { minimizePlayer() }
-                view.onFullscreen = { fullscreenPlayer() }
             },
         )
 
