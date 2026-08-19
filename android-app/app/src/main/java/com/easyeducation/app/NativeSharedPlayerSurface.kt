@@ -24,6 +24,7 @@ object NativeSharedPlayerSurface {
         val current = surface
         if (current != null && (activity == null || hostActivity === activity)) {
             setMiniPresentation(current, false)
+            YoutubeExactPlayerIcons.apply(current, fullscreen = false)
             YoutubeExactPlayPauseFrames.bind(current, PersistentNativePlayer.player(context.applicationContext))
             return current
         }
@@ -36,6 +37,7 @@ object NativeSharedPlayerSurface {
         return YoutubeStylePlayerView(activity ?: context).also { created ->
             hostActivity = activity
             surface = created
+            YoutubeExactPlayerIcons.apply(created, fullscreen = false)
             YoutubeExactPlayPauseFrames.bind(created, PersistentNativePlayer.player(context.applicationContext))
         }
     }
@@ -59,6 +61,7 @@ object NativeSharedPlayerSurface {
         } else {
             if (surface.childCount > 1) surface.getChildAt(1).visibility = View.VISIBLE
             for (index in 2 until surface.childCount) surface.getChildAt(index).visibility = View.INVISIBLE
+            YoutubeExactPlayerIcons.apply(surface, fullscreen = false)
         }
         surface.animate().cancel()
         surface.scaleX = 1f
