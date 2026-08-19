@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
         deviceListener = null
         if (user == null) {
             activeDeviceCount = 0
+            NativeFullscreenOverlay.dismiss(immediate = true)
             NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
             PersistentNativePlayer.resetForSignOut(this)
             return
@@ -144,6 +145,7 @@ class MainActivity : ComponentActivity() {
             onDeviceCount = { count -> activeDeviceCount = count },
             onForcedOut = { message ->
                 activeDeviceCount = 0
+                NativeFullscreenOverlay.dismiss(immediate = true)
                 NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
                 PersistentNativePlayer.resetForSignOut(this)
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -160,6 +162,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         deviceListener?.remove()
         FirebaseAuth.getInstance().removeAuthStateListener(authStateListener)
+        NativeFullscreenOverlay.dismiss(immediate = true)
         super.onDestroy()
     }
 
