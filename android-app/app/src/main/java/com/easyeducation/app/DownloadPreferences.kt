@@ -15,6 +15,14 @@ object DownloadPreferences {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(WIFI_ONLY, enabled).apply()
     }
 
+    fun isOnline(context: Context): Boolean {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val network = connectivity.activeNetwork ?: return false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
     fun isWifi(context: Context): Boolean {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         val network = connectivity.activeNetwork ?: return false
@@ -23,5 +31,8 @@ object DownloadPreferences {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
-    fun networkAllowed(context: Context): Boolean = !wifiOnly(context) || isWifi(context)
+    fun networkAllowed(context: Context): Boolean {
+        if (!isOnline(context)) return false
+        return !wifiOnly(context) || isWifi(context)
+    }
 }
