@@ -3,6 +3,7 @@ package com.easyeducation.app
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -116,8 +117,6 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             .alpha(0.58f)
             .setDuration(155L)
             .withEndAction {
-                // The route may already have popped by now. Always restore the Compose host so the
-                // destination page never inherits a dim/translated state.
                 postDelayed({ resetPageImmediately(page) }, 105L)
             }
             .start()
@@ -150,10 +149,13 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         composePageRoot()?.let(::resetPageImmediately)
     }
 
-    fun globalBounds(): android.graphics.Rect {
+    /** Includes the player's current translation/scale when Android can report the transformed rect. */
+    fun globalBounds(): Rect {
+        val transformed = Rect()
+        if (playerSurface.getGlobalVisibleRect(transformed) && !transformed.isEmpty) return transformed
         val location = IntArray(2)
         getLocationOnScreen(location)
-        return android.graphics.Rect(location[0], location[1], location[0] + width, location[1] + height)
+        return Rect(location[0], location[1], location[0] + width, location[1] + height)
     }
 
     private fun Context.findActivity(): Activity? {
