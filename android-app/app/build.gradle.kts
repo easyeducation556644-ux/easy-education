@@ -53,6 +53,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+// NewPipeExtractor ships the full protobuf-javalite runtime. Firebase also pulls a small
+// protolite bundle containing overlapping well-known protobuf classes. Keep the full runtime as
+// the single source of truth so release builds do not package duplicate DescriptorProtos classes.
+configurations.configureEach {
+    exclude(group = "com.google.firebase", module = "protolite-well-known-types")
+}
+
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
@@ -82,6 +89,9 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-messaging")
+    // Compile-only because the PO-token implementation does not use Crashlytics at runtime; this
+    // only keeps an optional diagnostic import source-compatible while the integration settles.
+    compileOnly("com.google.firebase:firebase-crashlytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
