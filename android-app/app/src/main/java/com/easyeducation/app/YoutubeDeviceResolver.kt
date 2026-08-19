@@ -53,11 +53,18 @@ class YoutubeDeviceResolver(
         val extra: JSONObject.() -> Unit,
     )
 
+    private data class ResolverAttempt(
+        val visitorData: String?,
+        val region: String,
+    )
+
     fun resolve(videoUrl: String): Result {
         val videoId = extractVideoId(videoUrl)
             ?: throw IllegalArgumentException("Invalid YouTube video URL")
         val visitorData = runCatching { fetchVisitorData(videoId) }.getOrNull()
 
+        // Keep the established clients first. Additional attempts only run when the exact
+        // path that already works for most course videos returns no usable progressive MP4.
         val profiles = listOf(
             ClientProfile(
                 name = "IOS",
@@ -80,34 +87,59 @@ class YoutubeDeviceResolver(
             },
         )
 
+        val attempts = buildList {
+            add(ResolverAttempt(visitorData, "US"))
+            if (!visitorData.isNullOrBlank()) add(ResolverAttempt(null, "US"))
+            add(ResolverAttempt(visitorData, "BD"))
+            if (!visitorData.isNullOrBlank()) add(ResolverAttempt(null, "BD"))
+        }.distinct()
+
         var lastReason = "No downloadable progressive MP4 stream was returned"
-        for (profile in profiles) {
-            val response = runCatching {
-                requestPlayer(videoId, visitorData, profile)
-            }.getOrElse {
-                lastReason = it.message ?: lastReason
-                null
-            } ?: continue
+        var lastStatus = ""
+        for (attempt in attempts) {
+            for (profile in profiles) {
+                val response = runCatching {
+                    requestPlayer(
+                        videoId = videoId,
+                        visitorData = attempt.visitorData,
+                        profile = profile,
+                        region = attempt.region,
+                    )
+                }.getOrElse {
+                    lastReason = it.message ?: lastReason
+                    null
+                } ?: continue
 
-            val status = response.optJSONObject("playabilityStatus")
-            if (status?.optString("status") != "OK") {
-                lastReason = status?.optString("reason")
+                val status = response.optJSONObject("playabilityStatus")
+                lastStatus = status?.optString("status").orEmpty()
+                if (lastStatus != "OK") {
+                    lastReason = status?.optString("reason")
+                        ?.takeIf { it.isNotBlank() }
+                        ?: status?.optJSONArray("messages")?.optString(0)
+                        ?: lastReason
+                    continue
+                }
+
+                val title = response.optJSONObject("videoDetails")?.optString("title")
                     ?.takeIf { it.isNotBlank() }
-                    ?: status?.optJSONArray("messages")?.optString(0)
-                    ?: lastReason
-                continue
+                    ?: "YouTube class video"
+                val formats = parseProgressiveFormats(response.optJSONObject("streamingData"))
+                if (formats.isNotEmpty()) return Result(videoId, title, formats)
             }
-
-            val title = response.optJSONObject("videoDetails")?.optString("title")
-                ?.takeIf { it.isNotBlank() }
-                ?: "YouTube class video"
-            val formats = parseProgressiveFormats(response.optJSONObject("streamingData"))
-            if (formats.isNotEmpty()) return Result(videoId, title, formats)
         }
 
-        throw IllegalStateException(
-            "$lastReason. YouTube may require a newer device resolver for this video.",
-        )
+        val hint = when {
+            lastStatus == "LOGIN_REQUIRED" || lastReason.contains("sign in", ignoreCase = true) ->
+                "This video requires YouTube sign-in, age verification, or account access"
+            lastReason.contains("private", ignoreCase = true) ->
+                "Private YouTube videos cannot be downloaded without the owning account"
+            lastReason.contains("member", ignoreCase = true) ->
+                "Members-only YouTube videos require the entitled YouTube account"
+            lastReason.contains("live", ignoreCase = true) || lastReason.contains("upcoming", ignoreCase = true) ->
+                "Live or upcoming videos may not expose a downloadable progressive MP4 yet"
+            else -> "YouTube did not expose a compatible progressive MP4 for this video"
+        }
+        throw IllegalStateException("$hint. $lastReason")
     }
 
     fun pickFormat(videoUrl: String, requestedHeight: Int): Pair<Result, Format> {
@@ -123,12 +155,13 @@ class YoutubeDeviceResolver(
         videoId: String,
         visitorData: String?,
         profile: ClientProfile,
+        region: String,
     ): JSONObject {
         val client = JSONObject()
             .put("clientName", profile.name)
             .put("clientVersion", profile.version)
             .put("hl", "en")
-            .put("gl", "US")
+            .put("gl", region)
             .put("utcOffsetMinutes", 0)
         profile.extra(client)
         if (!visitorData.isNullOrBlank()) client.put("visitorData", visitorData)
