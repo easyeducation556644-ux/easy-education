@@ -23,8 +23,6 @@ android {
     }
 
     lint {
-        // AGP 8.7.x + Kotlin 2.0 can crash inside Lifecycle's LiveData lint detector.
-        // Keep release lint enabled and disable only the crashing detector.
         disable += "NullSafeMutableLiveData"
     }
 
@@ -83,15 +81,11 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-messaging")
-    // Source compatibility for a currently-unused diagnostic import in the PO-token provider.
-    // compileOnly never enters the APK/runtime graph.
     compileOnly("com.google.firebase:firebase-crashlytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
-    // NewPipe and its protobuf 4.x runtime are bundled in a shaded project artifact. The protobuf
-    // package is relocated inside that artifact so Firebase Firestore keeps its own 3.25.x runtime.
     implementation(project(path = ":youtube-extractor-shaded", configuration = "shadedExtractor"))
 
     val media3Version = "1.9.4"
