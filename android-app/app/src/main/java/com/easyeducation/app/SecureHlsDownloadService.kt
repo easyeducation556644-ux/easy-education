@@ -14,8 +14,11 @@ import androidx.media3.transformer.Composition
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import com.google.android.gms.tasks.Tasks
+import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
 import java.lang.ref.WeakReference
 import java.net.URI
@@ -71,7 +74,7 @@ class SecureHlsDownloadService : Service() {
         val tempMp4 = File(workDir, PLAIN_TEMP_NAME)
         try {
             ensureRunning(task.id, generation)
-            require(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid == task.userId) {
+            require(FirebaseAuth.getInstance().currentUser?.uid == task.userId) {
                 "Sign in with the account that owns this download"
             }
             NativeAccountSecurity.restrictionMessage(this, task.userId)?.let { error(it) }
@@ -102,7 +105,7 @@ class SecureHlsDownloadService : Service() {
                 if (!target.exists() || target.length() <= 0L) {
                     val part = File(workDir, target.name + ".part")
                     part.delete()
-                    DownloadRuntime.execute(task.id, http.newCall(Request.Builder().url(segmentUrls[index]).build())) { response ->
+                    DownloadRuntime.execute(task.id, http.newCall(mediaRequest(task, segmentUrls[index]))) { response ->
                         check(response.isSuccessful) { "HLS segment ${index + 1} returned HTTP ${response.code}" }
                         val body = response.body ?: error("HLS segment ${index + 1} was empty")
                         body.byteStream().use { input ->
@@ -236,8 +239,12 @@ class SecureHlsDownloadService : Service() {
     )
 
     private fun resolveSelectedMediaPlaylist(task: SecureDownloadTask): SelectedPlaylist {
+        if (task.sourceKind == "rumble-hls" || isRumblePage(task.sourceUrl)) {
+            return resolveRumblePlaylist(task)
+        }
+
         val originalUrl = task.sourceUrl
-        val originalLines = getText(task.id, originalUrl).lines()
+        val originalLines = getText(task, originalUrl).lines()
         val master = originalLines.any { it.startsWith("#EXT-X-STREAM-INF:") }
         if (!master) {
             return SelectedPlaylist(
@@ -265,12 +272,52 @@ class SecureHlsDownloadService : Service() {
             else variants.firstOrNull()
         ) ?: error("The selected HLS quality is no longer available. Choose a quality again.")
 
-        val mediaLines = getText(task.id, selected.url).lines()
+        val mediaLines = getText(task, selected.url).lines()
         return SelectedPlaylist(
             selected.url,
             mediaLines,
             selected.height,
             if (selected.height > 0) "${selected.height}p" else "Source quality",
+        )
+    }
+
+    private fun resolveRumblePlaylist(task: SecureDownloadTask): SelectedPlaylist {
+        val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
+        val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
+        val optionsUrl = APP_ORIGIN + "/api/offline-video?options=1" +
+            "&classId=${Uri.encode(task.classId)}" +
+            "&videoUrl=${Uri.encode(task.sourceUrl)}"
+        val payload = DownloadRuntime.execute(
+            task.id,
+            http.newCall(
+                Request.Builder()
+                    .url(optionsUrl)
+                    .header("Authorization", "Bearer $token")
+                    .header("Accept", "application/json")
+                    .build(),
+            ),
+        ) { response ->
+            if (!response.isSuccessful) error("Rumble stream lookup failed (${response.code})")
+            JSONObject(response.body?.string().orEmpty())
+        }
+        val options = payload.optJSONArray("options") ?: error("No Rumble qualities are available")
+        var playlist = ""
+        for (index in 0 until options.length()) {
+            val item = options.optJSONObject(index) ?: continue
+            if (item.optString("kind") != "hls") continue
+            if (item.optInt("height", 0) != task.height) continue
+            playlist = item.optString("playlistUrl")
+            if (playlist.isNotBlank()) break
+        }
+        require(playlist.isNotBlank()) {
+            "${task.qualityLabel.ifBlank { "${task.height}p" }} is no longer available. Choose a quality again."
+        }
+        val lines = getText(task, playlist).lines()
+        return SelectedPlaylist(
+            url = playlist,
+            lines = lines,
+            height = task.height,
+            label = task.qualityLabel.ifBlank { "${task.height}p" },
         )
     }
 
@@ -292,7 +339,7 @@ class SecureHlsDownloadService : Service() {
             val localName = "aux-${safe(source).take(16)}.${extension(source, "bin")}" 
             val target = File(dir, localName)
             if (!target.exists()) {
-                val bytes = DownloadRuntime.execute(task.id, http.newCall(Request.Builder().url(source).build())) { response ->
+                val bytes = DownloadRuntime.execute(task.id, http.newCall(mediaRequest(task, source))) { response ->
                     check(response.isSuccessful) { "HLS auxiliary resource returned HTTP ${response.code}" }
                     response.body?.bytes() ?: error("HLS auxiliary resource was empty")
                 }
@@ -358,11 +405,19 @@ class SecureHlsDownloadService : Service() {
         }
     }
 
-    private fun getText(downloadId: String, url: String): String =
-        DownloadRuntime.execute(downloadId, http.newCall(Request.Builder().url(url).build())) { response ->
+    private fun getText(task: SecureDownloadTask, url: String): String =
+        DownloadRuntime.execute(task.id, http.newCall(mediaRequest(task, url))) { response ->
             check(response.isSuccessful) { "HLS playlist returned HTTP ${response.code}" }
             response.body?.string() ?: error("HLS playlist was empty")
         }
+
+    private fun mediaRequest(task: SecureDownloadTask, url: String): Request {
+        val builder = Request.Builder().url(url).header("User-Agent", MEDIA_USER_AGENT)
+        if (task.sourceKind == "rumble-hls" || isRumblePage(task.sourceUrl)) {
+            builder.header("Referer", task.sourceUrl)
+        }
+        return builder.build()
+    }
 
     private fun ensureRunning(id: String, generation: Long): SecureDownloadTask {
         val current = store.get(id) ?: throw DownloadStopped()
@@ -386,6 +441,11 @@ class SecureHlsDownloadService : Service() {
         .digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
 
+    private fun isRumblePage(value: String): Boolean = runCatching {
+        val host = URI(value).host?.lowercase().orEmpty()
+        host == "rumble.com" || host.endsWith(".rumble.com")
+    }.getOrDefault(false)
+
     private fun friendlyError(error: Throwable): String = when {
         error is DownloadPaused -> "Paused"
         error is DownloadStopped -> "Download stopped"
@@ -404,6 +464,8 @@ class SecureHlsDownloadService : Service() {
     private class DownloadStopped : Exception()
 
     companion object {
+        private const val APP_ORIGIN = "https://easy-education.vercel.app"
+        private const val MEDIA_USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
         private const val PLAIN_TEMP_NAME = "plain-working.mp4"
         private val activeInstances = ConcurrentHashMap<String, WeakReference<SecureHlsDownloadService>>()
 
