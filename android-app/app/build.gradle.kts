@@ -22,6 +22,12 @@ android {
         compose = true
     }
 
+    lint {
+        // AGP 8.7.x + Kotlin 2.0 can crash inside Lifecycle's LiveData lint detector.
+        // Keep release lint enabled and disable only the crashing detector.
+        disable += "NullSafeMutableLiveData"
+    }
+
     signingConfigs {
         create("release") {
             val keystorePath = System.getenv("EE_KEYSTORE_PATH")
