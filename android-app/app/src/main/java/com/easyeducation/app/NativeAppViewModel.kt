@@ -1,0 +1,213 @@
+package com.easyeducation.app
+
+import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+
+data class NativeUiState(
+    val authReady: Boolean = false,
+    val user: FirebaseUser? = null,
+    val profile: NativeUserProfile? = null,
+    val courses: List<NativeCourse> = emptyList(),
+    val courseContent: Map<String, NativeCourseContent> = emptyMap(),
+    val downloads: List<SecureDownloadTask> = emptyList(),
+    val online: Boolean = false,
+    val syncing: Boolean = false,
+    val error: String? = null,
+)
+
+class NativeAppViewModel(application: Application) : AndroidViewModel(application) {
+    private val auth = FirebaseAuth.getInstance()
+    private val repository = NativeRepository(application)
+    private val downloads = SecureMediaStore(application)
+    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    private val _state = MutableStateFlow(NativeUiState(online = isOnlineNow()))
+    val state: StateFlow<NativeUiState> = _state.asStateFlow()
+
+    private val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+        val user = firebaseAuth.currentUser
+        _state.value = _state.value.copy(user = user, authReady = true, error = null)
+        if (user == null) {
+            _state.value = _state.value.copy(profile = null, courses = emptyList(), courseContent = emptyMap(), downloads = emptyList())
+        } else {
+            loadUser(user.uid)
+        }
+    }
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = updateNetwork()
+        override fun onLost(network: Network) = updateNetwork()
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) = updateNetwork()
+    }
+
+    init {
+        auth.addAuthStateListener(authListener)
+        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+        auth.currentUser?.let { loadUser(it.uid) }
+    }
+
+    private fun updateNetwork() {
+        val online = isOnlineNow()
+        val wasOffline = !_state.value.online
+        _state.value = _state.value.copy(online = online)
+        if (online && wasOffline) auth.currentUser?.uid?.let(::refreshOnline)
+    }
+
+    private fun isOnlineNow(): Boolean {
+        val network = connectivity.activeNetwork ?: return false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun loadUser(uid: String) {
+        viewModelScope.launch {
+            val cachedProfile = repository.cachedProfile(uid)
+            val cachedCourses = repository.cachedCourses(uid)
+            val cachedDownloads = withContext(Dispatchers.IO) { downloads.allForUser(uid) }
+            _state.value = _state.value.copy(
+                profile = cachedProfile,
+                courses = cachedCourses,
+                downloads = cachedDownloads,
+                authReady = true,
+            )
+            if (_state.value.online) refreshOnline(uid)
+        }
+    }
+
+    fun refreshOnline(uid: String = auth.currentUser?.uid.orEmpty()) {
+        if (uid.isBlank() || !_state.value.online || _state.value.syncing) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(syncing = true, error = null)
+            runCatching {
+                val profile = repository.refreshProfile(uid)
+                val courses = repository.refreshEnrollments(uid)
+                repository.syncChangedOnly(uid)
+                val finalCourses = repository.cachedCourses(uid)
+                profile to (if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses)
+            }.onSuccess { (profile, courses) ->
+                _state.value = _state.value.copy(profile = profile, courses = courses, syncing = false)
+            }.onFailure { error ->
+                _state.value = _state.value.copy(syncing = false, error = error.message ?: "Sync failed")
+            }
+        }
+    }
+
+    fun loadCourse(courseId: String, force: Boolean = false) {
+        if (courseId.isBlank()) return
+        viewModelScope.launch {
+            val cached = repository.cachedCourseContent(courseId)
+            _state.value = _state.value.copy(
+                courseContent = _state.value.courseContent + (courseId to cached),
+            )
+            if (_state.value.online) {
+                runCatching { repository.ensureCourseContent(courseId, force) }
+                    .onSuccess { fresh ->
+                        _state.value = _state.value.copy(
+                            courseContent = _state.value.courseContent + (courseId to fresh),
+                        )
+                    }
+                    .onFailure { error ->
+                        if (cached.classes.isEmpty()) {
+                            _state.value = _state.value.copy(error = error.message ?: "Course content could not be loaded")
+                        }
+                    }
+            }
+        }
+    }
+
+    fun hasOfflineLease(courseId: String): Boolean {
+        val uid = auth.currentUser?.uid ?: return false
+        return repository.hasOfflineLease(uid, courseId)
+    }
+
+    fun leaseExpiry(courseId: String): Long {
+        val uid = auth.currentUser?.uid ?: return 0L
+        return repository.offlineLeaseExpiry(uid, courseId)
+    }
+
+    fun refreshDownloads() {
+        val uid = auth.currentUser?.uid ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = downloads.allForUser(uid)
+            withContext(Dispatchers.Main) { _state.value = _state.value.copy(downloads = list) }
+        }
+    }
+
+    fun startDownload(context: Context, course: NativeCourse, item: NativeClassItem, height: Int) {
+        val uid = auth.currentUser?.uid ?: return
+        if (!_state.value.online) {
+            _state.value = _state.value.copy(error = "Connect to the internet to start a new download")
+            return
+        }
+        if (item.sourceUrl.isBlank()) {
+            _state.value = _state.value.copy(error = "This class has no downloadable video source")
+            return
+        }
+        val id = SecureMediaStore.downloadId(uid, item.id)
+        val existing = downloads.get(id)
+        val task = SecureDownloadTask(
+            id = id,
+            userId = uid,
+            courseId = course.id,
+            classId = item.id,
+            title = item.title,
+            courseTitle = course.title,
+            sourceUrl = item.sourceUrl,
+            height = height,
+            downloadedBytes = existing?.takeIf { it.height == height }?.downloadedBytes ?: 0,
+            totalBytes = existing?.takeIf { it.height == height }?.totalBytes ?: 0,
+            chunkCount = existing?.takeIf { it.height == height }?.chunkCount ?: 0,
+            state = "queued",
+        )
+        if (existing != null && existing.height != height) downloads.resetChunks(id)
+        SecureDownloadService.start(context, task)
+        refreshDownloads()
+    }
+
+    fun pauseDownload(context: Context, id: String) {
+        SecureDownloadService.pause(context, id)
+        refreshDownloads()
+    }
+
+    fun resumeDownload(context: Context, id: String) {
+        if (!_state.value.online) {
+            _state.value = _state.value.copy(error = "Connect to resume this download")
+            return
+        }
+        SecureDownloadService.resume(context, id)
+        refreshDownloads()
+    }
+
+    fun removeDownload(context: Context, id: String) {
+        SecureDownloadService.remove(context, id)
+        refreshDownloads()
+    }
+
+    fun clearError() {
+        _state.value = _state.value.copy(error = null)
+    }
+
+    fun signOut() {
+        auth.signOut()
+    }
+
+    override fun onCleared() {
+        auth.removeAuthStateListener(authListener)
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        super.onCleared()
+    }
+}
