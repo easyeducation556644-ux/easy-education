@@ -23,10 +23,9 @@ import kotlin.math.hypot
 import kotlin.math.max
 
 /**
- * Single-activity fullscreen presentation of the same prepared ExoPlayer session.
- * The black scrim and video surface are separate, so a pan reveals the already-rendered watch page
- * underneath while the video follows the finger. The parent owns the exit pan after touch slop;
- * the child player receives taps/double-taps/controls before that, avoiding double transforms.
+ * Single-activity fullscreen presentation of the same prepared ExoPlayer and the same visual player
+ * view used inline. A translucent scrim is separate from the player surface, so dragging reveals the
+ * already-rendered watch page behind it while the one player view follows the finger.
  */
 @UnstableApi
 object NativeFullscreenOverlay {
@@ -68,15 +67,24 @@ object NativeFullscreenOverlay {
         originalOrientation = activity.requestedOrientation
         originalSystemUi = activity.window.decorView.systemUiVisibility
 
-        val surface = YoutubeStylePlayerView(activity).apply {
-            setFullscreenPresentation(true)
-            bindPlayer(exoPlayer)
-            setTitle(title)
-            setLoading(false)
-            onBack = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
-            onExitFullscreenGesture = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
-            onFullscreen = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
-        }
+        val surface = NativeSharedPlayerSurface.detach() ?: NativeSharedPlayerSurface.obtain(activity)
+        surface.animate().cancel()
+        surface.pivotX = surface.width / 2f
+        surface.pivotY = surface.height / 2f
+        surface.scaleX = 1f
+        surface.scaleY = 1f
+        surface.translationX = 0f
+        surface.translationY = 0f
+        surface.alpha = 1f
+        surface.clipToOutline = false
+        surface.background = null
+        surface.setFullscreenPresentation(true)
+        surface.bindPlayer(exoPlayer)
+        surface.setTitle(title)
+        surface.setLoading(false)
+        surface.onBack = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
+        surface.onExitFullscreenGesture = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
+        surface.onFullscreen = { dismiss(animatedDirectionX = 0f, animatedDirectionY = 1f) }
         playerView = surface
 
         val fullscreenShell = FullscreenShell(activity).apply {
@@ -122,14 +130,14 @@ object NativeFullscreenOverlay {
             surface.scaleY = 0.94f
             surface.alpha = 0.92f
         }
-        scrim.animate().alpha(1f).setDuration(185L).start()
+        scrim.animate().alpha(1f).setDuration(180L).start()
         surface.animate()
             .scaleX(1f)
             .scaleY(1f)
             .translationX(0f)
             .translationY(0f)
             .alpha(1f)
-            .setDuration(225L)
+            .setDuration(220L)
             .start()
 
         @Suppress("DEPRECATION")
@@ -157,15 +165,15 @@ object NativeFullscreenOverlay {
         closing = true
         currentShell.cancelGestureAnimation()
 
-        val distance = max(currentShell.width, currentShell.height).coerceAtLeast(1) * 0.46f
+        val distance = max(currentShell.width, currentShell.height).coerceAtLeast(1) * 0.32f
         currentShell.scrim?.animate()?.alpha(0f)?.setDuration(190L)?.start()
         surface.animate()
-            .scaleX(0.73f)
-            .scaleY(0.73f)
+            .scaleX(0.76f)
+            .scaleY(0.76f)
             .translationX(animatedDirectionX * distance)
             .translationY(animatedDirectionY * distance)
-            .alpha(0.42f)
-            .setDuration(195L)
+            .alpha(0.96f)
+            .setDuration(200L)
             .withEndAction { finishDismiss() }
             .start()
     }
@@ -177,8 +185,19 @@ object NativeFullscreenOverlay {
         val callback = dismissCallback
         val finalClassId = activeClassId
 
-        surface?.bindPlayer(null)
+        surface?.let { (it.parent as? ViewGroup)?.removeView(it) }
         if (currentShell != null) (currentShell.parent as? ViewGroup)?.removeView(currentShell)
+        surface?.apply {
+            animate().cancel()
+            scaleX = 1f
+            scaleY = 1f
+            translationX = 0f
+            translationY = 0f
+            alpha = 1f
+            elevation = 0f
+            clipToOutline = false
+            background = null
+        }
         shell = null
         playerView = null
         player = null
@@ -276,9 +295,7 @@ object NativeFullscreenOverlay {
                     val dx = event.x - downX
                     val dy = event.y - downY
                     val distance = hypot(dx, dy)
-                    if (!dragging && distance > touchSlop * 1.15f) {
-                        dragging = true
-                    }
+                    if (!dragging && distance > touchSlop * 1.10f) dragging = true
                     if (dragging) {
                         updateDrag(dx, dy)
                         return true
@@ -327,7 +344,7 @@ object NativeFullscreenOverlay {
 
         private fun updateDrag(dx: Float, dy: Float) {
             val distance = hypot(dx, dy)
-            val denominator = minOf(width, height).coerceAtLeast(dp(180)) * 0.56f
+            val denominator = minOf(width, height).coerceAtLeast(dp(180)) * 0.55f
             progress = (distance / denominator).coerceIn(0f, 1f)
             applyTransform(dx, dy, progress)
         }
@@ -353,22 +370,22 @@ object NativeFullscreenOverlay {
             scrim?.animate()?.cancel()
             video.pivotX = width / 2f
             video.pivotY = height / 2f
-            val scale = 1f - 0.19f * p
+            val scale = 1f - 0.20f * p
             video.scaleX = scale
             video.scaleY = scale
-            video.translationX = dx * 0.62f
-            video.translationY = dy * 0.62f
+            video.translationX = dx * 0.64f
+            video.translationY = dy * 0.64f
             video.alpha = 1f
             video.elevation = dp(14).toFloat() * p
-            if (p > 0.06f) {
+            if (p > 0.04f) {
                 video.clipToOutline = true
                 video.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
                 video.background = GradientDrawable().apply {
                     setColor(Color.BLACK)
-                    cornerRadius = dp((18f * p).toInt().coerceAtLeast(1)).toFloat()
+                    cornerRadius = dp((20f * p).toInt().coerceAtLeast(1)).toFloat()
                 }
             }
-            scrim?.alpha = (1f - 0.92f * p).coerceIn(0.05f, 1f)
+            scrim?.alpha = (1f - 0.93f * p).coerceIn(0.04f, 1f)
         }
 
         private fun animateReset() {
@@ -401,8 +418,8 @@ object NativeFullscreenOverlay {
         private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
         companion object {
-            private const val EXIT_FRACTION = 0.27f
-            private const val EXIT_VELOCITY_PX_S = 980f
+            private const val EXIT_FRACTION = 0.26f
+            private const val EXIT_VELOCITY_PX_S = 920f
         }
     }
 }
