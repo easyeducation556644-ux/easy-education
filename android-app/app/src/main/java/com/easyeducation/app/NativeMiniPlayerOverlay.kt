@@ -3,6 +3,7 @@ package com.easyeducation.app
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.MotionEvent
@@ -20,6 +21,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.google.firebase.auth.FirebaseAuth
 import kotlin.math.abs
+import kotlin.math.min
 
 /**
  * In-app miniplayer backed by the same ExoPlayer session. Tapping/dragging upward expands the mini
@@ -47,6 +49,7 @@ object NativeMiniPlayerOverlay {
         sourceUrl: String,
         title: String,
         requestedHeight: Int,
+        sourceBounds: Rect? = null,
         onExpandToWatchPage: (() -> Unit)? = null,
     ) {
         if (host !== activity) dismiss(releasePlayer = true)
@@ -96,7 +99,6 @@ object NativeMiniPlayerOverlay {
             composePage?.animate()?.cancel()
             composePage?.animate()?.alpha(0.62f)?.setDuration(170L)?.start()
 
-            // Same 16:9 surface grows toward the watch-page player position before navigation.
             val targetScale = (root.width.toFloat() / shell.width.coerceAtLeast(1)).coerceAtLeast(1f)
             shell.pivotX = 0f
             shell.pivotY = 0f
@@ -261,17 +263,49 @@ object NativeMiniPlayerOverlay {
                 bottomMargin = dp(activity, 82)
             },
         )
-        shell.alpha = 0f
-        shell.scaleX = 0.72f
-        shell.scaleY = 0.72f
-        shell.translationY = dp(activity, 76).toFloat()
-        shell.animate()
-            .alpha(1f)
-            .scaleX(1f)
-            .scaleY(1f)
-            .translationY(0f)
-            .setDuration(220L)
-            .start()
+
+        if (sourceBounds != null && !sourceBounds.isEmpty) {
+            shell.alpha = 1f
+            shell.post {
+                if (container !== shell) return@post
+                val targetX = shell.x
+                val targetY = shell.y
+                val rootLocation = IntArray(2)
+                root.getLocationOnScreen(rootLocation)
+                val sourceX = (sourceBounds.left - rootLocation[0]).toFloat()
+                val sourceY = (sourceBounds.top - rootLocation[1]).toFloat()
+                val sourceScale = min(
+                    sourceBounds.width().toFloat() / shell.width.coerceAtLeast(1),
+                    sourceBounds.height().toFloat() / shell.height.coerceAtLeast(1),
+                ).coerceIn(0.60f, 1.65f)
+                shell.pivotX = 0f
+                shell.pivotY = 0f
+                shell.x = sourceX
+                shell.y = sourceY
+                shell.scaleX = sourceScale
+                shell.scaleY = sourceScale
+                shell.animate()
+                    .x(targetX)
+                    .y(targetY)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .alpha(1f)
+                    .setDuration(230L)
+                    .start()
+            }
+        } else {
+            shell.alpha = 0f
+            shell.scaleX = 0.72f
+            shell.scaleY = 0.72f
+            shell.translationY = dp(activity, 76).toFloat()
+            shell.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .translationY(0f)
+                .setDuration(220L)
+                .start()
+        }
 
         play.bringToFront()
         close.bringToFront()
