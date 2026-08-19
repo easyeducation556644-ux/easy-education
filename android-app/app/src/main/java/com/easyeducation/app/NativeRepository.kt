@@ -7,11 +7,11 @@ import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.security.MessageDigest
 
 class NativeRepository(context: Context) {
     private val cache = NativeCacheDb(context.applicationContext)
+    private val leaseStore = OfflineLeaseStore(context.applicationContext)
     private val firestore = FirebaseFirestore.getInstance()
 
     suspend fun cachedProfile(uid: String): NativeUserProfile = withContext(Dispatchers.IO) {
@@ -41,11 +41,12 @@ class NativeRepository(context: Context) {
             .get(Source.SERVER)
             .await()
         val enrollmentJson = snapshot.documents.map(DocumentSnapshot::toCacheJson)
+        val courseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.distinct()
         withContext(Dispatchers.IO) {
             cache.replaceUserCollection("userCourses", uid, enrollmentJson)
+            leaseStore.refresh(uid, courseIds)
         }
 
-        val courseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.distinct()
         for (courseId in courseIds) {
             val cached = withContext(Dispatchers.IO) { cache.getDoc("courses", courseId) }
             if (cached == null) refreshSingleDoc("courses", courseId)
@@ -115,6 +116,10 @@ class NativeRepository(context: Context) {
         syncUserFeed(uid)
     }
 
+    fun hasOfflineLease(uid: String, courseId: String): Boolean = leaseStore.isValid(uid, courseId)
+
+    fun offlineLeaseExpiry(uid: String, courseId: String): Long = leaseStore.expiresAt(uid, courseId)
+
     private suspend fun syncPublicFeed(uid: String) {
         val snapshot = firestore.collection("settings").document("contentSync").get(Source.SERVER).await()
         if (!snapshot.exists()) return
@@ -183,10 +188,17 @@ class NativeRepository(context: Context) {
         }
         for (event in events) {
             if (event.collection == "userCourses") {
+                val courseId = event.docId.removePrefix("${uid}_")
                 if (event.action == "deleted") {
-                    withContext(Dispatchers.IO) { cache.deleteDoc("userCourses", event.docId) }
+                    withContext(Dispatchers.IO) {
+                        cache.deleteDoc("userCourses", event.docId)
+                        leaseStore.revoke(uid, courseId)
+                    }
                 } else {
                     refreshSingleDoc("userCourses", event.docId)
+                    withContext(Dispatchers.IO) { leaseStore.grant(uid, courseId) }
+                    val cachedCourse = withContext(Dispatchers.IO) { cache.getDoc("courses", courseId) }
+                    if (cachedCourse == null) refreshSingleDoc("courses", courseId)
                 }
             }
             if (event.collection == "userProgress") {
