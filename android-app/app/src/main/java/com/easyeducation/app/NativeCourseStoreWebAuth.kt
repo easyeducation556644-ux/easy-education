@@ -96,9 +96,9 @@ object NativeCourseStoreWebAuth {
 
     /**
      * The production web login already knows how to consume nativeRequest("googleSignIn"). We only
-     * alias our narrow bridge while /login is visible, click that existing button once, then remove
-     * the alias after auth completes. Seeding deviceID makes the web device check update the same
-     * native device record instead of treating the embedded WebView as a second phone.
+     * alias our narrow bridge while /login is visible, click that existing button once, then restore
+     * the course-store bridge after auth completes. Seeding deviceID makes the web device check
+     * update the same native device record instead of treating the embedded WebView as a second phone.
      */
     fun pageScript(context: android.content.Context): String {
         val deviceId = JSONObject.quote(NativeDeviceSession.deviceId(context))
@@ -106,9 +106,14 @@ object NativeCourseStoreWebAuth {
             (function () {
               try { localStorage.setItem('deviceID', $deviceId); } catch (_) {}
               if (window.__easyEducationCourseAuthTimer) return;
+              function restoreStoreBridge() {
+                if (!window.__easyEducationCourseStoreBridge) return;
+                try { window.EasyEducationNative = window.__easyEducationCourseStoreBridge; } catch (_) {}
+              }
               function tick() {
                 var path = window.location.pathname || '';
                 if (path === '/login') {
+                  try { sessionStorage.setItem('__easyEducationCourseStoreReturn', '1'); } catch (_) {}
                   if (window.__easyEducationCourseAuthStarted) return;
                   var bridge = window.$JS_OBJECT;
                   if (!bridge || typeof bridge.postMessage !== 'function') return;
@@ -117,15 +122,15 @@ object NativeCourseStoreWebAuth {
                     function (item) { return /sign\s*in\s*with\s*google/i.test(item.textContent || ''); }
                   );
                   if (!button) return;
+                  if (!window.__easyEducationCourseStoreBridge) {
+                    window.__easyEducationCourseStoreBridge = window.EasyEducationNative;
+                  }
                   window.__easyEducationCourseAuthStarted = true;
-                  try { sessionStorage.setItem('__easyEducationCourseStoreReturn', '1'); } catch (_) {}
-                  window.EasyEducationNative = bridge;
+                  try { window.EasyEducationNative = bridge; } catch (_) { return; }
                   button.click();
                   return;
                 }
-                if (window.EasyEducationNative === window.$JS_OBJECT) {
-                  try { delete window.EasyEducationNative; } catch (_) { window.EasyEducationNative = undefined; }
-                }
+                restoreStoreBridge();
                 var shouldReturn = false;
                 try { shouldReturn = sessionStorage.getItem('__easyEducationCourseStoreReturn') === '1'; } catch (_) {}
                 if (shouldReturn && (path === '/dashboard' || path === '/')) {
