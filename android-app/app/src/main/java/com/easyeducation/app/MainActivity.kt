@@ -44,7 +44,9 @@ class MainActivity : ComponentActivity() {
         FirebaseAuth.getInstance()
             .signInWithCredential(GoogleAuthProvider.getCredential(idToken, null))
             .addOnSuccessListener {
-                lifecycleScope.launch(Dispatchers.IO) { NativePushRegistrar.register(this@MainActivity) }
+                lifecycleScope.launch(Dispatchers.IO) {
+                    runCatching { NativePushRegistrar.register(this@MainActivity) }
+                }
             }
             .addOnFailureListener { error ->
                 Toast.makeText(this, error.message ?: "Firebase sign-in failed", Toast.LENGTH_LONG).show()
@@ -53,11 +55,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // v1 kept playable MP4 files in filesDir/offline. Remove them before any v2
-        // download state is loaded so the app has a strict encrypted-only offline store.
-        LegacyDownloadCleanup.runOnce(this)
-        SecureHlsDownloadService.cleanupPlaintext(this)
-        SecureYoutubeDownloadService.cleanupPlaintext(this)
+
+        // Migration/cleanup must never be able to kill the launcher activity. A damaged legacy
+        // file can be retried/removed later; keeping the student in the app is more important.
+        runCatching { LegacyDownloadCleanup.runOnce(this) }
+        runCatching { SecureHlsDownloadService.cleanupPlaintext(this) }
+        runCatching { SecureYoutubeDownloadService.cleanupPlaintext(this) }
 
         initialPath = intent?.getStringExtra(EXTRA_OPEN_PATH)
         viewModel = ViewModelProvider(this)[NativeAppViewModel::class.java]
@@ -83,9 +86,14 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        SecureDownloadCoordinator.resumePending(this)
+
+        // Resuming old queued work is best-effort. A stale task from an older APK must never crash
+        // the main UI during an upgrade.
+        runCatching { SecureDownloadCoordinator.resumePending(this) }
         if (FirebaseAuth.getInstance().currentUser != null) {
-            lifecycleScope.launch(Dispatchers.IO) { NativePushRegistrar.register(this@MainActivity) }
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching { NativePushRegistrar.register(this@MainActivity) }
+            }
         }
     }
 
