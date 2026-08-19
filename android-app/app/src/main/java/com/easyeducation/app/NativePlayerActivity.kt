@@ -60,6 +60,10 @@ class NativePlayerActivity : AppCompatActivity() {
             fail("This offline class belongs to another account")
             return
         }
+        if (!OfflineLeaseStore(this).isValid(uid, task.courseId)) {
+            fail("Connect to the internet once to verify this course and renew offline access")
+            return
+        }
         progressKey = "class:${task.classId}"
         val mediaSource = ProgressiveMediaSource.Factory(
             SecureChunkDataSource.Factory(this, downloadId, uid),
@@ -144,8 +148,16 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        player?.let { exo ->
+            if (progressKey.isNotBlank() && exo.currentPosition > 0) {
+                getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
+                    .edit()
+                    .putLong(progressKey, exo.currentPosition)
+                    .apply()
+            }
+            exo.pause()
+        }
         super.onStop()
-        releasePlayer(savePosition = true)
     }
 
     override fun onDestroy() {
