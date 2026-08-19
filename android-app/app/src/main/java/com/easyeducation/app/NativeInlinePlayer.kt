@@ -34,8 +34,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Inline presentation of the single process-local player session. Inline, mini, native PiP and
- * fullscreen all hand off the same ExoPlayer; only an actual class change replaces MediaSource.
+ * Inline presentation of the single process-local player session and the single visual player view.
+ * Inline, mini, native PiP and fullscreen reparent that same YoutubeStylePlayerView. Presentation
+ * changes therefore do not call resolver/setMediaSource/prepare and do not bind a second PlayerView.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -70,20 +71,79 @@ fun NativeInlinePlayer(
     }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
 
-    DisposableEffect(lifecycleOwner, classId) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_STOP -> {
-                    PersistentNativePlayer.savePosition(context)
-                    if (
-                        !handedToMini && !handedToFullscreen &&
-                        !NativeFullscreenOverlay.owns(exoPlayer) &&
-                        !NativeMiniPlayerOverlay.owns(exoPlayer)
-                    ) {
-                        PersistentNativePlayer.pause()
+    fun configureInlineSurface(surface: YoutubeStylePlayerView, ctx: Context) {
+        surface.setFullscreenPresentation(false)
+        surface.bindPlayer(exoPlayer)
+        surface.setTitle(title)
+        surface.setLoading(loading)
+        surface.setNavigationAvailability(hasPrevious, hasNext)
+        surface.onBack = {
+            onBack?.invoke()
+                ?: (ctx.findActivity() as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
+        }
+        surface.onPrevious = onPrevious
+        surface.onNext = onNext
+        surface.onMinimize = { minimizeFromSurface@ run {
+            val activity = ctx.findActivity() ?: return@minimizeFromSurface
+            val host = hostRef.get()
+            val sourceBounds = host?.globalBounds()
+            PersistentNativePlayer.savePosition(ctx)
+            handedToMini = true
+            handedToFullscreen = false
+            NativeMiniPlayerOverlay.show(
+                activity = activity,
+                exoPlayer = exoPlayer,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                title = title,
+                requestedHeight = requestedHeight,
+                sourceBounds = sourceBounds,
+                onExpandToWatchPage = onExpandFromMini,
+            )
+            if (onMinimize != null) onMinimize()
+            else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
+        } }
+        surface.onFullscreen = { fullscreenFromSurface@ run {
+            val activity = ctx.findActivity() ?: return@fullscreenFromSurface
+            val host = hostRef.get()
+            PersistentNativePlayer.savePosition(ctx)
+            handedToMini = false
+            handedToFullscreen = true
+            NativeFullscreenOverlay.show(
+                activity = activity,
+                exoPlayer = exoPlayer,
+                classId = classId,
+                sourceUrl = sourceUrl,
+                title = title,
+                requestedHeight = requestedHeight,
+                sourceBounds = host?.globalBounds(),
+            ) { activeId ->
+                handedToFullscreen = false
+                if (activeId.isNotBlank() && activeId != classId) {
+                    onSharedSessionClassChanged?.invoke(activeId)
+                } else if (!NativeInlineSurfaceRegistry.restore(exoPlayer)) {
+                    hostRef.get()?.let { inlineHost ->
+                        configureInlineSurface(inlineHost.attachSharedSurface(), ctx)
+                        inlineHost.resetPagePresentation()
                     }
                 }
-                else -> Unit
+            }
+            if (NativeFullscreenOverlay.owns(exoPlayer)) onFullscreen?.invoke()
+            else handedToFullscreen = false
+        } }
+    }
+
+    DisposableEffect(lifecycleOwner, classId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                PersistentNativePlayer.savePosition(context)
+                if (
+                    !handedToMini && !handedToFullscreen &&
+                    !NativeFullscreenOverlay.owns(exoPlayer) &&
+                    !NativeMiniPlayerOverlay.owns(exoPlayer)
+                ) {
+                    PersistentNativePlayer.pause()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -138,61 +198,6 @@ fun NativeInlinePlayer(
         }
     }
 
-    fun minimizePlayer() {
-        val activity = context.findActivity() ?: return
-        val host = hostRef.get()
-        val sourceBounds = host?.globalBounds()
-        PersistentNativePlayer.savePosition(context)
-        handedToMini = true
-        handedToFullscreen = false
-        host?.resetPagePresentation()
-        NativeMiniPlayerOverlay.show(
-            activity = activity,
-            exoPlayer = exoPlayer,
-            classId = classId,
-            sourceUrl = sourceUrl,
-            title = title,
-            requestedHeight = requestedHeight,
-            sourceBounds = sourceBounds,
-            onExpandToWatchPage = onExpandFromMini,
-        )
-        if (onMinimize != null) onMinimize()
-        else (activity as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
-    }
-
-    fun fullscreenPlayer() {
-        val activity = context.findActivity() ?: return
-        val host = hostRef.get()
-        PersistentNativePlayer.savePosition(context)
-        handedToMini = false
-        handedToFullscreen = true
-        val bounds = host?.globalBounds()
-        host?.playerSurface?.bindPlayer(null)
-        NativeFullscreenOverlay.show(
-            activity = activity,
-            exoPlayer = exoPlayer,
-            classId = classId,
-            sourceUrl = sourceUrl,
-            title = title,
-            requestedHeight = requestedHeight,
-            sourceBounds = bounds,
-        ) { activeId ->
-            handedToFullscreen = false
-            hostRef.get()?.resetPagePresentation()
-            if (activeId.isNotBlank() && activeId != classId) {
-                onSharedSessionClassChanged?.invoke(activeId)
-            } else {
-                hostRef.get()?.playerSurface?.bindPlayer(exoPlayer)
-            }
-        }
-        if (!NativeFullscreenOverlay.owns(exoPlayer)) {
-            handedToFullscreen = false
-            host?.playerSurface?.bindPlayer(exoPlayer)
-        } else {
-            onFullscreen?.invoke()
-        }
-    }
-
     if (handedToMini) return
 
     Box(
@@ -207,49 +212,23 @@ fun NativeInlinePlayer(
             factory = { ctx ->
                 YoutubeWatchGestureHost(ctx).apply {
                     hostRef.set(this)
-                    NativeInlineSurfaceRegistry.register(this, classId)
-                    playerSurface.apply {
-                        setFullscreenPresentation(false)
-                        bindPlayer(if (handedToFullscreen || NativeFullscreenOverlay.owns(exoPlayer)) null else exoPlayer)
-                        setTitle(title)
-                        setLoading(loading)
-                        setNavigationAvailability(hasPrevious, hasNext)
-                        this.onBack = {
-                            onBack?.invoke()
-                                ?: (ctx.findActivity() as? ComponentActivity)
-                                    ?.onBackPressedDispatcher?.onBackPressed()
-                        }
-                        this.onPrevious = onPrevious
-                        this.onNext = onNext
-                        this.onMinimize = { minimizePlayer() }
-                        this.onFullscreen = { fullscreenPlayer() }
+                    val configure: (YoutubeStylePlayerView) -> Unit = { surface -> configureInlineSurface(surface, ctx) }
+                    NativeInlineSurfaceRegistry.register(this, classId, configure)
+                    if (!NativeFullscreenOverlay.owns(exoPlayer) && !NativeMiniPlayerOverlay.owns(exoPlayer)) {
+                        configure(attachSharedSurface())
                     }
                 }
             },
             update = { host ->
                 hostRef.set(host)
-                NativeInlineSurfaceRegistry.register(host, classId)
-                host.playerSurface.apply {
-                    setFullscreenPresentation(false)
-                    bindPlayer(
-                        if (
-                            handedToFullscreen ||
-                            NativeFullscreenOverlay.owns(exoPlayer) ||
-                            NativeMiniPlayerOverlay.isPipPresentation()
-                        ) null else exoPlayer,
-                    )
-                    setTitle(title)
-                    setLoading(loading)
-                    setNavigationAvailability(hasPrevious, hasNext)
-                    this.onBack = {
-                        onBack?.invoke()
-                            ?: (context.findActivity() as? ComponentActivity)
-                                ?.onBackPressedDispatcher?.onBackPressed()
-                    }
-                    this.onPrevious = onPrevious
-                    this.onNext = onNext
-                    this.onMinimize = { minimizePlayer() }
-                    this.onFullscreen = { fullscreenPlayer() }
+                val configure: (YoutubeStylePlayerView) -> Unit = { surface -> configureInlineSurface(surface, context) }
+                NativeInlineSurfaceRegistry.register(host, classId, configure)
+                if (
+                    !handedToFullscreen &&
+                    !NativeFullscreenOverlay.owns(exoPlayer) &&
+                    !NativeMiniPlayerOverlay.owns(exoPlayer)
+                ) {
+                    configure(host.attachSharedSurface())
                 }
             },
         )
