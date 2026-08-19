@@ -89,6 +89,7 @@ fun NativeInlinePlayer(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            NativeInlineSurfaceRegistry.unregister(hostRef.get())
             PersistentNativePlayer.savePosition(context)
             if (
                 !handedToMini && !handedToFullscreen &&
@@ -206,6 +207,7 @@ fun NativeInlinePlayer(
             factory = { ctx ->
                 YoutubeWatchGestureHost(ctx).apply {
                     hostRef.set(this)
+                    NativeInlineSurfaceRegistry.register(this, classId)
                     playerSurface.apply {
                         setFullscreenPresentation(false)
                         bindPlayer(if (handedToFullscreen || NativeFullscreenOverlay.owns(exoPlayer)) null else exoPlayer)
@@ -226,6 +228,7 @@ fun NativeInlinePlayer(
             },
             update = { host ->
                 hostRef.set(host)
+                NativeInlineSurfaceRegistry.register(host, classId)
                 host.playerSurface.apply {
                     setFullscreenPresentation(false)
                     bindPlayer(
