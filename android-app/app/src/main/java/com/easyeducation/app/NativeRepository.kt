@@ -2,6 +2,7 @@ package com.easyeducation.app
 
 import android.content.Context
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
@@ -18,8 +19,29 @@ class NativeRepository(context: Context) {
         NativeUserProfile.from(uid, cache.getDoc("users", uid))
     }
 
-    suspend fun refreshProfile(uid: String): NativeUserProfile {
-        val snapshot = firestore.collection("users").document(uid).get(Source.SERVER).await()
+    suspend fun refreshProfile(
+        uid: String,
+        fallbackName: String = "",
+        fallbackEmail: String = "",
+        fallbackPhotoUrl: String = "",
+    ): NativeUserProfile {
+        val ref = firestore.collection("users").document(uid)
+        var snapshot = ref.get(Source.SERVER).await()
+        if (!snapshot.exists()) {
+            ref.set(
+                mapOf(
+                    "name" to fallbackName,
+                    "email" to fallbackEmail,
+                    "photoURL" to fallbackPhotoUrl,
+                    "role" to "user",
+                    "banned" to false,
+                    "permanentBan" to false,
+                    "banCount" to 0,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                ),
+            ).await()
+            snapshot = ref.get(Source.SERVER).await()
+        }
         val json = snapshot.toCacheJson()
         withContext(Dispatchers.IO) { cache.putDoc("users", uid, json) }
         return NativeUserProfile.from(uid, json)
