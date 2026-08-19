@@ -1,18 +1,15 @@
 package com.easyeducation.app
 
 import android.graphics.Color
-import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -31,6 +28,8 @@ class NativePlayerActivity : AppCompatActivity() {
     private var title: String = ""
     private var ownsPlayer: Boolean = true
     private var sharedSession: Boolean = false
+    private var offlineSharedSession: Boolean = false
+    private var minimizeToMini: Boolean = false
     private var currentClassId: String = ""
     private var currentSourceUrl: String = ""
     private var currentHeight: Int = 480
@@ -56,7 +55,7 @@ class NativePlayerActivity : AppCompatActivity() {
             setFullscreenPresentation(true)
             setTitle(title)
             onBack = { finish() }
-            onMinimize = { finish() }
+            onMinimize = { minimizePlayer() }
             onExitFullscreenGesture = { finish() }
             onFullscreen = { enterImmersiveMode() }
         }
@@ -95,19 +94,46 @@ class NativePlayerActivity : AppCompatActivity() {
             fail("Connect to the internet once to verify this course and renew offline access")
             return
         }
-        ownsPlayer = true
+
+        ownsPlayer = false
         sharedSession = false
+        offlineSharedSession = true
         currentClassId = task.classId
+        currentSourceUrl = "secure://easy-education/${task.id}"
+        currentHeight = task.height.takeIf { it > 0 } ?: 480
         progressKey = "class:${task.classId}"
         title = task.title
         playerView.setTitle(title)
         playerView.setNavigationAvailability(false, false)
         playerView.onPrevious = null
         playerView.onNext = null
-        val mediaSource = ProgressiveMediaSource.Factory(
-            SecureChunkDataSource.Factory(this, downloadId, uid),
-        ).createMediaSource(MediaItem.fromUri(Uri.parse("secure://easy-education/$downloadId")))
-        prepareOwnedPlayer(mediaSource)
+        playerView.setLoading(true)
+
+        lifecycleScope.launch {
+            runCatching {
+                PersistentNativePlayer.ensureOffline(
+                    context = this@NativePlayerActivity,
+                    task = task,
+                    autoPlay = true,
+                )
+            }.onSuccess { exo ->
+                player = exo
+                playerView.setLoading(false)
+                playerView.bindPlayer(exo)
+            }.onFailure { error ->
+                playerView.setLoading(false)
+                offlineSharedSession = false
+                fail(error.message ?: "Could not open this downloaded class")
+            }
+        }
+    }
+
+    private fun minimizePlayer() {
+        if (offlineSharedSession) {
+            minimizeToMini = true
+            PersistentNativePlayer.requestMiniAfterActivity(title)
+        }
+        finish()
     }
 
     private fun playOnline(classId: String, sourceUrl: String, requestedHeight: Int) {
@@ -233,6 +259,11 @@ class NativePlayerActivity : AppCompatActivity() {
             player?.let { savePosition(it.currentPosition) }
             playerView.bindPlayer(null)
             player = null
+            // An offline shared player has no inline watch surface to return to. Keep it alive only
+            // for an explicit minimize request; Back/gesture exit must never leave hidden audio.
+            if (offlineSharedSession && !minimizeToMini) {
+                PersistentNativePlayer.stopSession(this, savePosition = true)
+            }
         }
         super.onDestroy()
     }
