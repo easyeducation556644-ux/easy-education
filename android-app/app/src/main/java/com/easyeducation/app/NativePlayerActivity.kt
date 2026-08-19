@@ -9,7 +9,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.google.android.gms.tasks.Tasks
@@ -77,28 +80,76 @@ class NativePlayerActivity : AppCompatActivity() {
                 runCatching { resolveOnlineSource(classId, sourceUrl, requestedHeight) }
             }
             resolved.onSuccess { source ->
-                val itemBuilder = MediaItem.Builder().setUri(source.url)
-                if (source.hls) itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
-                preparePlayer(mediaItem = itemBuilder.build())
+                when (source) {
+                    is OnlineSource.Direct -> {
+                        if (source.hls) {
+                            val requestProperties = mutableMapOf(
+                                "User-Agent" to RUMBLE_USER_AGENT,
+                            )
+                            source.referer?.takeIf { it.isNotBlank() }?.let { referer ->
+                                requestProperties["Referer"] = referer
+                                requestProperties["Origin"] = "https://rumble.com"
+                            }
+                            val dataSourceFactory = DefaultHttpDataSource.Factory()
+                                .setAllowCrossProtocolRedirects(true)
+                                .setDefaultRequestProperties(requestProperties)
+                            val item = MediaItem.Builder()
+                                .setUri(source.url)
+                                .setMimeType(MimeTypes.APPLICATION_M3U8)
+                                .build()
+                            val mediaSource = HlsMediaSource.Factory(dataSourceFactory)
+                                .createMediaSource(item)
+                            preparePlayer(mediaSource = mediaSource)
+                        } else {
+                            preparePlayer(mediaItem = MediaItem.fromUri(source.url))
+                        }
+                    }
+                    is OnlineSource.RumbleProxy -> {
+                        val mediaSource = ProgressiveMediaSource.Factory(
+                            RumbleProxyDataSource.Factory(
+                                classId = source.classId,
+                                height = source.height,
+                                totalBytes = source.totalBytes,
+                                downloadToken = source.downloadToken,
+                            ),
+                        ).createMediaSource(
+                            MediaItem.fromUri(Uri.parse("rumble-proxy://easy-education/${source.classId}/${source.height}")),
+                        )
+                        preparePlayer(mediaSource = mediaSource)
+                    }
+                }
             }.onFailure { fail(it.message ?: "Could not open this class video") }
         }
     }
 
-    private data class OnlineSource(val url: String, val hls: Boolean = false)
+    private sealed interface OnlineSource {
+        data class Direct(
+            val url: String,
+            val hls: Boolean = false,
+            val referer: String? = null,
+        ) : OnlineSource
+
+        data class RumbleProxy(
+            val classId: String,
+            val height: Int,
+            val totalBytes: Long,
+            val downloadToken: String,
+        ) : OnlineSource
+    }
 
     private fun resolveOnlineSource(classId: String, sourceUrl: String, requestedHeight: Int): OnlineSource {
         return when {
             YoutubeDeviceResolver.isYoutubeUrl(sourceUrl) -> {
                 val (_, format) = YoutubeDeviceResolver().pickFormat(sourceUrl, requestedHeight)
-                OnlineSource(format.url, false)
+                OnlineSource.Direct(format.url, false)
             }
-            isRumblePage(sourceUrl) -> resolveRumbleHls(classId, sourceUrl, requestedHeight)
-            sourceUrl.contains(".m3u8", ignoreCase = true) -> OnlineSource(sourceUrl, true)
-            else -> OnlineSource(sourceUrl, false)
+            isRumblePage(sourceUrl) -> resolveRumbleSource(classId, sourceUrl, requestedHeight)
+            sourceUrl.contains(".m3u8", ignoreCase = true) -> OnlineSource.Direct(sourceUrl, true)
+            else -> OnlineSource.Direct(sourceUrl, false)
         }
     }
 
-    private fun resolveRumbleHls(classId: String, sourceUrl: String, requestedHeight: Int): OnlineSource {
+    private fun resolveRumbleSource(classId: String, sourceUrl: String, requestedHeight: Int): OnlineSource {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val url = APP_ORIGIN + "/api/offline-video?options=1" +
@@ -106,30 +157,66 @@ class NativePlayerActivity : AppCompatActivity() {
         val http = OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
         val payload = http.newCall(
             Request.Builder().url(url).header("Authorization", "Bearer $token").build(),
         ).execute().use { response ->
-            if (!response.isSuccessful) error("Video authorization failed (${response.code})")
+            if (!response.isSuccessful) {
+                val message = runCatching {
+                    JSONObject(response.body?.string().orEmpty()).optString("error")
+                }.getOrNull()
+                error(message?.takeIf { it.isNotBlank() } ?: "Rumble video authorization failed (${response.code})")
+            }
             JSONObject(response.body?.string().orEmpty())
         }
-        val options = payload.optJSONArray("options") ?: error("No stream qualities are available")
-        val candidates = buildList {
-            for (index in 0 until options.length()) {
-                val item = options.optJSONObject(index) ?: continue
-                if (item.optString("kind") != "hls") continue
-                val playlist = item.optString("playlistUrl")
-                val height = item.optInt("height")
-                if (playlist.isNotBlank() && height > 0) add(height to playlist)
+        val options = payload.optJSONArray("options") ?: error("No Rumble stream qualities are available")
+
+        data class HlsChoice(val height: Int, val url: String)
+        data class Mp4Choice(val height: Int, val bytes: Long)
+        val hls = mutableListOf<HlsChoice>()
+        val mp4 = mutableListOf<Mp4Choice>()
+        for (index in 0 until options.length()) {
+            val item = options.optJSONObject(index) ?: continue
+            val height = item.optInt("height", 0)
+            if (height <= 0) continue
+            when (item.optString("kind")) {
+                "hls" -> item.optString("playlistUrl")
+                    .takeIf { it.isNotBlank() }
+                    ?.let { hls += HlsChoice(height, it) }
+                "mp4" -> item.optLong("contentLength", 0L)
+                    .takeIf { it > 0L }
+                    ?.let { mp4 += Mp4Choice(height, it) }
             }
         }
-        val selected = candidates.filter { it.first <= requestedHeight }.maxByOrNull { it.first }
-            ?: candidates.minByOrNull { it.first }
-            ?: error("Native stream is unavailable for this Rumble class")
-        return OnlineSource(selected.second, true)
+
+        fun <T> choose(items: List<T>, heightOf: (T) -> Int): T? {
+            return items.firstOrNull { heightOf(it) == requestedHeight }
+                ?: items.filter { heightOf(it) <= requestedHeight }.maxByOrNull(heightOf)
+                ?: items.minByOrNull(heightOf)
+        }
+
+        choose(hls) { it.height }?.let { selected ->
+            return OnlineSource.Direct(
+                url = selected.url,
+                hls = true,
+                referer = sourceUrl,
+            )
+        }
+
+        val selectedMp4 = choose(mp4) { it.height }
+            ?: error("Rumble did not expose a native HLS or progressive stream")
+        val downloadToken = payload.optString("downloadToken")
+        require(downloadToken.isNotBlank()) { "Rumble playback authorization expired. Reopen the class." }
+        return OnlineSource.RumbleProxy(
+            classId = classId,
+            height = selectedMp4.height,
+            totalBytes = selectedMp4.bytes,
+            downloadToken = downloadToken,
+        )
     }
 
-    private fun preparePlayer(mediaItem: MediaItem? = null, mediaSource: androidx.media3.exoplayer.source.MediaSource? = null) {
+    private fun preparePlayer(mediaItem: MediaItem? = null, mediaSource: MediaSource? = null) {
         releasePlayer(savePosition = false)
         val exo = ExoPlayer.Builder(this).build()
         player = exo
@@ -190,5 +277,7 @@ class NativePlayerActivity : AppCompatActivity() {
         const val EXTRA_HEIGHT = "height"
         private const val PLAYER_PREFS = "native_player_positions_v2"
         private const val APP_ORIGIN = "https://easy-education.vercel.app"
+        private const val RUMBLE_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
     }
 }
