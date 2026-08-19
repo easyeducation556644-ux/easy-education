@@ -6,7 +6,6 @@ import android.content.Intent
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaMuxer
-import android.net.Uri
 import android.os.IBinder
 import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
@@ -18,9 +17,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Downloads real YouTube qualities. Low qualities may be progressive A/V files; HD/UHD
- * qualities are normally adaptive video-only + audio-only streams and are losslessly
- * muxed inside app-private cache storage before the final file is encrypted.
+ * Downloads validated YouTube qualities. HD/UHD qualities normally use separate video
+ * and audio streams, which are losslessly muxed in app-private cache and then encrypted.
  */
 class SecureYoutubeDownloadService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
@@ -84,10 +82,26 @@ class SecureYoutubeDownloadService : Service() {
             val (_, variant) = YoutubeDeviceResolver(http).pickVariant(task.sourceUrl, task.height)
             val transferBytes = variant.transferBytes
             require(transferBytes > 0L) { "YouTube did not report a safe resumable size for this quality" }
+
+            // A resolver/client migration can legitimately change encoded size while keeping
+            // the exact selected height. The new validated stream is authoritative; do not
+            // fail an old 2.2.x task just because its stale size estimate differs.
             if (task.expectedBytes > 0L && !task.sizeEstimated) {
                 val drift = kotlin.math.abs(task.expectedBytes - transferBytes)
-                require(drift <= maxOf(3L * 1024L * 1024L, task.expectedBytes / 20L)) {
-                    "The selected YouTube quality changed. Please choose the quality again."
+                if (drift > maxOf(3L * 1024L * 1024L, task.expectedBytes / 20L)) {
+                    progressiveFile.delete()
+                    videoFile.delete()
+                    audioFile.delete()
+                    muxedFile.delete()
+                    muxedWebm.delete()
+                    task = task.copy(
+                        downloadedBytes = 0L,
+                        totalBytes = transferBytes,
+                        expectedBytes = transferBytes,
+                        chunkCount = 0,
+                        phaseProgress = 1,
+                    )
+                    saveIfCurrent(task, generation)
                 }
             }
 
@@ -140,6 +154,8 @@ class SecureYoutubeDownloadService : Service() {
                     phaseProgress = 82,
                     downloadedBytes = transferBytes,
                     totalBytes = transferBytes,
+                    expectedBytes = transferBytes,
+                    sizeEstimated = false,
                     qualityLabel = variant.qualityLabel,
                 )
                 saveIfCurrent(task, generation)
@@ -211,7 +227,6 @@ class SecureYoutubeDownloadService : Service() {
             dir.deleteRecursively()
             notifier.completed(task)
         } catch (error: Throwable) {
-            // A partially muxed output is never useful for resume; source parts are resumable.
             muxedFile.delete()
             muxedWebm.delete()
             val current = store.get(initial.id) ?: run {
@@ -235,12 +250,6 @@ class SecureYoutubeDownloadService : Service() {
         }
     }
 
-    /**
-     * GoogleVideo adaptive URLs are short-lived and some CDN nodes reject an unbounded
-     * `Range: bytes=N-` request even though a small probe succeeds. Download in bounded
-     * chunks and transparently re-resolve the selected quality on 403/410 so long HD/UHD
-     * downloads can continue without throwing away already downloaded bytes.
-     */
     private fun downloadStream(
         task: SecureDownloadTask,
         generation: Long,
@@ -265,14 +274,7 @@ class SecureYoutubeDownloadService : Service() {
                 activeFormat.contentLength - 1L,
                 start + YOUTUBE_RANGE_BYTES - 1L,
             )
-            val request = Request.Builder()
-                .url(activeFormat.url)
-                .header("Range", "bytes=$start-$end")
-                .header("User-Agent", streamUserAgent(activeFormat.url))
-                .header("Accept-Encoding", "identity")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .get()
-                .build()
+            val request = streamRequest(activeFormat, start, end)
 
             try {
                 DownloadRuntime.execute(task.id, http.newCall(request)) { response ->
@@ -289,9 +291,7 @@ class SecureYoutubeDownloadService : Service() {
                     }
                     val expected = end - start + 1L
                     response.header("Content-Length")?.toLongOrNull()?.let { declared ->
-                        require(declared == expected) {
-                            "YouTube returned the wrong chunk size"
-                        }
+                        require(declared == expected) { "YouTube returned the wrong chunk size" }
                     }
 
                     val body = response.body ?: error("YouTube stream response was empty")
@@ -321,6 +321,8 @@ class SecureYoutubeDownloadService : Service() {
                                     phaseProgress = stage,
                                     downloadedBytes = transferred,
                                     totalBytes = totalTransfer,
+                                    expectedBytes = totalTransfer,
+                                    sizeEstimated = false,
                                     error = null,
                                 )
                                 saveIfCurrent(current, generation)
@@ -338,15 +340,16 @@ class SecureYoutubeDownloadService : Service() {
                 refreshAttempts = 0
             } catch (refresh: RefreshableYoutubeUrl) {
                 if (refreshAttempts >= MAX_MEDIA_URL_REFRESHES) {
-                    error("YouTube media URL was rejected repeatedly (HTTP ${refresh.code}). Retry the download.")
+                    error("YouTube media URL was rejected repeatedly (HTTP ${refresh.code}). Choose the quality again.")
                 }
                 refreshAttempts += 1
                 val refreshed = refreshFormat(task, activeFormat)
                 if (
                     refreshed.itag != activeFormat.itag ||
-                    refreshed.contentLength != activeFormat.contentLength
+                    refreshed.contentLength != activeFormat.contentLength ||
+                    refreshed.clientName != activeFormat.clientName
                 ) {
-                    // Never concatenate bytes from two different YouTube itags/files.
+                    // Never concatenate bytes from different YouTube files/client encodes.
                     target.delete()
                     offset = 0L
                     current = current.copy(
@@ -366,6 +369,19 @@ class SecureYoutubeDownloadService : Service() {
         return current
     }
 
+    private fun streamRequest(format: YoutubeDeviceResolver.Format, start: Long, end: Long): Request =
+        Request.Builder()
+            .url(format.url)
+            .header("Range", "bytes=$start-$end")
+            .header("User-Agent", format.userAgent)
+            .header("Accept-Encoding", "identity")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("X-YouTube-Client-Name", format.clientId)
+            .header("X-YouTube-Client-Version", format.clientVersion)
+            .header("Referer", format.referer)
+            .get()
+            .build()
+
     private fun refreshFormat(
         task: SecureDownloadTask,
         previous: YoutubeDeviceResolver.Format,
@@ -379,16 +395,6 @@ class SecureYoutubeDownloadService : Service() {
         } ?: error("The selected YouTube quality is no longer available. Choose a quality again.")
         require(refreshed.contentLength > 0L) { "YouTube refreshed stream size is unavailable" }
         return refreshed
-    }
-
-    private fun streamUserAgent(url: String): String {
-        val client = runCatching { Uri.parse(url).getQueryParameter("c") }
-            .getOrNull()
-            ?.uppercase()
-        return when (client) {
-            "IOS" -> IOS_STREAM_USER_AGENT
-            else -> YoutubeDeviceResolver.DOWNLOAD_USER_AGENT
-        }
     }
 
     private fun muxAdaptive(videoFile: File, audioFile: File, output: File, container: String) {
@@ -485,14 +491,17 @@ class SecureYoutubeDownloadService : Service() {
         private const val AUDIO_PART = "youtube-audio.part"
         private const val MUXED_FILE = "youtube-merged.mp4"
         private const val MUXED_WEBM = "youtube-merged.webm"
-        private const val IOS_STREAM_USER_AGENT =
-            "com.google.ios.youtube/21.03.2 (iPhone16,2; U; CPU iOS 18_7_2 like Mac OS X; en_US)"
+        private const val TEMP_ROOT = "secure_youtube_v3"
+        private const val LEGACY_TEMP_ROOT = "secure_youtube"
 
         fun tempDir(context: Context, id: String): File =
-            File(context.cacheDir, "secure_youtube/${SecureMediaStore.safe(id)}")
+            File(context.cacheDir, "$TEMP_ROOT/${SecureMediaStore.safe(id)}")
 
         fun cleanupPlaintext(context: Context) {
-            val root = File(context.cacheDir, "secure_youtube")
+            // 2.2.1 used Android/iOS-client partials in this directory. Never resume those
+            // bytes with the new validated VisionOS/TV stream strategy.
+            File(context.cacheDir, LEGACY_TEMP_ROOT).deleteRecursively()
+            val root = File(context.cacheDir, TEMP_ROOT)
             root.listFiles()?.forEach { dir ->
                 File(dir, MUXED_FILE).delete()
                 File(dir, MUXED_WEBM).delete()
