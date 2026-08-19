@@ -54,6 +54,35 @@ private fun JSONObject.millis(key: String): Long {
     }
 }
 
+data class NativeResourceLink(
+    val label: String,
+    val url: String,
+)
+
+private fun JSONObject.resourceLinks(): List<NativeResourceLink> {
+    val raw = optJSONArray("resourceLinks") ?: return emptyList()
+    return buildList {
+        for (index in 0 until raw.length()) {
+            when (val item = raw.opt(index)) {
+                is JSONObject -> {
+                    val url = item.firstString("url", "link", "href")
+                    if (url.isBlank()) continue
+                    add(
+                        NativeResourceLink(
+                            label = item.firstString("label", "title", "name")
+                                .ifBlank { "Resource ${index + 1}" },
+                            url = url,
+                        ),
+                    )
+                }
+                is String -> if (item.isNotBlank()) {
+                    add(NativeResourceLink("Resource ${index + 1}", item.trim()))
+                }
+            }
+        }
+    }
+}
+
 data class NativeCourse(
     val id: String,
     val title: String,
@@ -67,7 +96,7 @@ data class NativeCourse(
             id = json.optString("id"),
             title = json.firstString("title", "name").ifBlank { "Course" },
             description = json.optString("description"),
-            thumbnailUrl = json.firstString("thumbnailURL", "imageURL", "image", "thumbnail"),
+            thumbnailUrl = json.firstString("thumbnailURL", "imageURL", "imageUrl", "image", "thumbnail"),
             price = json.optDouble("price", 0.0),
             courseFormat = json.optString("courseFormat", "single"),
         )
@@ -79,6 +108,7 @@ data class NativeSubject(
     val courseId: String,
     val title: String,
     val order: Int,
+    val imageUrl: String = "",
 ) {
     companion object {
         fun from(json: JSONObject) = NativeSubject(
@@ -86,6 +116,7 @@ data class NativeSubject(
             courseId = json.optString("courseId"),
             title = json.firstString("title", "name", "subject").ifBlank { "Subject" },
             order = json.optInt("order", 0),
+            imageUrl = json.firstString("imageUrl", "imageURL", "image"),
         )
     }
 }
@@ -96,6 +127,7 @@ data class NativeChapter(
     val subject: String,
     val title: String,
     val order: Int,
+    val imageUrl: String = "",
 ) {
     companion object {
         fun from(json: JSONObject) = NativeChapter(
@@ -104,6 +136,7 @@ data class NativeChapter(
             subject = json.stringList("subject").firstOrNull().orEmpty(),
             title = json.firstString("title", "name", "chapter").ifBlank { "Chapter" },
             order = json.optInt("order", 0),
+            imageUrl = json.firstString("imageUrl", "imageURL", "image"),
         )
     }
 }
@@ -120,6 +153,9 @@ data class NativeClassItem(
     val sourceUrl: String,
     val downloadUrl: String,
     val teacherName: String,
+    val imageUrl: String = "",
+    val teacherImageUrl: String = "",
+    val resourceLinks: List<NativeResourceLink> = emptyList(),
 ) {
     companion object {
         fun from(json: JSONObject) = NativeClassItem(
@@ -131,7 +167,6 @@ data class NativeClassItem(
             chapters = json.stringList("chapter", "chapters"),
             order = json.optInt("order", 0),
             duration = json.optString("duration"),
-            // Prefer the site's streaming source for normal online playback.
             sourceUrl = json.firstString(
                 "hlsLink",
                 "videoURL",
@@ -141,7 +176,6 @@ data class NativeClassItem(
                 "driveLink",
                 "dailymotionLink",
             ),
-            // Prefer sources that can be turned into an encrypted progressive offline copy.
             downloadUrl = json.firstString(
                 "youtubeLink",
                 "rumbleLink",
@@ -154,6 +188,9 @@ data class NativeClassItem(
             teacherName = json.stringList("teacherName").joinToString(", ").ifBlank {
                 json.optString("teacherName")
             },
+            imageUrl = json.firstString("imageURL", "imageUrl", "image"),
+            teacherImageUrl = json.firstString("teacherImageURL", "teacherImageUrl"),
+            resourceLinks = json.resourceLinks(),
         )
     }
 }
@@ -180,6 +217,8 @@ data class NativeUserProfile(
     val banned: Boolean,
     val permanentBan: Boolean,
     val banExpiresAt: Long,
+    val photoUrl: String = "",
+    val deviceCount: Int = 0,
 ) {
     fun restrictionMessage(now: Long = System.currentTimeMillis()): String? {
         if (permanentBan) return "This account is permanently restricted. Please contact support."
@@ -197,6 +236,8 @@ data class NativeUserProfile(
             banned = json?.optBoolean("banned", false) ?: false,
             permanentBan = json?.optBoolean("permanentBan", false) ?: false,
             banExpiresAt = json?.millis("banExpiresAt") ?: 0L,
+            photoUrl = json?.firstString("photoURL", "photoUrl", "avatar") ?: "",
+            deviceCount = json?.optJSONArray("devices")?.length() ?: 0,
         )
     }
 }
