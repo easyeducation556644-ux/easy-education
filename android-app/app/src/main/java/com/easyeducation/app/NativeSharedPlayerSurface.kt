@@ -22,7 +22,10 @@ object NativeSharedPlayerSurface {
     fun obtain(context: Context): YoutubeStylePlayerView {
         val activity = context.findActivity()
         val current = surface
-        if (current != null && (activity == null || hostActivity === activity)) return current
+        if (current != null && (activity == null || hostActivity === activity)) {
+            setMiniPresentation(current, false)
+            return current
+        }
 
         surface?.let { old ->
             (old.parent as? ViewGroup)?.removeView(old)
@@ -38,6 +41,7 @@ object NativeSharedPlayerSurface {
     fun detach(): YoutubeStylePlayerView? {
         val current = surface ?: return null
         (current.parent as? ViewGroup)?.removeView(current)
+        setMiniPresentation(current, false)
         return current
     }
 
