@@ -7,19 +7,20 @@ import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.media3.common.util.UnstableApi
 import kotlin.math.abs
 
 /**
- * Observes the same surface gesture that YoutubeStylePlayerView consumes and applies a subtle
- * transform to the whole Compose watch-page host. This gives drag-to-mini the page-level motion
- * instead of moving only the video rectangle. The child player still owns the actual gesture,
- * seeking, double-tap and minimize commit.
+ * Inline host for the one shared YoutubeStylePlayerView. The view itself is not recreated when the
+ * player moves to fullscreen/mini; it is reparented back into this host. The host also mirrors the
+ * watch-page motion during drag-to-mini so the whole page participates in the gesture.
  */
 @UnstableApi
 class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
-    val playerSurface = YoutubeStylePlayerView(context)
+    var playerSurface: YoutubeStylePlayerView = NativeSharedPlayerSurface.obtain(context)
+        private set
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var downX = 0f
@@ -31,10 +32,19 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     init {
         clipChildren = false
         clipToPadding = false
-        addView(
-            playerSurface,
-            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT),
-        )
+        attachSharedSurface(playerSurface)
+    }
+
+    fun attachSharedSurface(surface: YoutubeStylePlayerView = NativeSharedPlayerSurface.obtain(context)): YoutubeStylePlayerView {
+        if (playerSurface !== surface || surface.parent !== this) {
+            (surface.parent as? ViewGroup)?.removeView(surface)
+            playerSurface = surface
+            surface.animate().cancel()
+            resetSurfaceTransform(surface)
+            addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        }
+        surface.bringToFront()
+        return surface
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -80,7 +90,6 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         }
     }
 
-    /** Keep known control bands out of the page-level observer; the player handles them normally. */
     private fun isSurfaceZone(x: Float, y: Float): Boolean {
         if (width <= 0 || height <= 0) return true
         if (y <= dp(66) || y >= height - dp(82)) return false
@@ -116,9 +125,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             .translationY(dp(48).toFloat())
             .alpha(0.58f)
             .setDuration(155L)
-            .withEndAction {
-                postDelayed({ resetPageImmediately(page) }, 105L)
-            }
+            .withEndAction { postDelayed({ resetPageImmediately(page) }, 105L) }
             .start()
     }
 
@@ -145,11 +152,21 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         page.alpha = 1f
     }
 
-    fun resetPagePresentation() {
-        composePageRoot()?.let(::resetPageImmediately)
+    private fun resetSurfaceTransform(surface: View) {
+        surface.pivotX = surface.width / 2f
+        surface.pivotY = surface.height / 2f
+        surface.scaleX = 1f
+        surface.scaleY = 1f
+        surface.translationX = 0f
+        surface.translationY = 0f
+        surface.alpha = 1f
     }
 
-    /** Includes the player's current translation/scale when Android can report the transformed rect. */
+    fun resetPagePresentation() {
+        composePageRoot()?.let(::resetPageImmediately)
+        resetSurfaceTransform(playerSurface)
+    }
+
     fun globalBounds(): Rect {
         val transformed = Rect()
         if (playerSurface.getGlobalVisibleRect(transformed) && !transformed.isEmpty) return transformed
