@@ -19,8 +19,12 @@ import kotlin.math.hypot
 /**
  * Inline host for the one shared YoutubeStylePlayerView. Once a vertical drag crosses touch slop,
  * this host takes ownership from the player, reparents the same visual player into a top-level drag
- * shell, and leaves the watch page behind it. This reproduces the separate floating-video/background
- * layers used by YouTube's watch/miniplayer transition instead of scaling the whole page together.
+ * shell, and leaves the watch page behind it.
+ *
+ * Important: every touch that starts inside the video is eligible for presentation drag. We do not
+ * intercept a normal tap or horizontal seek; interception starts only after a real vertical move
+ * crosses touch slop. The previous static top/bottom/center exclusions left large parts of the video
+ * on the child's old minimize path, so the new floating-reparent transition often never ran.
  */
 @UnstableApi
 class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
@@ -300,11 +304,9 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     }
 
     private fun isSurfaceZone(x: Float, y: Float): Boolean {
-        if (width <= 0 || height <= 0) return true
-        if (y <= dp(66) || y >= height - dp(82)) return false
-        val centerBand = abs(y - height / 2f) <= dp(48)
-        val centerControls = centerBand && abs(x - width / 2f) <= dp(132)
-        return !centerControls
+        // The host itself is exactly the inline video bounds. Every DOWN inside it is eligible;
+        // taps still go to the child because we intercept only after a vertical move crosses slop.
+        return x >= 0f && x <= width.toFloat() && y >= 0f && y <= height.toFloat()
     }
 
     private fun roundedBlack(radius: Float) = GradientDrawable().apply {
