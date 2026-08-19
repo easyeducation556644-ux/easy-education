@@ -39,24 +39,34 @@ export async function getUserIP() {
   }
 }
 
-export function getDeviceName() {
-  const ua = navigator.userAgent
-  const platform = navigator.platform
+function getAndroidModel(ua) {
+  const match = String(ua || '').match(
+    /Android\s+[\d.]+;\s*(?:[a-z]{2}(?:[-_][A-Z]{2})?;\s*)?([^;)]+?)(?:\s+Build\/|;\s*wv\)|\))/i,
+  )
+  const model = match?.[1]?.trim().replace(/\s+/g, ' ')
+  if (!model || /^(mobile|tablet|wv|android)$/i.test(model)) return null
+  return model
+}
+
+export function getDeviceName(userAgent = navigator.userAgent, platformValue = navigator.platform) {
+  const ua = String(userAgent || '')
+  const platform = String(platformValue || '')
+  const androidModel = getAndroidModel(ua)
   
-  if (navigator.userAgentData && navigator.userAgentData.platform) {
+  if (navigator.userAgentData && navigator.userAgentData.platform && ua === navigator.userAgent) {
     const uaPlatform = navigator.userAgentData.platform.toLowerCase()
-    if (uaPlatform === 'android') return 'Android'
+    if (uaPlatform === 'android') return androidModel ? `Android · ${androidModel}` : 'Android'
     if (uaPlatform === 'ios') return 'iOS'
     if (uaPlatform.includes('win')) return 'Windows'
     if (uaPlatform.includes('mac')) return 'MacOS'
     if (uaPlatform.includes('linux')) {
-      if (navigator.userAgentData.mobile) return 'Android'
+      if (navigator.userAgentData.mobile) return androidModel ? `Android · ${androidModel}` : 'Android'
       return 'Linux Desktop'
     }
   }
   
   if (/Android|Adr|Silk|Kindle|KF[A-Z]+/i.test(ua)) {
-    return 'Android'
+    return androidModel ? `Android · ${androidModel}` : 'Android'
   }
   if (/iPad|iPhone|iPod/i.test(ua) && !window.MSStream) {
     return 'iOS'
@@ -75,22 +85,22 @@ export function getDeviceName() {
   }
   if (/Linux/i.test(platform)) {
     if (/mobile|tablet/i.test(ua)) {
-      return 'Android'
+      return androidModel ? `Android · ${androidModel}` : 'Android'
     }
     
     if (/arm64|aarch64|armv8l|armv7l|arm/i.test(ua + platform)) {
-      return 'Android'
+      return androidModel ? `Android · ${androidModel}` : 'Android'
     }
     
     if (/(wv|\.0\.0\.0)/.test(ua)) {
-      return 'Android'
+      return androidModel ? `Android · ${androidModel}` : 'Android'
     }
     
     if (/X11|Ubuntu|Fedora|Debian|GNOME|KDE|x86_64|i686/i.test(ua + platform)) {
       return 'Linux Desktop'
     }
     
-    return 'Android'
+    return androidModel ? `Android · ${androidModel}` : 'Android'
   }
   
   return 'Unknown'
