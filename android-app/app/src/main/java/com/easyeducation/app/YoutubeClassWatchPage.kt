@@ -218,6 +218,11 @@ fun YoutubeClassWatchPage(
                 },
                 onBack = { nav.popBackStack() },
                 onMinimize = { nav.popBackStack() },
+                onExpandFromMini = {
+                    nav.navigate("class/$courseId/$classId") {
+                        launchSingleTop = true
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
         }
