@@ -21,16 +21,19 @@ object NativeSharedPlayerSurface {
     @Synchronized
     fun obtain(context: Context): YoutubeStylePlayerView {
         val activity = context.findActivity()
+        val exo = PersistentNativePlayer.player(context.applicationContext)
         val current = surface
         if (current != null && (activity == null || hostActivity === activity)) {
             setMiniPresentation(current, false)
             YoutubeExactPlayerIcons.apply(current, fullscreen = false)
-            YoutubeExactPlayPauseFrames.bind(current, PersistentNativePlayer.player(context.applicationContext))
+            YoutubeExactPlayPauseFrames.bind(current, exo)
+            current.post { YoutubeReparentableTextureSurface.ensure(current, exo) }
             return current
         }
 
         surface?.let { old ->
             YoutubeExactPlayPauseFrames.unbind(old)
+            YoutubeReparentableTextureSurface.release(old)
             (old.parent as? ViewGroup)?.removeView(old)
             old.bindPlayer(null)
         }
@@ -38,7 +41,10 @@ object NativeSharedPlayerSurface {
             hostActivity = activity
             surface = created
             YoutubeExactPlayerIcons.apply(created, fullscreen = false)
-            YoutubeExactPlayPauseFrames.bind(created, PersistentNativePlayer.player(context.applicationContext))
+            YoutubeExactPlayPauseFrames.bind(created, exo)
+            // Run after the inline binding in this UI frame so Media3's default SurfaceView cannot
+            // overwrite the retained TextureView decoder output.
+            created.post { YoutubeReparentableTextureSurface.ensure(created, exo) }
         }
     }
 
@@ -78,6 +84,7 @@ object NativeSharedPlayerSurface {
     fun clear() {
         surface?.let { current ->
             YoutubeExactPlayPauseFrames.unbind(current)
+            YoutubeReparentableTextureSurface.release(current)
             (current.parent as? ViewGroup)?.removeView(current)
             current.bindPlayer(null)
         }
