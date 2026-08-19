@@ -177,7 +177,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile.restrictionMessage() != null) {
                     return@runCatching Triple(profile, emptyList<NativeCourse>(), profile.restrictionMessage())
                 }
-                val courses = repository.ensureEnrollments(uid)
+                // Always validate enrollments against the server while online. The previous
+                // primed-cache shortcut could miss a just-completed web checkout when the sync
+                // event was delayed or skipped, leaving "Adding course to your app…" looping and
+                // the newly purchased course absent even after an app restart.
+                val courses = repository.refreshEnrollments(uid)
                 repository.syncChangedOnly(uid)
                 val finalCourses = repository.cachedCourses(uid)
                 Triple(profile, if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses, null)
