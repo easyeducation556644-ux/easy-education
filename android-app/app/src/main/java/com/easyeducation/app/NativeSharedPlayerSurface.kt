@@ -3,6 +3,7 @@ package com.easyeducation.app
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.view.View
 import android.view.ViewGroup
 import androidx.media3.common.util.UnstableApi
 
@@ -42,6 +43,26 @@ object NativeSharedPlayerSurface {
 
     @Synchronized
     fun current(): YoutubeStylePlayerView? = surface
+
+    /** The shared view's first child is video and the later children are our own chrome/hints. */
+    fun setMiniPresentation(surface: YoutubeStylePlayerView, mini: Boolean) {
+        surface.setFullscreenPresentation(false)
+        if (mini) {
+            for (index in 1 until surface.childCount) surface.getChildAt(index).visibility = View.GONE
+        } else {
+            if (surface.childCount > 1) surface.getChildAt(1).visibility = View.VISIBLE
+            for (index in 2 until surface.childCount) surface.getChildAt(index).visibility = View.INVISIBLE
+        }
+        surface.animate().cancel()
+        surface.scaleX = 1f
+        surface.scaleY = 1f
+        surface.translationX = 0f
+        surface.translationY = 0f
+        surface.alpha = 1f
+        surface.elevation = 0f
+        surface.clipToOutline = false
+        surface.background = null
+    }
 
     @Synchronized
     fun clear() {
