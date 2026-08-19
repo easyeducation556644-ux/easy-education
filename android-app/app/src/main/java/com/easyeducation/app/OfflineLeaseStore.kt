@@ -17,6 +17,16 @@ class OfflineLeaseStore(context: Context) {
         editor.apply()
     }
 
+    fun grant(uid: String, courseId: String, now: Long = System.currentTimeMillis()) {
+        if (uid.isBlank() || courseId.isBlank()) return
+        prefs.edit().putLong("$uid:$courseId", now + LEASE_MS).apply()
+    }
+
+    fun revoke(uid: String, courseId: String) {
+        if (uid.isBlank() || courseId.isBlank()) return
+        prefs.edit().remove("$uid:$courseId").apply()
+    }
+
     fun isValid(uid: String, courseId: String, now: Long = System.currentTimeMillis()): Boolean =
         uid.isNotBlank() && courseId.isNotBlank() && prefs.getLong("$uid:$courseId", 0L) > now
 
