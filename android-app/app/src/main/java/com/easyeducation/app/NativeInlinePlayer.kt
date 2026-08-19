@@ -121,6 +121,10 @@ fun NativeInlinePlayer(
         onMinimize?.invoke()
     }
 
+    // The same ExoPlayer is now rendering in the persistent overlay. Removing this slot makes the
+    // watch page collapse upward instead of leaving a black 16:9 hole behind.
+    if (handedToMini) return
+
     Box(
         modifier
             .fillMaxWidth()
@@ -148,7 +152,7 @@ fun NativeInlinePlayer(
                 }
             },
             update = { view ->
-                view.bindPlayer(if (handedToMini) null else exoPlayer)
+                view.bindPlayer(exoPlayer)
                 view.setTitle(title)
                 view.setLoading(loading)
                 view.onMinimize = { minimizePlayer() }
