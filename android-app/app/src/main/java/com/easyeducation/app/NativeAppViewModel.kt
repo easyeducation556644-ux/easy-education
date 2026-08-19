@@ -89,11 +89,15 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     private fun updateNetwork() {
         val online = isOnlineNow()
         val wasOffline = !_state.value.online
-        _state.value = _state.value.copy(
-            online = online,
-            onWifi = DownloadPreferences.isWifi(getApplication()),
-        )
-        if (online && wasOffline) auth.currentUser?.uid?.let(::refreshOnline)
+        val wasOnWifi = _state.value.onWifi
+        val onWifi = DownloadPreferences.isWifi(getApplication())
+        _state.value = _state.value.copy(online = online, onWifi = onWifi)
+        if (online && wasOffline) {
+            auth.currentUser?.uid?.let(::refreshOnline)
+            SecureDownloadCoordinator.resumePending(getApplication())
+        } else if (online && !wasOnWifi && onWifi && _state.value.wifiOnlyDownloads) {
+            SecureDownloadCoordinator.resumePending(getApplication())
+        }
     }
 
     private fun isOnlineNow(): Boolean {
@@ -287,8 +291,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             expectedBytes = option.sizeBytes,
             sizeEstimated = option.estimated,
             downloadedBytes = existing?.takeIf { sameSource && it.state != "completed" }?.downloadedBytes ?: 0,
-            totalBytes = existing?.takeIf { sameSource && it.state != "completed" }?.totalBytes
-                ?: option.sizeBytes,
+            totalBytes = existing?.takeIf { sameSource && it.state != "completed" }?.totalBytes ?: option.sizeBytes,
             chunkCount = existing?.takeIf { sameSource && it.state != "completed" }?.chunkCount ?: 0,
             state = "queued",
             phase = "preparing",
@@ -324,6 +327,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     fun setWifiOnlyDownloads(enabled: Boolean) {
         DownloadPreferences.setWifiOnly(getApplication(), enabled)
         _state.value = _state.value.copy(wifiOnlyDownloads = enabled)
+        if (!enabled && _state.value.online) SecureDownloadCoordinator.resumePending(getApplication())
     }
 
     fun clearError() {
