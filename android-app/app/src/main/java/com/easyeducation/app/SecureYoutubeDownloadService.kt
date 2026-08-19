@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaMuxer
+import android.net.Uri
 import android.os.IBinder
 import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
@@ -234,6 +235,12 @@ class SecureYoutubeDownloadService : Service() {
         }
     }
 
+    /**
+     * GoogleVideo adaptive URLs are short-lived and some CDN nodes reject an unbounded
+     * `Range: bytes=N-` request even though a small probe succeeds. Download in bounded
+     * chunks and transparently re-resolve the selected quality on 403/410 so long HD/UHD
+     * downloads can continue without throwing away already downloaded bytes.
+     */
     private fun downloadStream(
         task: SecureDownloadTask,
         generation: Long,
@@ -244,60 +251,144 @@ class SecureYoutubeDownloadService : Service() {
         stageStart: Int,
         stageEnd: Int,
     ): SecureDownloadTask {
-        require(format.contentLength > 0L) { "YouTube stream size is unavailable" }
-        if (target.length() > format.contentLength) target.delete()
+        var activeFormat = format
+        require(activeFormat.contentLength > 0L) { "YouTube stream size is unavailable" }
+        if (target.length() > activeFormat.contentLength) target.delete()
         var offset = target.length()
         var current = task
-        if (offset == format.contentLength) return current
+        var refreshAttempts = 0
 
-        val request = Request.Builder()
-            .url(format.url)
-            .header("Range", "bytes=$offset-")
-            .header("User-Agent", YoutubeDeviceResolver.DOWNLOAD_USER_AGENT)
-            .get()
-            .build()
+        while (offset < activeFormat.contentLength) {
+            ensureRunning(task.id, generation)
+            val start = offset
+            val end = minOf(
+                activeFormat.contentLength - 1L,
+                start + YOUTUBE_RANGE_BYTES - 1L,
+            )
+            val request = Request.Builder()
+                .url(activeFormat.url)
+                .header("Range", "bytes=$start-$end")
+                .header("User-Agent", streamUserAgent(activeFormat.url))
+                .header("Accept-Encoding", "identity")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .get()
+                .build()
 
-        DownloadRuntime.execute(task.id, http.newCall(request)) { response ->
-            if (response.code !in setOf(200, 206)) {
-                error("YouTube stream returned HTTP ${response.code}. Retry to refresh the media URL.")
-            }
-            if (offset > 0L && response.code != 206) {
-                target.delete()
-                error("YouTube did not honor resume. Retry the download from the beginning.")
-            }
-            val body = response.body ?: error("YouTube stream response was empty")
-            FileOutputStream(target, offset > 0L).use { output ->
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(STREAM_BUFFER_BYTES)
-                    while (true) {
-                        ensureRunning(task.id, generation)
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        offset += count
-                        val transferred = (alreadyTransferred + offset).coerceAtMost(totalTransfer)
-                        val fraction = if (totalTransfer > 0L) transferred.toDouble() / totalTransfer.toDouble() else 0.0
-                        val stage = (stageStart + ((stageEnd - stageStart) * fraction)).toInt().coerceIn(stageStart, stageEnd)
-                        current = current.copy(
-                            state = "downloading",
-                            phase = "downloading",
-                            phaseProgress = stage,
-                            downloadedBytes = transferred,
-                            totalBytes = totalTransfer,
-                            error = null,
-                        )
-                        saveIfCurrent(current, generation)
-                        notifier.updateProgress(current)
+            try {
+                DownloadRuntime.execute(task.id, http.newCall(request)) { response ->
+                    if (response.code == 403 || response.code == 410) {
+                        throw RefreshableYoutubeUrl(response.code)
                     }
-                    output.flush()
+                    if (response.code != 206) {
+                        error("YouTube stream returned HTTP ${response.code}. Retry to refresh the media URL.")
+                    }
+
+                    val contentRange = response.header("Content-Range").orEmpty()
+                    require(contentRange.startsWith("bytes $start-$end/")) {
+                        "YouTube returned the wrong byte range"
+                    }
+                    val expected = end - start + 1L
+                    response.header("Content-Length")?.toLongOrNull()?.let { declared ->
+                        require(declared == expected) {
+                            "YouTube returned the wrong chunk size"
+                        }
+                    }
+
+                    val body = response.body ?: error("YouTube stream response was empty")
+                    var written = 0L
+                    FileOutputStream(target, true).use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(STREAM_BUFFER_BYTES)
+                            while (written < expected) {
+                                ensureRunning(task.id, generation)
+                                val allowed = minOf(buffer.size.toLong(), expected - written).toInt()
+                                val count = input.read(buffer, 0, allowed)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                written += count
+
+                                val absoluteOffset = start + written
+                                val transferred = (alreadyTransferred + absoluteOffset).coerceAtMost(totalTransfer)
+                                val fraction = if (totalTransfer > 0L) {
+                                    transferred.toDouble() / totalTransfer.toDouble()
+                                } else 0.0
+                                val stage = (stageStart + ((stageEnd - stageStart) * fraction))
+                                    .toInt()
+                                    .coerceIn(stageStart, stageEnd)
+                                current = current.copy(
+                                    state = "downloading",
+                                    phase = "downloading",
+                                    phaseProgress = stage,
+                                    downloadedBytes = transferred,
+                                    totalBytes = totalTransfer,
+                                    error = null,
+                                )
+                                saveIfCurrent(current, generation)
+                                notifier.updateProgress(current)
+                            }
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    }
+                    require(written == expected) {
+                        "YouTube stream chunk was incomplete ($written/$expected bytes)"
+                    }
                 }
+                offset = target.length()
+                refreshAttempts = 0
+            } catch (refresh: RefreshableYoutubeUrl) {
+                if (refreshAttempts >= MAX_MEDIA_URL_REFRESHES) {
+                    error("YouTube media URL was rejected repeatedly (HTTP ${refresh.code}). Retry the download.")
+                }
+                refreshAttempts += 1
+                val refreshed = refreshFormat(task, activeFormat)
+                if (
+                    refreshed.itag != activeFormat.itag ||
+                    refreshed.contentLength != activeFormat.contentLength
+                ) {
+                    // Never concatenate bytes from two different YouTube itags/files.
+                    target.delete()
+                    offset = 0L
+                    current = current.copy(
+                        downloadedBytes = alreadyTransferred,
+                        phaseProgress = stageStart,
+                    )
+                    saveIfCurrent(current, generation)
+                }
+                activeFormat = refreshed
             }
         }
+
         ensureRunning(task.id, generation)
-        require(target.length() == format.contentLength) {
-            "YouTube stream was incomplete (${target.length()}/${format.contentLength} bytes)"
+        require(target.length() == activeFormat.contentLength) {
+            "YouTube stream was incomplete (${target.length()}/${activeFormat.contentLength} bytes)"
         }
         return current
+    }
+
+    private fun refreshFormat(
+        task: SecureDownloadTask,
+        previous: YoutubeDeviceResolver.Format,
+    ): YoutubeDeviceResolver.Format {
+        val (_, refreshedVariant) = YoutubeDeviceResolver(http).pickVariant(task.sourceUrl, task.height)
+        val refreshed = when {
+            previous.hasVideo && previous.hasAudio -> refreshedVariant.progressive
+            previous.hasVideo -> refreshedVariant.video
+            previous.hasAudio -> refreshedVariant.audio
+            else -> null
+        } ?: error("The selected YouTube quality is no longer available. Choose a quality again.")
+        require(refreshed.contentLength > 0L) { "YouTube refreshed stream size is unavailable" }
+        return refreshed
+    }
+
+    private fun streamUserAgent(url: String): String {
+        val client = runCatching { Uri.parse(url).getQueryParameter("c") }
+            .getOrNull()
+            ?.uppercase()
+        return when (client) {
+            "IOS" -> IOS_STREAM_USER_AGENT
+            else -> YoutubeDeviceResolver.DOWNLOAD_USER_AGENT
+        }
     }
 
     private fun muxAdaptive(videoFile: File, audioFile: File, output: File, container: String) {
@@ -382,15 +473,20 @@ class SecureYoutubeDownloadService : Service() {
 
     private class DownloadPaused : Exception()
     private class DownloadStopped : Exception()
+    private class RefreshableYoutubeUrl(val code: Int) : Exception()
 
     companion object {
         private const val STREAM_BUFFER_BYTES = 64 * 1024
+        private const val YOUTUBE_RANGE_BYTES = 4L * 1024L * 1024L
+        private const val MAX_MEDIA_URL_REFRESHES = 2
         private const val MAX_SAMPLE_BYTES = 16 * 1024 * 1024
         private const val PROGRESSIVE_PART = "youtube-progressive.part"
         private const val VIDEO_PART = "youtube-video.part"
         private const val AUDIO_PART = "youtube-audio.part"
         private const val MUXED_FILE = "youtube-merged.mp4"
         private const val MUXED_WEBM = "youtube-merged.webm"
+        private const val IOS_STREAM_USER_AGENT =
+            "com.google.ios.youtube/21.03.2 (iPhone16,2; U; CPU iOS 18_7_2 like Mac OS X; en_US)"
 
         fun tempDir(context: Context, id: String): File =
             File(context.cacheDir, "secure_youtube/${SecureMediaStore.safe(id)}")
