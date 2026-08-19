@@ -2,9 +2,17 @@
 
 package com.easyeducation.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
@@ -34,9 +42,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
@@ -64,12 +76,15 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -78,9 +93,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -90,6 +108,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import coil.compose.AsyncImage
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.ceil
 
 private data class V2BottomItem(
     val route: String,
@@ -106,6 +128,7 @@ private val v2BottomItems = listOf(
 private val V2Pill = RoundedCornerShape(999.dp)
 private const val WEB_ORIGIN = "https://easy-education.vercel.app"
 private const val CLASS_ROUTE = "class/{courseId}/{classId}"
+private const val PAST_CLASS_PAGE_SIZE = 5
 
 @Composable
 fun EasyEducationNativeAppV2(
@@ -127,7 +150,7 @@ fun EasyEducationNativeAppV2(
                 state.user == null -> V2LoginScreen(state.online, loginBusy, onGoogleSignIn)
                 else -> {
                     val nav = rememberNavController()
-                    val startRoute = if (initialPath == "/downloads") "downloads" else "home"
+                    val startRoute = nativeStartRoute(initialPath)
                     val backStack by nav.currentBackStackEntryAsState()
                     val currentRoute = backStack?.destination?.route.orEmpty()
                     val isWatchRoute = currentRoute.startsWith("class/")
@@ -189,7 +212,21 @@ fun EasyEducationNativeAppV2(
 }
 
 private fun String.inCourseRoutes(): Boolean =
-    startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/")
+    startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
+        startsWith("past-classes")
+
+private fun nativeStartRoute(initialPath: String?): String {
+    val path = initialPath?.trim().orEmpty()
+    if (path.isBlank()) return "home"
+    val segments = runCatching { Uri.parse(path).pathSegments }.getOrDefault(emptyList())
+    return when {
+        path == "/downloads" || segments.firstOrNull() == "downloads" -> "downloads"
+        segments.firstOrNull() == "my-courses" -> "courses"
+        segments.size >= 4 && segments[0] == "course" && segments[2] == "watch" ->
+            "class/${Uri.encode(segments[1])}/${Uri.encode(segments[3])}"
+        else -> "home"
+    }
+}
 
 @Composable
 private fun V2Splash() {
@@ -280,12 +317,20 @@ private fun V2NavHost(
         startDestination = startRoute,
         modifier = Modifier.fillMaxSize(),
         enterTransition = {
-            fadeIn(animationSpec = tween(170)) +
-                slideInHorizontally(animationSpec = tween(220)) { fullWidth -> fullWidth / 16 }
+            if (targetState.destination.route == CLASS_ROUTE) {
+                EnterTransition.None
+            } else {
+                fadeIn(animationSpec = tween(170)) +
+                    slideInHorizontally(animationSpec = tween(220)) { fullWidth -> fullWidth / 16 }
+            }
         },
         exitTransition = {
-            fadeOut(animationSpec = tween(120)) +
-                slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> -fullWidth / 30 }
+            if (targetState.destination.route == CLASS_ROUTE) {
+                ExitTransition.None
+            } else {
+                fadeOut(animationSpec = tween(120)) +
+                    slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> -fullWidth / 30 }
+            }
         },
         popEnterTransition = {
             if (initialState.destination.route == CLASS_ROUTE) {
@@ -307,7 +352,20 @@ private fun V2NavHost(
         composable("home") { V2Home(nav, viewModel, state) }
         composable("courses") { V2Courses(nav, state) }
         composable("downloads") { V2Downloads(viewModel, state) }
-        composable("profile") { V2Profile(viewModel, state, themeMode, onThemeMode, activeDeviceCount) }
+        composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDeviceCount) }
+        composable("past-classes") { V2PastCourses(nav, viewModel, state) }
+        composable(
+            "past-classes/{courseId}",
+            listOf(navArgument("courseId") { type = NavType.StringType }),
+        ) { entry ->
+            V2PastClassPage(
+                nav = nav,
+                viewModel = viewModel,
+                state = state,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+            )
+        }
+        composable("add-course") { V2AddCourse(nav, state) }
         composable("course/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->
             V2Course(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty())
         }
@@ -352,44 +410,180 @@ private fun V2NavHost(
 private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState) {
     val context = LocalContext.current
     val ready = state.downloads.count { it.state == "completed" }
+    LaunchedEffect(state.courses.map { it.id }) {
+        // Prime summary cards from SQLite first. NativeRepository only reaches Firestore when a
+        // course has never been cached, so Home stays cheap and remains useful offline.
+        state.courses.take(4).forEach { course -> viewModel.loadCourse(course.id) }
+    }
+    val cachedClasses = state.courseContent.values
+        .flatMap { it.classes }
+        .distinctBy { it.id }
+    val latestClasses = cachedClasses
+        .filter { it.courseId.isNotBlank() }
+        .sortedWith(compareByDescending<NativeClassItem> { it.publishedAt }.thenByDescending { it.order })
+        .take(3)
+
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
         item {
-            Text("Hi ${state.profile?.name?.substringBefore(' ')?.ifBlank { "Student" } ?: "Student"}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Continue where you left off.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Hi ${state.profile?.name?.substringBefore(' ')?.ifBlank { "Student" } ?: "Student"}",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("Your learning space", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = if (state.online) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Icon(
+                        if (state.online) Icons.Default.CheckCircle else Icons.Default.CloudOff,
+                        if (state.online) "Online" else "Offline",
+                        Modifier.padding(11.dp).size(22.dp),
+                        tint = if (state.online) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                shape = RoundedCornerShape(24.dp),
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Learning summary", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (state.online) "Synced learning, ready when you are" else "Cached learning is still available",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.76f),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        V2SummaryMetric("Courses", state.courses.size.toString(), Modifier.weight(1f))
+                        V2SummaryMetric("Classes", cachedClasses.size.toString(), Modifier.weight(1f))
+                        V2SummaryMetric("Offline", ready.toString(), Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+        item { V2Section("Quick access") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                V2Stat("My courses", state.courses.size.toString(), Modifier.weight(1f))
-                V2Stat("Offline ready", ready.toString(), Modifier.weight(1f))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    V2DashboardAction(
+                        title = "Past classes",
+                        subtitle = "Latest lessons, 5 per page",
+                        icon = Icons.Default.History,
+                        height = 154.dp,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ) { nav.navigate("past-classes") }
+                    V2DashboardAction(
+                        title = "Downloads",
+                        subtitle = "$ready ready offline",
+                        icon = Icons.Default.Download,
+                        height = 112.dp,
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ) { nav.navigate("downloads") }
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    V2DashboardAction(
+                        title = "My courses",
+                        subtitle = "${state.courses.size} enrolled",
+                        icon = Icons.Default.School,
+                        height = 112.dp,
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ) { nav.navigate("courses") }
+                    V2DashboardAction(
+                        title = "Add course",
+                        subtitle = if (state.online) "Browse & buy inside the app" else "Connect to browse courses",
+                        icon = Icons.Default.Add,
+                        height = 154.dp,
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    ) { nav.navigate("add-course") }
+                }
             }
         }
-        item {
-            Button(onClick = { nav.navigate("courses") }, modifier = Modifier.fillMaxWidth(), shape = V2Pill) {
-                Icon(Icons.Default.School, null); Spacer(Modifier.width(8.dp)); Text("Open My Courses")
+        if (latestClasses.isNotEmpty()) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    V2Section("Latest in your courses")
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { nav.navigate("past-classes") }) { Text("See all") }
+                }
+            }
+            items(latestClasses, key = { "home-latest-${it.id}" }) { classItem ->
+                V2ClassRow(classItem) { openClass(context, nav, classItem.courseId, classItem.id) }
+            }
+        } else if (state.courses.isNotEmpty()) {
+            item {
+                V2OutlinedCard {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.VideoLibrary, null)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Open Past classes to load your latest cached lessons.", Modifier.weight(1f))
+                    }
+                }
             }
         }
-        item {
-            OutlinedButton(onClick = { openWeb(context, "$WEB_ORIGIN/courses") }, modifier = Modifier.fillMaxWidth(), shape = V2Pill) {
-                Icon(Icons.Default.Language, null); Spacer(Modifier.width(8.dp)); Text("Browse & buy courses")
+        if (state.online) {
+            item {
+                TextButton(onClick = { viewModel.refreshOnline() }) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (state.syncing) "Syncing…" else "Sync learning data")
+                }
             }
-            Text(
-                "Purchases are securely managed on the Easy Education website. Return here and tap Sync after enrollment.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-        }
-        if (state.online) item {
-            TextButton(onClick = { viewModel.refreshOnline() }) {
-                Icon(Icons.Default.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Sync now")
-            }
-        }
-        if (state.courses.isNotEmpty()) {
-            item { V2Section("Continue learning") }
-            items(state.courses.take(4), key = { it.id }) { course -> V2CourseCard(course) { nav.navigate("course/${course.id}") } }
         }
         item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun V2SummaryMetric(label: String, value: String, modifier: Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(14.dp), color = Color.White.copy(alpha = 0.20f)) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 11.dp)) {
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun V2DashboardAction(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    height: Dp,
+    containerColor: Color,
+    contentColor: Color,
+    onClick: () -> Unit,
+) {
+    Card(
+        Modifier.fillMaxWidth().height(height).clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = containerColor, contentColor = contentColor),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(Modifier.fillMaxSize().padding(15.dp)) {
+            Surface(shape = RoundedCornerShape(13.dp), color = contentColor.copy(alpha = 0.10f)) {
+                Icon(icon, null, Modifier.padding(9.dp).size(23.dp), tint = contentColor)
+            }
+            Spacer(Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = contentColor.copy(alpha = 0.72f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -405,7 +599,6 @@ private fun V2Stat(label: String, value: String, modifier: Modifier) {
 
 @Composable
 private fun V2Courses(nav: NavHostController, state: NativeUiState) {
-    val context = LocalContext.current
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
         item {
@@ -414,7 +607,7 @@ private fun V2Courses(nav: NavHostController, state: NativeUiState) {
                     Text("My Courses", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Enrolled courses", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                TextButton(onClick = { openWeb(context, "$WEB_ORIGIN/courses") }) { Text("Buy courses") }
+                TextButton(onClick = { nav.navigate("add-course") }) { Text("Add course") }
             }
         }
         if (state.courses.isEmpty()) {
@@ -423,12 +616,307 @@ private fun V2Courses(nav: NavHostController, state: NativeUiState) {
                     Column(Modifier.padding(18.dp)) {
                         Text("No enrolled course is synced yet.", fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
-                        Button(onClick = { openWeb(context, "$WEB_ORIGIN/courses") }, shape = V2Pill) { Text("Browse courses") }
+                        Button(onClick = { nav.navigate("add-course") }, shape = V2Pill) { Text("Browse courses") }
                     }
                 }
             }
         } else items(state.courses, key = { it.id }) { course -> V2CourseCard(course) { nav.navigate("course/${course.id}") } }
         item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun V2PastCourses(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState) {
+    LaunchedEffect(state.courses.isEmpty(), state.online) {
+        if (state.courses.isEmpty() && state.online) viewModel.refreshOnline()
+    }
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, "Past classes") }
+        item {
+            V2OutlinedCard {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                        Icon(
+                            Icons.Default.History,
+                            null,
+                            Modifier.padding(11.dp).size(25.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("${state.courses.size} enrolled courses", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (state.online) "Cached courses appear first; missing content loads securely."
+                            else "Offline • only previously cached lessons are available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+        if (state.courses.isEmpty()) {
+            item {
+                V2Empty(
+                    if (state.online) "No enrolled course is available yet. Add a course, then sync again."
+                    else "No course is cached on this device. Connect once to load your enrollments.",
+                )
+            }
+            if (state.online) {
+                item { Button(onClick = { nav.navigate("add-course") }, shape = V2Pill) { Text("Add a course") } }
+            }
+        } else {
+            items(state.courses, key = { "past-course-${it.id}" }) { course ->
+                V2LearningRow(course.title, course.thumbnailUrl, Icons.Default.History) {
+                    viewModel.loadCourse(course.id)
+                    nav.navigate("past-classes/${course.id}")
+                }
+            }
+        }
+        if (state.online) {
+            item {
+                TextButton(onClick = { viewModel.refreshOnline() }) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (state.syncing) "Syncing…" else "Refresh enrollments")
+                }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun V2PastClassPage(
+    nav: NavHostController,
+    viewModel: NativeAppViewModel,
+    state: NativeUiState,
+    courseId: String,
+) {
+    val context = LocalContext.current
+    LaunchedEffect(courseId) { viewModel.loadCourse(courseId) }
+    val content = state.courseContent[courseId]
+    if (content == null) {
+        V2Loading("Loading cached classes…")
+        return
+    }
+
+    val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
+    val classes = content.classes.sortedWith(
+        compareByDescending<NativeClassItem> { it.publishedAt }
+            .thenByDescending { it.order }
+            .thenBy { it.title.lowercase() },
+    )
+    val pageCount = maxOf(1, ceil(classes.size / PAST_CLASS_PAGE_SIZE.toDouble()).toInt())
+    var page by rememberSaveable(courseId) { mutableIntStateOf(0) }
+    LaunchedEffect(pageCount) { page = page.coerceIn(0, pageCount - 1) }
+    val start = page * PAST_CLASS_PAGE_SIZE
+    val visible = classes.drop(start).take(PAST_CLASS_PAGE_SIZE)
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Past classes") }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Latest classes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${classes.size} lessons • 5 per page${if (!state.online) " • cached" else ""}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.online) {
+                    IconButton(onClick = { viewModel.loadCourse(courseId, force = true) }) {
+                        Icon(Icons.Default.Refresh, "Refresh classes")
+                    }
+                }
+            }
+        }
+        if (classes.isEmpty()) {
+            item {
+                V2Empty(
+                    if (state.online) "No class is available in this course yet."
+                    else "No class from this course is cached. Connect and retry.",
+                )
+            }
+        } else {
+            items(visible, key = { "past-class-${it.id}" }) { classItem ->
+                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+            }
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(
+                        onClick = { page -= 1 },
+                        enabled = page > 0,
+                        shape = V2Pill,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Previous") }
+                    Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Text(
+                            "${page + 1} / $pageCount",
+                            Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Button(
+                        onClick = { page += 1 },
+                        enabled = page < pageCount - 1,
+                        shape = V2Pill,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Next")
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Default.ArrowForward, null, Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
+    val context = LocalContext.current
+    var browser by remember { mutableStateOf<WebView?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var pageError by remember { mutableStateOf<String?>(null) }
+    var canGoBack by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = canGoBack) {
+        browser?.goBack()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            CookieManager.getInstance().flush()
+            browser?.apply {
+                stopLoading()
+                webViewClient = WebViewClient()
+                removeAllViews()
+                destroy()
+            }
+            browser = null
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            V2Back(nav, "Add course")
+        }
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { webContext ->
+                    CookieManager.getInstance().apply { setAcceptCookie(true) }
+                    WebView(webContext).apply {
+                        browser = this
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.allowFileAccess = false
+                        settings.allowContentAccess = false
+                        settings.mediaPlaybackRequiresUserGesture = true
+                        settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                        settings.userAgentString = "${settings.userAgentString} EasyEducationAndroid/2.10"
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                loading = true
+                                pageError = null
+                            }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                loading = false
+                                canGoBack = view?.canGoBack() == true
+                                CookieManager.getInstance().flush()
+                            }
+
+                            override fun onReceivedError(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                                error: WebResourceError?,
+                            ) {
+                                if (request?.isForMainFrame == true) {
+                                    loading = false
+                                    pageError = "Check your connection and try again."
+                                }
+                            }
+
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                val target = request?.url ?: return false
+                                val scheme = target.scheme.orEmpty().lowercase()
+                                if (scheme == "http" || scheme == "https") return false
+                                return runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, target))
+                                    true
+                                }.getOrDefault(true)
+                            }
+                        }
+                        if (state.online) loadUrl("$WEB_ORIGIN/courses")
+                    }
+                },
+                update = { webView ->
+                    if (state.online && webView.url.isNullOrBlank() && pageError == null) {
+                        webView.loadUrl("$WEB_ORIGIN/courses")
+                    }
+                },
+            )
+            when {
+                !state.online -> V2WebOffline(
+                    title = "No internet connection",
+                    message = "Connect to the internet to browse and buy a course. Your existing cached classes are still safe.",
+                    onRetry = { pageError = null; if (state.online) browser?.reload() },
+                )
+                pageError != null -> V2WebOffline(
+                    title = "Course store could not load",
+                    message = pageError.orEmpty(),
+                    onRetry = {
+                        pageError = null
+                        browser?.loadUrl("$WEB_ORIGIN/courses")
+                    },
+                )
+                loading -> LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+            }
+        }
+    }
+}
+
+@Composable
+private fun V2WebOffline(title: String, message: String, onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        V2OutlinedCard {
+            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Icon(Icons.Default.CloudOff, null, Modifier.padding(16.dp).size(34.dp))
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onRetry, shape = V2Pill) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Try again")
+                }
+            }
+        }
     }
 }
 
@@ -581,7 +1069,9 @@ private fun V2ClassRow(classItem: NativeClassItem, onClick: () -> Unit) {
             Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(classItem.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                val meta = listOf(classItem.teacherName, classItem.duration).filter { it.isNotBlank() }.joinToString(" • ")
+                val meta = listOf(classItem.teacherName, classItem.duration, classDateLabel(classItem.publishedAt))
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
                 if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (classItem.resourceLinks.isNotEmpty()) {
                     Text(
@@ -621,7 +1111,18 @@ private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
                     Text("Wi-Fi only", fontWeight = FontWeight.SemiBold)
                     Text("Pause mobile-data downloads", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = state.wifiOnlyDownloads, onCheckedChange = viewModel::setWifiOnlyDownloads)
+                Switch(
+                    checked = state.wifiOnlyDownloads,
+                    onCheckedChange = viewModel::setWifiOnlyDownloads,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        checkedBorderColor = MaterialTheme.colorScheme.primary,
+                        uncheckedThumbColor = MaterialTheme.colorScheme.onSurface,
+                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+                    ),
+                )
             }
         }
         if (state.downloads.isEmpty()) item { V2Empty("No offline classes yet. Open a class and tap the compact Download button.") }
@@ -674,13 +1175,13 @@ private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
 
 @Composable
 private fun V2Profile(
+    nav: NavHostController,
     viewModel: NativeAppViewModel,
     state: NativeUiState,
     themeMode: String,
     onThemeMode: (String) -> Unit,
     activeDeviceCount: Int,
 ) {
-    val context = LocalContext.current
     val profilePhoto = state.profile?.photoUrl.orEmpty()
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)); Text("Profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
@@ -717,7 +1218,7 @@ private fun V2Profile(
             V2OutlinedCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Course access", fontWeight = FontWeight.Bold)
-                    OutlinedButton(onClick = { openWeb(context, "$WEB_ORIGIN/courses") }, modifier = Modifier.fillMaxWidth(), shape = V2Pill) {
+                    OutlinedButton(onClick = { nav.navigate("add-course") }, modifier = Modifier.fillMaxWidth(), shape = V2Pill) {
                         Icon(Icons.Default.Language, null, Modifier.size(18.dp)); Spacer(Modifier.width(7.dp)); Text("Browse & buy courses")
                     }
                 }
@@ -806,6 +1307,13 @@ private fun v2DownloadState(task: SecureDownloadTask): String = when (task.state
         "preparing" -> "Preparing"
         else -> "${task.progress}%"
     }
+}
+
+private fun classDateLabel(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
+    return runCatching {
+        SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(timestamp))
+    }.getOrDefault("")
 }
 
 private fun openWeb(context: android.content.Context, url: String) {

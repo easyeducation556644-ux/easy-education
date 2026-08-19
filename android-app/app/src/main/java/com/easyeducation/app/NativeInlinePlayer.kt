@@ -173,7 +173,12 @@ fun NativeInlinePlayer(
 
         val alreadyPrepared = PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
             exoPlayer.mediaItemCount > 0
-        NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
+        // During mini -> watch expansion the destination must lay out its inline host underneath the
+        // still-live overlay. Removing the mini here caused the exact decoder-surface flash seen on
+        // expansion; NativeMiniPlayerOverlay now restores into this host at animation completion.
+        if (!NativeMiniPlayerOverlay.isExpandingTo(exoPlayer, classId)) {
+            NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
+        }
         handedToMini = false
         if (alreadyPrepared) {
             loading = false

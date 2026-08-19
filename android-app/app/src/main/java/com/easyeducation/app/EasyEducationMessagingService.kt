@@ -16,6 +16,9 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
             .edit()
             .putString(KEY_LAST_FCM_TOKEN, token)
             .apply()
+        Thread {
+            runCatching { NativePushRegistrar.register(applicationContext) }
+        }.start()
     }
 
     override fun onMessageReceived(message: RemoteMessage) {

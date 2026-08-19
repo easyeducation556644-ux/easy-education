@@ -41,7 +41,10 @@ object NativeInlineSurfaceRegistry {
         hostRef.get() != null && classId.isNotBlank() && classId == PersistentNativePlayer.currentClassId()
 
     @Synchronized
-    fun targetBounds(): Rect? = hostRef.get()?.globalBounds()
+    fun targetBounds(ownerClassId: String? = null): Rect? {
+        if (!ownerClassId.isNullOrBlank() && classId != ownerClassId) return null
+        return hostRef.get()?.globalBounds()
+    }
 
     @Synchronized
     fun restore(player: ExoPlayer): Boolean {

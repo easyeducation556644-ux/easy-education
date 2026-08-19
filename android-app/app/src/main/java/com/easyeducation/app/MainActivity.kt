@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModelProvider
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var googleSignInClient: GoogleSignInClient
     private lateinit var viewModel: NativeAppViewModel
     private var initialPath by mutableStateOf<String?>(null)
+    private var navigationEpoch by mutableIntStateOf(0)
     private var loginBusy by mutableStateOf(false)
     private var activeDeviceCount by mutableStateOf(0)
     private var deviceListener: ListenerRegistration? = null
@@ -105,7 +107,7 @@ class MainActivity : ComponentActivity() {
         FirebaseAuth.getInstance().addAuthStateListener(authStateListener)
 
         setContent {
-            key(initialPath) {
+            key(initialPath, navigationEpoch) {
                 EasyEducationSecureRoot(
                     viewModel = viewModel,
                     onGoogleSignIn = ::launchGoogleSignIn,
@@ -173,7 +175,9 @@ class MainActivity : ComponentActivity() {
         if (PersistentNativePlayer.currentClassId().isBlank()) return
 
         val exo = PersistentNativePlayer.player(this)
-        if (exo.mediaItemCount == 0) return
+        // A stale/paused session must never pull the whole app into PiP. Only an actively playing
+        // video is eligible for the controlled handoff.
+        if (exo.mediaItemCount == 0 || !exo.isPlaying) return
 
         if (NativeFullscreenOverlay.owns(exo)) NativeFullscreenOverlay.dismiss(immediate = true)
         if (!NativeMiniPlayerOverlay.ensureForPip(this)) return
@@ -181,11 +185,29 @@ class MainActivity : ComponentActivity() {
 
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(Rational(16, 9))
+        NativeMiniPlayerOverlay.pipSourceRect(this)?.let(builder::setSourceRectHint)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setSeamlessResizeEnabled(true)
+            // Entry is manual because the shared video surface must be staged first. Explicitly
+            // disable Android's whole-activity auto-entry path.
+            builder.setAutoEnterEnabled(false)
         }
-        runCatching { enterPictureInPictureMode(builder.build()) }
-            .onFailure { NativeMiniPlayerOverlay.exitPipPresentation() }
+        val entered = runCatching { enterPictureInPictureMode(builder.build()) }.getOrDefault(false)
+        if (!entered) {
+            NativeMiniPlayerOverlay.abortPipAndPause(this)
+            NativePlayerMediaSession.release()
+        }
+    }
+
+    override fun onStop() {
+        if (!isChangingConfigurations && !isInPictureInPictureMode) {
+            // This is the hard safety net for Home/recents gestures and failed PiP entry. No video
+            // may keep producing audio behind an invisible activity.
+            NativeMiniPlayerOverlay.abortPipAndPause(this)
+            PersistentNativePlayer.savePosition(this)
+            PersistentNativePlayer.pause()
+        }
+        super.onStop()
     }
 
     override fun onPictureInPictureModeChanged(
@@ -194,6 +216,11 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (!isInPictureInPictureMode) {
+            if (isFinishing || isDestroyed) {
+                NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
+                NativePlayerMediaSession.release()
+                return
+            }
             val classId = PersistentNativePlayer.currentClassId()
             if (classId.isNotBlank() && NativeInlineSurfaceRegistry.canRestore()) {
                 val exo = PersistentNativePlayer.player(this)
@@ -218,6 +245,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         initialPath = intent.getStringExtra(EXTRA_OPEN_PATH)
+        navigationEpoch += 1
     }
 
     override fun onDestroy() {

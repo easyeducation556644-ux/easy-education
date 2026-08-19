@@ -56,8 +56,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     private val timeText: TextView
     private val seekBar: SeekBar
     private val buffering: TextView
-    private val leftHint: TextView
-    private val rightHint: TextView
+    private val quickSeekFeedback: YoutubeQuickSeekFeedbackView
     private val fastBadge: TextView
     private val speedBadge: TextView
 
@@ -89,6 +88,13 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     private var longPressEligible = false
     private var minimizeCommitted = false
     private var rapidSeekSeconds = 0
+    private var rapidSeekSide = 0
+    private var lastRapidSeekAt = 0L
+    private val resetRapidSeek = Runnable {
+        rapidSeekSeconds = 0
+        rapidSeekSide = 0
+        lastRapidSeekAt = 0L
+    }
 
     private val hideControls = Runnable { setControlsVisible(false) }
     private val progressUpdater = object : Runnable {
@@ -145,11 +151,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 if (draggingDown || downOnControl) return false
-                handler.removeCallbacks(hideControls)
-                val side = if (e.x < width / 2f) -1 else 1
-                rapidSeekSeconds = (rapidSeekSeconds + 10).coerceAtMost(60)
-                seekBy(side * 10_000L)
-                showRapidSeek(side, rapidSeekSeconds)
+                performRapidSeek(e.x)
+                return true
+            }
+
+            override fun onDoubleTapEvent(e: MotionEvent): Boolean {
+                if (
+                    e.actionMasked == MotionEvent.ACTION_DOWN &&
+                    !draggingDown && !downOnControl &&
+                    android.os.SystemClock.uptimeMillis() - lastRapidSeekAt > DOUBLE_TAP_DUPLICATE_GUARD_MS
+                ) {
+                    // After the initial double tap, every additional tap extends the seek by 10 s,
+                    // matching the continuous YouTube quick-seek interaction.
+                    performRapidSeek(e.x)
+                }
                 return true
             }
 
@@ -310,11 +325,8 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         bottom.addView(bottomRow)
         controls.addView(bottom, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72), Gravity.BOTTOM))
 
-        leftHint = seekHint().also {
-            addView(it, LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.START).apply { marginStart = dp(22) })
-        }
-        rightHint = seekHint().also {
-            addView(it, LayoutParams(dp(150), dp(72), Gravity.CENTER_VERTICAL or Gravity.END).apply { marginEnd = dp(22) })
+        quickSeekFeedback = YoutubeQuickSeekFeedbackView(context).also {
+            addView(it, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
         fastBadge = pillText("2×").apply { visibility = View.INVISIBLE }
         addView(fastBadge, LayoutParams(dp(116), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(22) })
@@ -339,7 +351,6 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 draggingDown = false
                 dragProgress = 0f
                 minimizeCommitted = false
-                rapidSeekSeconds = 0
                 // Hidden chrome must not keep owning its old child hit boxes. In particular, the
                 // invisible play/pause button sits in the middle of the video; treating that child
                 // as interactive is why side taps revealed controls while a centre tap did nothing.
@@ -627,19 +638,25 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         exo.seekTo((exo.currentPosition + deltaMs).coerceIn(0L, duration))
     }
 
+    private fun performRapidSeek(x: Float) {
+        handler.removeCallbacks(hideControls)
+        val side = if (x < width / 2f) -1 else 1
+        val now = android.os.SystemClock.uptimeMillis()
+        rapidSeekSeconds = if (side == rapidSeekSide && now - lastRapidSeekAt <= RAPID_SEEK_CHAIN_MS) {
+            (rapidSeekSeconds + 10).coerceAtMost(60)
+        } else {
+            10
+        }
+        rapidSeekSide = side
+        lastRapidSeekAt = now
+        seekBy(side * 10_000L)
+        showRapidSeek(side, rapidSeekSeconds)
+    }
+
     private fun showRapidSeek(side: Int, seconds: Int) {
-        val hint = if (side < 0) leftHint else rightHint
-        val other = if (side < 0) rightHint else leftHint
-        other.visibility = View.INVISIBLE
-        hint.text = if (side < 0) "↶  $seconds seconds" else "$seconds seconds  ↷"
-        hint.alpha = 1f
-        hint.visibility = View.VISIBLE
-        handler.postDelayed({
-            hint.animate().alpha(0f).setDuration(140L).withEndAction {
-                hint.visibility = View.INVISIBLE
-                rapidSeekSeconds = 0
-            }.start()
-        }, 680L)
+        quickSeekFeedback.show(side, seconds)
+        handler.removeCallbacks(resetRapidSeek)
+        handler.postDelayed(resetRapidSeek, RAPID_SEEK_CHAIN_MS)
     }
 
     private fun finishHoldSpeed() {
@@ -741,6 +758,8 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         parent?.requestDisallowInterceptTouchEvent(false)
         handler.removeCallbacks(progressUpdater)
         handler.removeCallbacks(hideControls)
+        handler.removeCallbacks(resetRapidSeek)
+        quickSeekFeedback.hideImmediately()
         super.onDetachedFromWindow()
     }
 
@@ -800,5 +819,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         private const val SPEED_KEY = "youtube_style_speed"
         private const val MINIMIZE_COMMIT_FRACTION = 0.24f
         private const val FULLSCREEN_EXIT_FRACTION = 0.22f
+        private const val RAPID_SEEK_CHAIN_MS = 780L
+        private const val DOUBLE_TAP_DUPLICATE_GUARD_MS = 80L
     }
 }

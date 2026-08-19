@@ -1,10 +1,12 @@
 package com.easyeducation.app
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -43,6 +45,8 @@ object NativeMiniPlayerOverlay {
     private var suppressNextPause = false
     private var expanding = false
     private var inPipPresentation = false
+    private var expansionGeneration = 0
+    private var expansionAnimator: ValueAnimator? = null
 
     private var playButton: AppCompatImageButton? = null
     private var closeButton: AppCompatImageButton? = null
@@ -66,6 +70,9 @@ object NativeMiniPlayerOverlay {
         onExpandToWatchPage: (() -> Unit)? = null,
     ) {
         if (host !== activity) dismiss(releasePlayer = false)
+        expansionGeneration += 1
+        expansionAnimator?.cancel()
+        expansionAnimator = null
         removeContainerOnly()
         detachPlayerListener()
 
@@ -297,6 +304,7 @@ object NativeMiniPlayerOverlay {
         }
 
         shell.postOnAnimation {
+            if (inPipPresentation || container !== shell) return@postOnAnimation
             normalX = targetX()
             normalY = targetY()
             shell.animate()
@@ -340,11 +348,155 @@ object NativeMiniPlayerOverlay {
     ) {
         if (expanding) return
         expanding = true
+        expansionGeneration += 1
+        val generation = expansionGeneration
         PersistentNativePlayer.savePosition(activity)
         suppressNextPause = true
         val callback = expandCallback
 
         shell.animate().cancel()
+        playButton?.isEnabled = false
+        closeButton?.isEnabled = false
+        expandButton?.isEnabled = false
+        dragLayer?.isEnabled = false
+        listOfNotNull(playButton, closeButton, expandButton).forEach { button ->
+            button.animate().cancel()
+            button.animate().alpha(0f).setDuration(120L).start()
+        }
+
+        if (callback != null) {
+            // Build the real watch destination below the still-live mini shell first. The old flow
+            // removed the player, then navigated, leaving a visible frame with no decoder surface.
+            callback.invoke()
+            waitForInlineTarget(
+                activity = activity,
+                shell = shell,
+                exoPlayer = exoPlayer,
+                classId = classId,
+                generation = generation,
+                startedAt = SystemClock.uptimeMillis(),
+            )
+            return
+        }
+
+        animateMiniToFullscreen(
+            activity = activity,
+            shell = shell,
+            exoPlayer = exoPlayer,
+            classId = classId,
+            sourceUrl = sourceUrl,
+            title = title,
+            requestedHeight = requestedHeight,
+            generation = generation,
+        )
+    }
+
+    private fun waitForInlineTarget(
+        activity: Activity,
+        shell: FrameLayout,
+        exoPlayer: ExoPlayer,
+        classId: String,
+        generation: Int,
+        startedAt: Long,
+    ) {
+        if (generation != expansionGeneration || container !== shell || host !== activity) return
+        val target = NativeInlineSurfaceRegistry.targetBounds(classId)
+            ?.takeIf { it.width() > 0 && it.height() > 0 }
+        if (target != null) {
+            animateMiniToInline(activity, shell, exoPlayer, target, generation)
+            return
+        }
+        if (SystemClock.uptimeMillis() - startedAt < EXPANSION_TARGET_WAIT_MS) {
+            shell.postOnAnimation {
+                waitForInlineTarget(activity, shell, exoPlayer, classId, generation, startedAt)
+            }
+            return
+        }
+
+        // A slow Compose frame should still expand smoothly. Move to the inline 16:9 slot and keep
+        // the retained surface alive; restore() gets one final chance at animation completion.
+        val currentRoot = root ?: return
+        val rootLocation = IntArray(2)
+        currentRoot.getLocationOnScreen(rootLocation)
+        val width = currentRoot.width.coerceAtLeast(shell.width)
+        val height = (width * 9f / 16f).toInt().coerceAtLeast(1)
+        animateMiniToInline(
+            activity,
+            shell,
+            exoPlayer,
+            Rect(rootLocation[0], rootLocation[1], rootLocation[0] + width, rootLocation[1] + height),
+            generation,
+        )
+    }
+
+    private fun animateMiniToInline(
+        activity: Activity,
+        shell: FrameLayout,
+        exoPlayer: ExoPlayer,
+        targetBounds: Rect,
+        generation: Int,
+    ) {
+        val currentRoot = root ?: return
+        val rootLocation = IntArray(2)
+        currentRoot.getLocationOnScreen(rootLocation)
+        val startX = shell.x
+        val startY = shell.y
+        val startScaleX = shell.scaleX
+        val startScaleY = shell.scaleY
+        val targetX = (targetBounds.left - rootLocation[0]).toFloat()
+        val targetY = (targetBounds.top - rootLocation[1]).toFloat()
+        val targetScaleX = targetBounds.width().toFloat() / shell.width.coerceAtLeast(1)
+        val targetScaleY = targetBounds.height().toFloat() / shell.height.coerceAtLeast(1)
+        val background = miniBackground(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP)
+        val startRadius = dp(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP).toFloat()
+
+        shell.pivotX = 0f
+        shell.pivotY = 0f
+        shell.background = background
+        expansionAnimator?.cancel()
+        expansionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = YoutubeParityMotion.WATCH_MIN_MAX_MS
+            interpolator = WATCH_EASING
+            addUpdateListener { animator ->
+                if (generation != expansionGeneration || container !== shell) {
+                    animator.cancel()
+                    return@addUpdateListener
+                }
+                val p = animator.animatedValue as Float
+                shell.x = lerp(startX, targetX, p)
+                shell.y = lerp(startY, targetY, p)
+                shell.scaleX = lerp(startScaleX, targetScaleX, p)
+                shell.scaleY = lerp(startScaleY, targetScaleY, p)
+                background.cornerRadius = startRadius * (1f - p)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (generation != expansionGeneration || container !== shell) return
+                    expansionAnimator = null
+                    val restored = NativeInlineSurfaceRegistry.restore(exoPlayer)
+                    if (restored) {
+                        dismiss(releasePlayer = false)
+                    } else {
+                        // Keep sound and video policy safe even if the destination disappeared while
+                        // expanding; never leave an invisible background player running.
+                        dismiss(releasePlayer = true)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun animateMiniToFullscreen(
+        activity: Activity,
+        shell: FrameLayout,
+        exoPlayer: ExoPlayer,
+        classId: String,
+        sourceUrl: String,
+        title: String,
+        requestedHeight: Int,
+        generation: Int,
+    ) {
         val rootWidth = root?.width?.takeIf { it > 0 } ?: shell.width
         val targetScale = (rootWidth.toFloat() / shell.width.coerceAtLeast(1)).coerceAtLeast(1f)
         shell.pivotX = 0f
@@ -358,22 +510,18 @@ object NativeMiniPlayerOverlay {
             .setInterpolator(WATCH_EASING)
             .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
             .withEndAction {
-                if (callback != null) {
-                    dismiss(releasePlayer = false)
-                    callback.invoke()
-                } else {
-                    val bounds = globalBounds(shell)
-                    dismiss(releasePlayer = false)
-                    NativeFullscreenOverlay.show(
-                        activity = activity,
-                        exoPlayer = exoPlayer,
-                        classId = classId,
-                        sourceUrl = sourceUrl,
-                        title = title,
-                        requestedHeight = requestedHeight,
-                        sourceBounds = bounds,
-                    ) { }
-                }
+                if (generation != expansionGeneration || container !== shell) return@withEndAction
+                val bounds = globalBounds(shell)
+                dismiss(releasePlayer = false)
+                NativeFullscreenOverlay.show(
+                    activity = activity,
+                    exoPlayer = exoPlayer,
+                    classId = classId,
+                    sourceUrl = sourceUrl,
+                    title = title,
+                    requestedHeight = requestedHeight,
+                    sourceBounds = bounds,
+                ) { }
             }
             .start()
     }
@@ -407,9 +555,15 @@ object NativeMiniPlayerOverlay {
             ViewGroup.LayoutParams.MATCH_PARENT,
             Gravity.CENTER,
         )
-        shell.requestLayout()
+        // Apply the full-video layout before MainActivity asks Android for PiP. Waiting for a later
+        // traversal can let the system snapshot the Compose page instead of this topmost video.
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(currentRoot.width.coerceAtLeast(1), View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(currentRoot.height.coerceAtLeast(1), View.MeasureSpec.EXACTLY)
+        shell.measure(widthSpec, heightSpec)
+        shell.layout(0, 0, currentRoot.width.coerceAtLeast(1), currentRoot.height.coerceAtLeast(1))
         shell.bringToFront()
-        currentRoot.requestLayout()
+        shell.invalidate()
+        currentRoot.invalidate()
         return true
     }
 
@@ -423,6 +577,11 @@ object NativeMiniPlayerOverlay {
         val width = normalWidth.coerceAtLeast(dp(activity, 176))
         val height = normalHeight.coerceAtLeast((width * 9f / 16f).toInt())
         shell.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.TOP or Gravity.START)
+        shell.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
+        )
+        shell.layout(0, 0, width, height)
         shell.background = miniBackground(activity, YoutubeParityMotion.MINI_CORNER_RADIUS_DP)
         shell.x = normalX
         shell.y = normalY
@@ -456,11 +615,40 @@ object NativeMiniPlayerOverlay {
         return enterPipPresentation()
     }
 
+    fun pipSourceRect(activity: Activity): Rect? {
+        if (host !== activity || !inPipPresentation) return null
+        val shell = container ?: return null
+        val decor = activity.window.decorView
+        val shellRect = Rect()
+        if (!shell.getGlobalVisibleRect(shellRect) || shellRect.isEmpty) return null
+        val decorLocation = IntArray(2)
+        decor.getLocationOnScreen(decorLocation)
+        shellRect.offset(-decorLocation[0], -decorLocation[1])
+        return shellRect
+    }
+
+    fun abortPipAndPause(activity: Activity) {
+        if (host !== activity) return
+        if (inPipPresentation) exitPipPresentation()
+        suppressNextPause = false
+        player?.let { exo ->
+            PersistentNativePlayer.savePosition(activity)
+            exo.pause()
+            playButton?.setImageResource(R.drawable.ic_player_play)
+        }
+    }
+
     fun isVisible(): Boolean = container != null
     fun isPipPresentation(): Boolean = inPipPresentation
     fun owns(exoPlayer: ExoPlayer): Boolean = player === exoPlayer && container != null
+    fun isExpandingTo(exoPlayer: ExoPlayer, classId: String): Boolean =
+        expanding && player === exoPlayer && container != null &&
+            classId.isNotBlank() && PersistentNativePlayer.currentClassId() == classId
 
     fun dismiss(releasePlayer: Boolean = true) {
+        expansionGeneration += 1
+        expansionAnimator?.cancel()
+        expansionAnimator = null
         val currentHost = host
         val currentPlayer = player
         detachPlayerListener()
@@ -586,6 +774,9 @@ object NativeMiniPlayerOverlay {
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
+    private fun lerp(start: Float, end: Float, amount: Float): Float = start + (end - start) * amount
+
     private val WATCH_EASING = PathInterpolator(0.2f, 0f, 0f, 1f)
     private val EXIT_EASING = PathInterpolator(0.4f, 0f, 1f, 1f)
+    private const val EXPANSION_TARGET_WAIT_MS = 620L
 }

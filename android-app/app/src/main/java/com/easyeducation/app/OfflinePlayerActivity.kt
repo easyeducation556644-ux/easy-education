@@ -43,8 +43,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
     private var timeText: TextView? = null
     private var seekBar: SeekBar? = null
     private var bufferingText: TextView? = null
-    private var leftSeekHint: TextView? = null
-    private var rightSeekHint: TextView? = null
+    private var quickSeekFeedback: YoutubeQuickSeekFeedbackView? = null
     private var fastBadge: TextView? = null
 
     private var isSeeking = false
@@ -55,6 +54,8 @@ class OfflinePlayerActivity : AppCompatActivity() {
     private var lastTapAt = 0L
     private var lastTapSide = 0
     private var rapidSeekSeconds = 0
+    private var rapidSeekSide = 0
+    private var lastRapidSeekAt = 0L
     private var downX = 0f
     private var downY = 0f
     private var moved = false
@@ -150,15 +151,11 @@ class OfflinePlayerActivity : AppCompatActivity() {
             )
         }
 
-        leftSeekHint = seekHint(Gravity.CENTER_VERTICAL or Gravity.START).also {
-            root.addView(it, FrameLayout.LayoutParams(dp(150), dp(74), Gravity.CENTER_VERTICAL or Gravity.START).apply {
-                marginStart = dp(32)
-            })
-        }
-        rightSeekHint = seekHint(Gravity.CENTER_VERTICAL or Gravity.END).also {
-            root.addView(it, FrameLayout.LayoutParams(dp(150), dp(74), Gravity.CENTER_VERTICAL or Gravity.END).apply {
-                marginEnd = dp(32)
-            })
+        quickSeekFeedback = YoutubeQuickSeekFeedbackView(this).also {
+            root.addView(
+                it,
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
         }
         fastBadge = pillText("2×").apply {
             visibility = View.INVISIBLE
@@ -397,7 +394,13 @@ class OfflinePlayerActivity : AppCompatActivity() {
                 val side = if (event.x < view.width / 2f) -1 else 1
                 if (now - lastTapAt <= RAPID_TAP_WINDOW_MS && side == lastTapSide) {
                     singleTapRunnable?.let(handler::removeCallbacks)
-                    rapidSeekSeconds += 10
+                    rapidSeekSeconds = if (side == rapidSeekSide && now - lastRapidSeekAt <= RAPID_RESET_MS) {
+                        (rapidSeekSeconds + 10).coerceAtMost(60)
+                    } else {
+                        10
+                    }
+                    rapidSeekSide = side
+                    lastRapidSeekAt = now
                     seekBy(side * 10_000L, showControls = false)
                     showRapidSeek(side, rapidSeekSeconds)
                     lastTapAt = now
@@ -421,18 +424,12 @@ class OfflinePlayerActivity : AppCompatActivity() {
     }
 
     private fun showRapidSeek(side: Int, seconds: Int) {
-        val hint = if (side < 0) leftSeekHint else rightSeekHint
-        val other = if (side < 0) rightSeekHint else leftSeekHint
-        other?.visibility = View.INVISIBLE
-        hint?.text = if (side < 0) "↶  $seconds seconds" else "$seconds seconds  ↷"
-        hint?.visibility = View.VISIBLE
-        hint?.alpha = 1f
+        quickSeekFeedback?.show(side, seconds)
         rapidResetRunnable?.let(handler::removeCallbacks)
         rapidResetRunnable = Runnable {
-            hint?.animate()?.alpha(0f)?.setDuration(140)?.withEndAction {
-                hint.visibility = View.INVISIBLE
-            }?.start()
             rapidSeekSeconds = 0
+            rapidSeekSide = 0
+            lastRapidSeekAt = 0L
         }.also { handler.postDelayed(it, RAPID_RESET_MS) }
     }
 
@@ -580,6 +577,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
         singleTapRunnable?.let(handler::removeCallbacks)
         longPressRunnable?.let(handler::removeCallbacks)
         rapidResetRunnable?.let(handler::removeCallbacks)
+        quickSeekFeedback?.hideImmediately()
         handler.removeCallbacksAndMessages(null)
         playerView?.player = null
         player?.release()
