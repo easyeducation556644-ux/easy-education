@@ -86,7 +86,14 @@ class YoutubeDeviceResolver(
     fun resolve(videoUrl: String): Result {
         val videoId = extractVideoId(videoUrl)
             ?: throw IllegalArgumentException("Invalid YouTube video URL")
-        val info = YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
+        val info = try {
+            YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
+        } catch (error: Throwable) {
+            if (!isVisionOsResponseError(error)) throw error
+            // Keep NewPipe as the primary resolver. This conservative fallback is reached only for
+            // the known VisionOS client-validation failure, so already-working videos are unchanged.
+            return YoutubeVisionFallbackResolver(http).resolve(videoId)
+        }
 
         val progressive = info.videoStreams
             .asSequence()
@@ -276,6 +283,21 @@ class YoutubeDeviceResolver(
             "ANDROID" -> ANDROID_USER_AGENT
             else -> DOWNLOAD_USER_AGENT
         }
+    }
+
+    private fun isVisionOsResponseError(error: Throwable): Boolean {
+        var current: Throwable? = error
+        var depth = 0
+        while (current != null && depth < 8) {
+            val message = current.message.orEmpty()
+            if (
+                message.contains("VisionOs response is not valid", ignoreCase = true) ||
+                message.contains("VisionOS response is not valid", ignoreCase = true)
+            ) return true
+            current = current.cause
+            depth += 1
+        }
+        return false
     }
 
     private fun parseHeight(value: String?): Int = value.orEmpty()
