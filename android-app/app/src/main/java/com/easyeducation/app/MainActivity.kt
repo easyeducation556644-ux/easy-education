@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        SecureDownloadService.resumePending(this)
+        SecureDownloadCoordinator.resumePending(this)
         if (FirebaseAuth.getInstance().currentUser != null) {
             lifecycleScope.launch(Dispatchers.IO) { NativePushRegistrar.register(this@MainActivity) }
         }
