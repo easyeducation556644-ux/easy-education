@@ -91,13 +91,25 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val wasOffline = !_state.value.online
         val wasOnWifi = _state.value.onWifi
         val onWifi = DownloadPreferences.isWifi(getApplication())
+        val wifiOnly = _state.value.wifiOnlyDownloads
         _state.value = _state.value.copy(online = online, onWifi = onWifi)
+
+        if (wifiOnly && wasOnWifi && !onWifi) {
+            pauseActiveDownloadsForNetworkPolicy()
+        }
         if (online && wasOffline) {
             auth.currentUser?.uid?.let(::refreshOnline)
             SecureDownloadCoordinator.resumePending(getApplication())
-        } else if (online && !wasOnWifi && onWifi && _state.value.wifiOnlyDownloads) {
+        } else if (online && !wasOnWifi && onWifi && wifiOnly) {
             SecureDownloadCoordinator.resumePending(getApplication())
         }
+    }
+
+    private fun pauseActiveDownloadsForNetworkPolicy() {
+        val context = getApplication<Application>()
+        _state.value.downloads
+            .filter { it.state in setOf("queued", "downloading") }
+            .forEach { SecureDownloadCoordinator.pause(context, it.id) }
     }
 
     private fun isOnlineNow(): Boolean {
@@ -327,7 +339,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     fun setWifiOnlyDownloads(enabled: Boolean) {
         DownloadPreferences.setWifiOnly(getApplication(), enabled)
         _state.value = _state.value.copy(wifiOnlyDownloads = enabled)
-        if (!enabled && _state.value.online) SecureDownloadCoordinator.resumePending(getApplication())
+        if (enabled && !_state.value.onWifi) {
+            pauseActiveDownloadsForNetworkPolicy()
+        } else if (!enabled && _state.value.online) {
+            SecureDownloadCoordinator.resumePending(getApplication())
+        }
     }
 
     fun clearError() {
