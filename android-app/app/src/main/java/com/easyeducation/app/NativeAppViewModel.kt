@@ -201,13 +201,16 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             chunkCount = existing?.takeIf { sameSource }?.chunkCount ?: 0,
             state = "queued",
         )
-        if (existing != null && !sameSource) downloads.resetChunks(id)
-        SecureDownloadService.start(context, task)
+        if (existing != null && !sameSource) {
+            downloads.resetChunks(id)
+            SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
+        }
+        SecureDownloadCoordinator.start(context, task)
         refreshDownloads()
     }
 
     fun pauseDownload(context: Context, id: String) {
-        SecureDownloadService.pause(context, id)
+        SecureDownloadCoordinator.pause(context, id)
         refreshDownloads()
     }
 
@@ -220,12 +223,12 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = "Connect to resume this download")
             return
         }
-        SecureDownloadService.resume(context, id)
+        SecureDownloadCoordinator.resume(context, id)
         refreshDownloads()
     }
 
     fun removeDownload(context: Context, id: String) {
-        SecureDownloadService.remove(context, id)
+        SecureDownloadCoordinator.remove(context, id)
         refreshDownloads()
     }
 
