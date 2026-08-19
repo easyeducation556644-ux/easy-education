@@ -1,14 +1,22 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.easyeducation.app
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,12 +24,11 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -34,9 +41,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FieldValue
@@ -50,6 +59,7 @@ import java.util.Date
 private data class NativeComment(
     val id: String,
     val userName: String,
+    val userPhoto: String,
     val text: String,
     val timestamp: Long,
 )
@@ -69,6 +79,7 @@ fun NativeClassSocial(
     var commentText by remember(classId) { mutableStateOf("") }
     var message by remember(classId) { mutableStateOf<String?>(null) }
     var sending by remember(classId) { mutableStateOf(false) }
+    var commentsOpen by remember(classId) { mutableStateOf(false) }
 
     DisposableEffect(classId, user?.uid) {
         val reactionsListener = db.collection("classReactions")
@@ -101,13 +112,14 @@ fun NativeClassSocial(
                         NativeComment(
                             id = doc.id,
                             userName = doc.getString("userName").orEmpty().ifBlank { "Student" },
+                            userPhoto = doc.getString("userPhoto").orEmpty(),
                             text = doc.getString("text").orEmpty(),
                             timestamp = socialTimestampMillis(doc.get("timestamp")),
                         )
                     }
                     .filter { it.text.isNotBlank() }
                     .sortedByDescending { it.timestamp }
-                    .take(40)
+                    .take(80)
             }
         onDispose {
             reactionsListener.remove()
@@ -116,137 +128,242 @@ fun NativeClassSocial(
     }
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            SocialReactionButton(
-                label = "Like",
-                count = likes,
-                selected = myReaction == "like",
-                icon = { Icon(Icons.Default.ThumbUp, null, modifier = Modifier.size(19.dp)) },
-                modifier = Modifier.weight(1f),
-            ) {
-                user ?: return@SocialReactionButton
-                scope.launch {
-                    updateReaction(db, classId, user, "like", myReaction == "like")
-                        .onFailure { message = "Could not save reaction. Try again." }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clickable(enabled = user != null) {
+                            user ?: return@clickable
+                            scope.launch {
+                                updateReaction(db, classId, user, "like", myReaction == "like")
+                                    .onFailure { message = "Could not save reaction. Try again." }
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.ThumbUp,
+                        contentDescription = "Like",
+                        modifier = Modifier.size(20.dp),
+                        tint = if (myReaction == "like") MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(likes.toString(), fontWeight = FontWeight.SemiBold)
                 }
-            }
-            SocialReactionButton(
-                label = "Dislike",
-                count = dislikes,
-                selected = myReaction == "dislike",
-                icon = { Icon(Icons.Default.ThumbDown, null, modifier = Modifier.size(19.dp)) },
-                modifier = Modifier.weight(1f),
-            ) {
-                user ?: return@SocialReactionButton
-                scope.launch {
-                    updateReaction(db, classId, user, "dislike", myReaction == "dislike")
-                        .onFailure { message = "Could not save reaction. Try again." }
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(26.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant),
+                )
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clickable(enabled = user != null) {
+                            user ?: return@clickable
+                            scope.launch {
+                                updateReaction(db, classId, user, "dislike", myReaction == "dislike")
+                                    .onFailure { message = "Could not save reaction. Try again." }
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.ThumbDown,
+                        contentDescription = "Dislike",
+                        modifier = Modifier.size(20.dp),
+                        tint = if (myReaction == "dislike") MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (dislikes > 0) {
+                        Spacer(Modifier.width(7.dp))
+                        Text(dislikes.toString(), fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
 
-        Text("Comments ${comments.size}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        if (user != null) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Icon(Icons.Default.Person, null, Modifier.padding(9.dp).size(20.dp))
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { commentsOpen = true },
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Comments", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(7.dp))
+                    Text(comments.size.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = commentText,
-                    onValueChange = { commentText = it.take(700) },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Add a comment…") },
-                    maxLines = 4,
-                    shape = RoundedCornerShape(18.dp),
-                    trailingIcon = {
-                        IconButton(
-                            enabled = commentText.isNotBlank() && !sending,
-                            onClick = {
-                                val text = commentText.trim()
-                                if (text.isBlank()) return@IconButton
-                                sending = true
-                                scope.launch {
-                                    val result = runCatching {
-                                        withContext(Dispatchers.IO) {
-                                            db.collection("classComments").add(
-                                                mapOf(
-                                                    "classId" to classId,
-                                                    "classTopLevelKey" to "${classId}_toplevel",
-                                                    "userId" to user.uid,
-                                                    "userName" to (user.displayName ?: user.email ?: "Student"),
-                                                    "userPhoto" to (user.photoUrl?.toString() ?: ""),
-                                                    "text" to text,
-                                                    "parentId" to "",
-                                                    "isTopLevel" to true,
-                                                    "timestamp" to FieldValue.serverTimestamp(),
-                                                ),
-                                            ).await()
-                                        }
-                                    }
-                                    sending = false
-                                    result.onSuccess { commentText = "" }
-                                        .onFailure { message = "Could not post comment. Try again." }
-                                }
-                            },
-                        ) { Icon(Icons.Default.Send, "Post comment") }
-                    },
-                )
+                val preview = comments.firstOrNull()
+                if (preview == null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Add the first comment",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.Top) {
+                        CommentAvatar(preview.userPhoto, Modifier.size(30.dp))
+                        Spacer(Modifier.width(9.dp))
+                        Text(
+                            preview.text,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
         }
 
         message?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+    }
 
-        comments.take(8).forEach { comment ->
-            Card(
-                Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
-                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surface) {
-                        Icon(Icons.Default.Person, null, Modifier.padding(7.dp).size(17.dp))
+    if (commentsOpen) {
+        ModalBottomSheet(onDismissRequest = { commentsOpen = false }) {
+            Column(Modifier.fillMaxWidth().fillMaxHeight(0.82f)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Comments", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(comments.size.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                if (user != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CommentAvatar(user.photoUrl?.toString().orEmpty(), Modifier.size(36.dp))
+                        Spacer(Modifier.width(9.dp))
+                        OutlinedTextField(
+                            value = commentText,
+                            onValueChange = { commentText = it.take(700) },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("Add a comment…") },
+                            maxLines = 4,
+                            shape = RoundedCornerShape(22.dp),
+                            trailingIcon = {
+                                if (sending) {
+                                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                } else {
+                                    IconButton(
+                                        enabled = commentText.isNotBlank(),
+                                        onClick = {
+                                            val text = commentText.trim()
+                                            if (text.isBlank()) return@IconButton
+                                            sending = true
+                                            scope.launch {
+                                                val result = runCatching {
+                                                    withContext(Dispatchers.IO) {
+                                                        db.collection("classComments").add(
+                                                            mapOf(
+                                                                "classId" to classId,
+                                                                "classTopLevelKey" to "${classId}_toplevel",
+                                                                "userId" to user.uid,
+                                                                "userName" to (user.displayName ?: user.email ?: "Student"),
+                                                                "userPhoto" to (user.photoUrl?.toString() ?: ""),
+                                                                "text" to text,
+                                                                "parentId" to "",
+                                                                "isTopLevel" to true,
+                                                                "timestamp" to FieldValue.serverTimestamp(),
+                                                            ),
+                                                        ).await()
+                                                    }
+                                                }
+                                                sending = false
+                                                result.onSuccess { commentText = "" }
+                                                    .onFailure { message = "Could not post comment. Try again." }
+                                            }
+                                        },
+                                    ) { Icon(Icons.Default.Send, "Post comment") }
+                                }
+                            },
+                        )
                     }
-                    Spacer(Modifier.width(9.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(comment.userName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
-                        Text(comment.text, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                        if (comment.timestamp > 0L) {
-                            Text(socialRelativeTime(comment.timestamp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                LazyColumn(
+                    Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    if (comments.isEmpty()) {
+                        item {
+                            Text(
+                                "No comments yet.",
+                                modifier = Modifier.padding(vertical = 18.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        items(comments, key = { it.id }) { comment ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                CommentAvatar(comment.userPhoto, Modifier.size(36.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            comment.userName,
+                                            fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                        if (comment.timestamp > 0L) {
+                                            Spacer(Modifier.width(7.dp))
+                                            Text(
+                                                socialRelativeTime(comment.timestamp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(comment.text)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        if (comments.size > 8) {
-            Text("Showing latest 8 comments", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
     }
 }
 
 @Composable
-private fun SocialReactionButton(
-    label: String,
-    count: Int,
-    selected: Boolean,
-    icon: @Composable () -> Unit,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    if (selected) {
-        androidx.compose.material3.Button(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(999.dp)) {
-            icon(); Spacer(Modifier.width(7.dp)); Text("$label  $count")
-        }
+private fun CommentAvatar(url: String, modifier: Modifier) {
+    if (url.isNotBlank()) {
+        AsyncImage(
+            model = url,
+            contentDescription = null,
+            modifier = modifier.clip(CircleShape),
+        )
     } else {
-        OutlinedButton(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(999.dp)) {
-            icon(); Spacer(Modifier.width(7.dp)); Text("$label  $count")
+        Surface(modifier = modifier, shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Person, null, Modifier.size(19.dp))
+            }
         }
     }
 }
