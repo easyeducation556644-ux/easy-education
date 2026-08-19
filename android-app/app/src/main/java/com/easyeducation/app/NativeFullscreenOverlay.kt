@@ -130,14 +130,14 @@ object NativeFullscreenOverlay {
             surface.scaleY = 0.94f
             surface.alpha = 0.92f
         }
-        scrim.animate().alpha(1f).setDuration(180L).start()
+        scrim.animate().alpha(1f).setDuration(YoutubeParityMotion.WATCH_REVEAL_FROM_BOTTOM_MS).start()
         surface.animate()
             .scaleX(1f)
             .scaleY(1f)
             .translationX(0f)
             .translationY(0f)
             .alpha(1f)
-            .setDuration(220L)
+            .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .start()
 
         @Suppress("DEPRECATION")
@@ -166,14 +166,14 @@ object NativeFullscreenOverlay {
         currentShell.cancelGestureAnimation()
 
         val distance = max(currentShell.width, currentShell.height).coerceAtLeast(1) * 0.32f
-        currentShell.scrim?.animate()?.alpha(0f)?.setDuration(190L)?.start()
+        currentShell.scrim?.animate()?.alpha(0f)?.setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)?.start()
         surface.animate()
             .scaleX(0.76f)
             .scaleY(0.76f)
             .translationX(animatedDirectionX * distance)
             .translationY(animatedDirectionY * distance)
             .alpha(0.96f)
-            .setDuration(200L)
+            .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .withEndAction { finishDismiss() }
             .start()
     }
@@ -221,7 +221,7 @@ object NativeFullscreenOverlay {
             if (!activity.isFinishing && !activity.isDestroyed && shell == null) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
-        }, 460L)
+        }, YoutubeParityMotion.WATCH_MIN_MAX_MS)
     }
 
     private fun bindNavigation(activity: Activity) {
@@ -376,13 +376,13 @@ object NativeFullscreenOverlay {
             video.translationX = dx * 0.64f
             video.translationY = dy * 0.64f
             video.alpha = 1f
-            video.elevation = dp(14).toFloat() * p
+            video.elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
             if (p > 0.04f) {
                 video.clipToOutline = true
                 video.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
                 video.background = GradientDrawable().apply {
                     setColor(Color.BLACK)
-                    cornerRadius = dp((20f * p).toInt().coerceAtLeast(1)).toFloat()
+                    cornerRadius = dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * p
                 }
             }
             scrim?.alpha = (1f - 0.93f * p).coerceIn(0.04f, 1f)
@@ -392,14 +392,14 @@ object NativeFullscreenOverlay {
             val video = target ?: return
             video.animate().cancel()
             scrim?.animate()?.cancel()
-            scrim?.animate()?.alpha(1f)?.setDuration(190L)?.start()
+            scrim?.animate()?.alpha(1f)?.setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)?.start()
             video.animate()
                 .scaleX(1f)
                 .scaleY(1f)
                 .translationX(0f)
                 .translationY(0f)
                 .alpha(1f)
-                .setDuration(215L)
+                .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
                 .withEndAction {
                     video.elevation = 0f
                     video.clipToOutline = false
@@ -416,6 +416,7 @@ object NativeFullscreenOverlay {
         }
 
         private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+        private fun dpF(value: Int): Float = value * resources.displayMetrics.density
 
         companion object {
             private const val EXIT_FRACTION = 0.26f
