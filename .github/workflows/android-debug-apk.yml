@@ -55,6 +55,26 @@ jobs:
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs android-app/app/build/outputs/apk/release/app-release.apk
+      - name: Emulator launch smoke test
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: |
+            adb install -r android-app/app/build/outputs/apk/release/app-release.apk
+            adb logcat -c
+            adb shell am force-stop com.easyeducation.app
+            adb shell am start -W -n com.easyeducation.app/.MainActivity
+            sleep 8
+            PID=$(adb shell pidof com.easyeducation.app | tr -d '\r')
+            if [ -z "$PID" ]; then
+              echo 'Easy Education process died after launch'
+              adb logcat -d | grep -E -A 80 -B 20 'AndroidRuntime|FATAL EXCEPTION|Process: com.easyeducation.app' || true
+              exit 1
+            fi
+            echo "Easy Education startup alive with PID $PID"
       - uses: actions/upload-artifact@v4
         with:
           name: easy-education-release-apk
