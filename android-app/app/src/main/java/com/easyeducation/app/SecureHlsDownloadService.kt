@@ -1,9 +1,5 @@
 package com.easyeducation.app
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,7 +7,6 @@ import android.net.Uri
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import androidx.core.app.NotificationCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
@@ -22,8 +17,10 @@ import androidx.media3.transformer.Transformer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.lang.ref.WeakReference
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -31,80 +28,90 @@ import java.util.concurrent.atomic.AtomicReference
 
 class SecureHlsDownloadService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
-    private val http = OkHttpClient.Builder().retryOnConnectionFailure(true).build()
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var store: SecureMediaStore
+    private lateinit var notifier: DownloadNotifier
     @Volatile private var activeTransformer: Transformer? = null
+    @Volatile private var activeDownloadId: String? = null
 
     override fun onCreate() {
         super.onCreate()
         store = SecureMediaStore(this)
-        createChannel()
+        notifier = DownloadNotifier(this)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val id = intent?.getStringExtra(SecureDownloadService.EXTRA_ID)
-        val task = id?.let(store::get)
-        if (task == null || !SecureDownloadCoordinator.isHlsSource(task.sourceUrl)) {
-            stopSelf()
+        val id = intent?.getStringExtra(SecureDownloadService.EXTRA_ID).orEmpty()
+        val generation = intent?.getLongExtra(SecureDownloadService.EXTRA_GENERATION, -1L) ?: -1L
+        val task = id.takeIf { it.isNotBlank() }?.let(store::get)
+        if (task == null || (generation >= 0 && task.generation != generation)) {
+            stopSelf(startId)
             return START_NOT_STICKY
         }
-        startForeground(notificationId(task.id), notification(task))
+        startForeground(notifier.activeNotificationId(task.id), notifier.progressNotification(task))
         executor.execute {
             process(task)
-            stopForeground(STOP_FOREGROUND_DETACH)
-            stopSelf()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
         }
-        // Coordinator/BootReceiver explicitly resume pending jobs. Avoid a null-intent
-        // sticky restart that could lose the job identity.
         return START_NOT_STICKY
     }
 
     private fun process(initial: SecureDownloadTask) {
-        var task = initial.copy(state = "downloading", error = null)
-        store.save(task)
-        updateNotification(task)
+        val generation = initial.generation
+        var task = initial
         val workDir = tempDir(this, task.id).apply { mkdirs() }
+        val tempMp4 = File(workDir, PLAIN_TEMP_NAME)
         try {
-            ensureAllowed(task)
-            val playlistText = getText(task.sourceUrl)
-            val lines = playlistText.lines()
-            require(lines.firstOrNull()?.trim()?.startsWith("#EXTM3U") == true) { "Invalid HLS playlist" }
-
-            if (isMasterPlaylist(lines)) {
-                val variant = selectVariant(lines, task.sourceUrl, task.height)
-                    ?: error("No playable HLS quality was found")
-                task = task.copy(sourceUrl = variant)
-                store.save(task)
-                process(task)
-                return
+            ensureRunning(task.id, generation)
+            require(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid == task.userId) {
+                "Sign in with the account that owns this download"
+            }
+            NativeAccountSecurity.restrictionMessage(this, task.userId)?.let { error(it) }
+            DownloadStoragePolicy.checkTask(this, task).let { check ->
+                require(check.allowed) { check.message ?: "Not enough storage for this offline video" }
             }
 
+            task = task.copy(state = "downloading", phase = "preparing", phaseProgress = 1, error = null)
+            saveIfCurrent(task, generation)
+            notifier.updateProgress(task)
+
+            // Always start from the original/master URL. Signed variant URLs are never persisted,
+            // so a resume hours later receives a fresh variant URL.
+            val selected = resolveSelectedMediaPlaylist(task)
+            val playlistUrl = selected.url
+            val lines = selected.lines
             val mediaIndexes = lines.mapIndexedNotNull { index, line ->
                 index.takeIf { line.isNotBlank() && !line.trimStart().startsWith("#") }
             }
             require(mediaIndexes.isNotEmpty()) { "HLS playlist contains no media segments" }
-            val segmentUrls = mediaIndexes.map { URI(task.sourceUrl).resolve(lines[it].trim()).toString() }
+            val segmentUrls = mediaIndexes.map { URI(playlistUrl).resolve(lines[it].trim()).toString() }
             val segmentFiles = segmentUrls.mapIndexed { index, url ->
                 File(workDir, "seg-%06d.%s".format(index, extension(url, "ts")))
             }
 
-            segmentUrls.forEachIndexed { index, url ->
-                ensureRunning(task.id)
+            var downloadedBytes = segmentFiles.filter { it.exists() && it.length() > 0 }.sumOf { it.length() }
+            for (index in segmentUrls.indices) {
+                ensureRunning(task.id, generation)
                 val target = segmentFiles[index]
                 if (!target.exists() || target.length() <= 0L) {
                     val part = File(workDir, target.name + ".part")
                     part.delete()
-                    http.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                    DownloadRuntime.execute(task.id, http.newCall(Request.Builder().url(segmentUrls[index]).build())) { response ->
                         check(response.isSuccessful) { "HLS segment ${index + 1} returned HTTP ${response.code}" }
                         val body = response.body ?: error("HLS segment ${index + 1} was empty")
                         body.byteStream().use { input ->
                             part.outputStream().use { output ->
                                 val buffer = ByteArray(64 * 1024)
                                 while (true) {
-                                    ensureRunning(task.id)
+                                    ensureRunning(task.id, generation)
                                     val count = input.read(buffer)
                                     if (count < 0) break
                                     output.write(buffer, 0, count)
@@ -112,15 +119,25 @@ class SecureHlsDownloadService : Service() {
                             }
                         }
                     }
-                    check(part.renameTo(target)) { "Could not save HLS segment ${index + 1}" }
+                    ensureRunning(task.id, generation)
+                    check(part.length() > 0 && part.renameTo(target)) { "Could not save HLS segment ${index + 1}" }
+                    downloadedBytes += target.length()
                 }
-                val percent = ((index + 1) * 70 / segmentUrls.size).coerceIn(0, 70)
-                task = task.copy(state = "downloading", downloadedBytes = percent.toLong(), totalBytes = 100)
-                store.save(task)
-                updateNotification(task)
+                val stageProgress = (((index + 1) * 70.0) / segmentUrls.size).toInt().coerceIn(1, 70)
+                task = task.copy(
+                    state = "downloading",
+                    phase = "downloading",
+                    phaseProgress = stageProgress,
+                    downloadedBytes = downloadedBytes,
+                    totalBytes = task.expectedBytes.takeIf { it > 0 } ?: maxOf(downloadedBytes, 1L),
+                    height = selected.height,
+                    qualityLabel = selected.label,
+                )
+                saveIfCurrent(task, generation)
+                notifier.updateProgress(task)
             }
 
-            val localized = localizeAuxiliaryUris(lines, task.sourceUrl, workDir)
+            val localized = localizeAuxiliaryUris(task, generation, lines, playlistUrl, workDir)
             val finalLines = localized.mapIndexed { index, line ->
                 val position = mediaIndexes.indexOf(index)
                 if (position >= 0) segmentFiles[position].name else line
@@ -128,23 +145,23 @@ class SecureHlsDownloadService : Service() {
             val localPlaylist = File(workDir, "offline.m3u8")
             localPlaylist.writeText(finalLines.joinToString("\n"))
 
-            task = task.copy(state = "downloading", downloadedBytes = 75, totalBytes = 100)
-            store.save(task)
-            updateNotification(task)
+            task = task.copy(state = "downloading", phase = "converting", phaseProgress = 72)
+            saveIfCurrent(task, generation)
+            notifier.updateProgress(task)
 
-            val tempMp4 = File(workDir, "plain-working.mp4")
-            if (tempMp4.exists()) tempMp4.delete()
-            transformToMp4(task, localPlaylist, tempMp4)
+            tempMp4.delete()
+            transformToMp4(task, generation, localPlaylist, tempMp4)
+            ensureRunning(task.id, generation)
             require(tempMp4.exists() && tempMp4.length() > 0L) { "HLS conversion produced no video" }
 
             store.resetChunks(task.id)
-            val totalBytes = tempMp4.length()
+            val finalBytes = tempMp4.length()
             var index = 0
             var encryptedBytes = 0L
             tempMp4.inputStream().use { input ->
                 val buffer = ByteArray(SecureMediaStore.CHUNK_BYTES)
                 while (true) {
-                    ensureRunning(task.id)
+                    ensureRunning(task.id, generation)
                     var count = 0
                     while (count < buffer.size) {
                         val read = input.read(buffer, count, buffer.size - count)
@@ -154,107 +171,125 @@ class SecureHlsDownloadService : Service() {
                     if (count <= 0) break
                     val plain = if (count == buffer.size) buffer.copyOf() else buffer.copyOf(count)
                     store.writeEncryptedChunk(task, index, plain)
+                    ensureRunning(task.id, generation)
                     index += 1
                     encryptedBytes += count
+                    val encryptProgress = 75 + ((encryptedBytes * 24L) / finalBytes).toInt().coerceIn(0, 24)
                     task = task.copy(
                         state = "downloading",
+                        phase = "encrypting",
+                        phaseProgress = encryptProgress,
                         downloadedBytes = encryptedBytes,
-                        totalBytes = totalBytes,
+                        totalBytes = finalBytes,
                         chunkCount = index,
                     )
-                    store.save(task)
-                    updateNotification(task)
+                    saveIfCurrent(task, generation)
+                    notifier.updateProgress(task)
                 }
             }
 
-            ensureRunning(task.id)
+            ensureRunning(task.id, generation)
             task = task.copy(
                 state = "completed",
-                downloadedBytes = totalBytes,
-                totalBytes = totalBytes,
+                phase = "completed",
+                phaseProgress = 100,
+                downloadedBytes = finalBytes,
+                totalBytes = finalBytes,
+                expectedBytes = finalBytes,
+                sizeEstimated = false,
                 chunkCount = index,
                 error = null,
             )
-            store.save(task)
+            saveIfCurrent(task, generation)
+            require(store.hasCompleteMedia(task)) { "Encrypted offline copy failed its integrity check" }
             workDir.deleteRecursively()
-            updateNotification(task, done = true)
-            sendBroadcast(Intent(SecureDownloadService.ACTION_DOWNLOAD_CHANGED).putExtra(SecureDownloadService.EXTRA_ID, task.id))
-        } catch (_: DownloadPaused) {
-            cancelTransformer()
-            task = store.get(task.id)?.copy(state = "paused", error = null) ?: return
-            store.save(task)
-            updateNotification(task)
-        } catch (_: DownloadStopped) {
-            cancelTransformer()
-            workDir.deleteRecursively()
-            cancelNotification(this, task.id)
+            notifier.completed(task)
         } catch (error: Throwable) {
             cancelTransformer()
-            val existing = store.get(task.id) ?: return
-            task = existing.copy(state = "failed", error = error.message ?: "HLS download failed")
-            store.save(task)
-            updateNotification(task)
+            tempMp4.delete() // never retain a plaintext MP4 after pause/failure
+            val current = store.get(initial.id) ?: run {
+                workDir.deleteRecursively()
+                notifier.cancelAll(initial.id)
+                return
+            }
+            if (current.generation != generation) return
+            when (current.state) {
+                "paused" -> notifier.paused(current)
+                "deleting" -> {
+                    workDir.deleteRecursively()
+                    notifier.cancelAll(current.id)
+                }
+                else -> {
+                    val failed = current.copy(state = "failed", phase = "failed", error = friendlyError(error))
+                    store.save(failed)
+                    notifier.failed(failed)
+                }
+            }
+        } finally {
+            activeInstances.remove(initial.id)
         }
     }
 
-    private fun ensureAllowed(task: SecureDownloadTask) {
-        val uid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
-        require(uid == task.userId) { "Sign in with the account that owns this download" }
-        NativeAccountSecurity.restrictionMessage(this, task.userId)?.let { error(it) }
-    }
+    private data class SelectedPlaylist(val url: String, val lines: List<String>, val height: Int, val label: String)
 
-    private fun ensureRunning(id: String) {
-        val current = store.get(id) ?: throw DownloadStopped()
-        if (current.state == "paused") throw DownloadPaused()
-    }
-
-    private fun getText(url: String): String = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-        check(response.isSuccessful) { "HLS playlist returned HTTP ${response.code}" }
-        response.body?.string() ?: error("HLS playlist was empty")
-    }
-
-    private fun isMasterPlaylist(lines: List<String>): Boolean = lines.any { it.startsWith("#EXT-X-STREAM-INF:") }
-
-    private fun selectVariant(lines: List<String>, baseUrl: String, requestedHeight: Int): String? {
+    private fun resolveSelectedMediaPlaylist(task: SecureDownloadTask): SelectedPlaylist {
+        val originalUrl = task.sourceUrl
+        val originalLines = getText(task.id, originalUrl).lines()
+        val master = originalLines.any { it.startsWith("#EXT-X-STREAM-INF:") }
+        if (!master) {
+            return SelectedPlaylist(originalUrl, originalLines, task.height, task.qualityLabel.ifBlank { "Source quality" })
+        }
         data class Variant(val height: Int, val url: String)
         val variants = mutableListOf<Variant>()
-        lines.forEachIndexed { index, line ->
+        originalLines.forEachIndexed { index, line ->
             if (!line.startsWith("#EXT-X-STREAM-INF:")) return@forEachIndexed
-            val resolution = Regex("RESOLUTION=\\d+x(\\d+)", RegexOption.IGNORE_CASE)
+            val height = Regex("RESOLUTION=\\d+x(\\d+)", RegexOption.IGNORE_CASE)
                 .find(line)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-            val next = lines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return@forEachIndexed
-            variants += Variant(resolution, URI(baseUrl).resolve(next.trim()).toString())
+            val next = originalLines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("#") }
+                ?: return@forEachIndexed
+            variants += Variant(height, URI(originalUrl).resolve(next.trim()).toString())
         }
-        if (variants.isEmpty()) return null
-        return variants.filter { it.height in 1..requestedHeight }.maxByOrNull { it.height }?.url
-            ?: variants.filter { it.height > 0 }.minByOrNull { it.height }?.url
-            ?: variants.first().url
+        val selected = if (task.height > 0) variants.firstOrNull { it.height == task.height } else variants.firstOrNull()
+            ?: error("The selected HLS quality is no longer available. Choose a quality again.")
+        val mediaLines = getText(task.id, selected.url).lines()
+        return SelectedPlaylist(selected.url, mediaLines, selected.height, if (selected.height > 0) "${selected.height}p" else "Source quality")
     }
 
-    private fun localizeAuxiliaryUris(lines: List<String>, playlistUrl: String, dir: File): List<String> {
+    private fun localizeAuxiliaryUris(
+        task: SecureDownloadTask,
+        generation: Long,
+        lines: List<String>,
+        playlistUrl: String,
+        dir: File,
+    ): List<String> {
         val uriRegex = Regex("URI=\"([^\"]+)\"")
         return lines.map { line ->
             if (!line.startsWith("#EXT-X-MAP:") && !line.startsWith("#EXT-X-KEY:")) return@map line
             val match = uriRegex.find(line) ?: return@map line
             val raw = match.groupValues[1]
             if (raw.isBlank()) return@map line
+            ensureRunning(task.id, generation)
             val source = URI(playlistUrl).resolve(raw).toString()
             val localName = "aux-${safe(source).take(16)}.${extension(source, "bin")}" 
             val target = File(dir, localName)
             if (!target.exists()) {
-                http.newCall(Request.Builder().url(source).build()).execute().use { response ->
+                val bytes = DownloadRuntime.execute(task.id, http.newCall(Request.Builder().url(source).build())) { response ->
                     check(response.isSuccessful) { "HLS auxiliary resource returned HTTP ${response.code}" }
-                    target.writeBytes(response.body?.bytes() ?: error("HLS auxiliary resource was empty"))
+                    response.body?.bytes() ?: error("HLS auxiliary resource was empty")
                 }
+                ensureRunning(task.id, generation)
+                target.writeBytes(bytes)
             }
             line.replaceRange(match.range, "URI=\"$localName\"")
         }
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)
-    private fun transformToMp4(task: SecureDownloadTask, playlist: File, output: File) {
+    private fun transformToMp4(task: SecureDownloadTask, generation: Long, playlist: File, output: File) {
         val done = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>(null)
+        activeDownloadId = task.id
+        activeInstances[task.id] = WeakReference(this)
         mainHandler.post {
             try {
                 val mediaItem = MediaItem.Builder()
@@ -287,7 +322,7 @@ class SecureHlsDownloadService : Service() {
                 done.countDown()
             }
         }
-        while (!done.await(500, TimeUnit.MILLISECONDS)) ensureRunning(task.id)
+        while (!done.await(350, TimeUnit.MILLISECONDS)) ensureRunning(task.id, generation)
         failure.get()?.let { throw it }
     }
 
@@ -299,6 +334,25 @@ class SecureHlsDownloadService : Service() {
         }
     }
 
+    private fun getText(downloadId: String, url: String): String =
+        DownloadRuntime.execute(downloadId, http.newCall(Request.Builder().url(url).build())) { response ->
+            check(response.isSuccessful) { "HLS playlist returned HTTP ${response.code}" }
+            response.body?.string() ?: error("HLS playlist was empty")
+        }
+
+    private fun ensureRunning(id: String, generation: Long): SecureDownloadTask {
+        val current = store.get(id) ?: throw DownloadStopped()
+        if (current.generation != generation) throw DownloadStopped()
+        if (current.state == "paused") throw DownloadPaused()
+        if (current.state == "deleting") throw DownloadStopped()
+        return current
+    }
+
+    private fun saveIfCurrent(task: SecureDownloadTask, generation: Long) {
+        ensureRunning(task.id, generation)
+        store.save(task)
+    }
+
     private fun extension(url: String, fallback: String): String = runCatching {
         val ext = URI(url).path.substringAfterLast('.', "").lowercase()
         if (ext.matches(Regex("[a-z0-9]{1,5}"))) ext else fallback
@@ -308,45 +362,15 @@ class SecureHlsDownloadService : Service() {
         .digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
 
-    private fun createChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Offline classes", NotificationManager.IMPORTANCE_LOW),
-        )
-    }
-
-    private fun notification(task: SecureDownloadTask, done: Boolean = false): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            notificationId(task.id),
-            Intent(this, MainActivity::class.java)
-                .putExtra(MainActivity.EXTRA_OPEN_PATH, "/downloads")
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val progress = task.progress
-        val text = when (task.state) {
-            "completed" -> "Ready offline • ${task.height}p"
-            "paused" -> "Paused"
-            "failed" -> task.error ?: "Download failed"
-            else -> "Preparing encrypted offline class • $progress%"
-        }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_easy_education)
-            .setContentTitle(task.title)
-            .setContentText(text)
-            .setContentIntent(open)
-            .setOnlyAlertOnce(true)
-            .setOngoing(!done && task.state == "downloading")
-            .setProgress(100, progress, false)
-            .build()
-    }
-
-    private fun updateNotification(task: SecureDownloadTask, done: Boolean = false) {
-        getSystemService(NotificationManager::class.java)
-            .notify(notificationId(task.id), notification(task, done))
+    private fun friendlyError(error: Throwable): String = when {
+        error is DownloadPaused -> "Paused"
+        error is DownloadStopped -> "Download stopped"
+        error.message?.contains("Canceled", ignoreCase = true) == true -> "Download paused"
+        else -> error.message ?: "HLS download failed"
     }
 
     override fun onDestroy() {
+        activeDownloadId?.let(activeInstances::remove)
         cancelTransformer()
         executor.shutdownNow()
         super.onDestroy()
@@ -356,15 +380,23 @@ class SecureHlsDownloadService : Service() {
     private class DownloadStopped : Exception()
 
     companion object {
-        private const val CHANNEL_ID = "secure_offline_classes_hls_v2"
+        private const val PLAIN_TEMP_NAME = "plain-working.mp4"
+        private val activeInstances = ConcurrentHashMap<String, WeakReference<SecureHlsDownloadService>>()
 
         fun tempDir(context: Context, id: String): File =
             File(context.cacheDir, "secure_hls/${SecureMediaStore.safe(id)}")
 
-        fun cancelNotification(context: Context, id: String) {
-            context.getSystemService(NotificationManager::class.java).cancel(notificationId(id))
+        fun cancelActiveTransform(id: String) {
+            activeInstances[id]?.get()?.cancelTransformer()
         }
 
-        private fun notificationId(id: String): Int = ("hls:" + SecureMediaStore.safe(id)).hashCode()
+        fun cancelNotification(context: Context, id: String) {
+            DownloadNotifier(context).cancelAll(id)
+        }
+
+        fun cleanupPlaintext(context: Context) {
+            val root = File(context.cacheDir, "secure_hls")
+            root.listFiles()?.forEach { dir -> File(dir, PLAIN_TEMP_NAME).delete() }
+        }
     }
 }
