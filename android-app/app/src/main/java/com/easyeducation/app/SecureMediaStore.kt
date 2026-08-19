@@ -139,6 +139,7 @@ class SecureMediaStore(private val context: Context) {
 
     fun writeEncryptedChunk(task: SecureDownloadTask, index: Int, plain: ByteArray) {
         require(plain.isNotEmpty()) { "Cannot encrypt an empty chunk" }
+        require(isCurrentWritable(task)) { "Stale download worker" }
         val cipher = Cipher.getInstance(CIPHER)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         cipher.updateAAD(aad(task.userId, task.classId, index))
@@ -152,8 +153,23 @@ class SecureMediaStore(private val context: Context) {
             stream.write(encrypted)
             stream.fd.sync()
         }
+        if (!isCurrentWritable(task)) {
+            temp.delete()
+            output.parentFile?.takeIf { it.listFiles()?.isEmpty() == true }?.delete()
+            error("Stale download worker")
+        }
         if (output.exists()) output.delete()
         check(temp.renameTo(output)) { "Could not finalize encrypted media chunk" }
+        if (!isCurrentWritable(task)) {
+            output.delete()
+            output.parentFile?.takeIf { it.listFiles()?.isEmpty() == true }?.delete()
+            error("Stale download worker")
+        }
+    }
+
+    private fun isCurrentWritable(task: SecureDownloadTask): Boolean {
+        val current = get(task.id) ?: return false
+        return current.generation == task.generation && current.state in setOf("queued", "downloading")
     }
 
     fun readDecryptedChunk(task: SecureDownloadTask, index: Int): ByteArray {
