@@ -1,14 +1,18 @@
 package com.easyeducation.app
 
+import android.app.PictureInPictureParams
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Rational
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -90,6 +94,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
+        configurePictureInPicture()
 
         currentId = intent.getStringExtra(EXTRA_ID).orEmpty()
         val video = if (currentId.isNotBlank()) {
@@ -560,9 +565,53 @@ class OfflinePlayerActivity : AppCompatActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private fun configurePictureInPicture() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(true)
+            builder.setSeamlessResizeEnabled(true)
+        }
+        setPictureInPictureParams(builder.build())
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (
+            Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S
+            && player?.isPlaying == true
+            && !isInPictureInPictureMode
+        ) {
+            enterPictureInPictureMode(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build(),
+            )
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            handler.removeCallbacks(hideControls)
+            controls?.animate()?.cancel()
+            controls?.visibility = View.INVISIBLE
+            leftSeekHint?.visibility = View.INVISIBLE
+            rightSeekHint?.visibility = View.INVISIBLE
+            fastBadge?.visibility = View.INVISIBLE
+        } else {
+            showControlsTemporarily()
+            enterImmersiveMode()
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
+        if (hasFocus && !isInPictureInPictureMode) enterImmersiveMode()
     }
 
     override fun onPause() {
