@@ -83,8 +83,6 @@ class SecureHlsDownloadService : Service() {
             saveIfCurrent(task, generation)
             notifier.updateProgress(task)
 
-            // Always start from the original/master URL. Signed variant URLs are never persisted,
-            // so a resume hours later receives a fresh variant URL.
             val selected = resolveSelectedMediaPlaylist(task)
             val playlistUrl = selected.url
             val lines = selected.lines
@@ -206,7 +204,7 @@ class SecureHlsDownloadService : Service() {
             notifier.completed(task)
         } catch (error: Throwable) {
             cancelTransformer()
-            tempMp4.delete() // never retain a plaintext MP4 after pause/failure
+            tempMp4.delete()
             val current = store.get(initial.id) ?: run {
                 workDir.deleteRecursively()
                 notifier.cancelAll(initial.id)
@@ -230,29 +228,50 @@ class SecureHlsDownloadService : Service() {
         }
     }
 
-    private data class SelectedPlaylist(val url: String, val lines: List<String>, val height: Int, val label: String)
+    private data class SelectedPlaylist(
+        val url: String,
+        val lines: List<String>,
+        val height: Int,
+        val label: String,
+    )
 
     private fun resolveSelectedMediaPlaylist(task: SecureDownloadTask): SelectedPlaylist {
         val originalUrl = task.sourceUrl
         val originalLines = getText(task.id, originalUrl).lines()
         val master = originalLines.any { it.startsWith("#EXT-X-STREAM-INF:") }
         if (!master) {
-            return SelectedPlaylist(originalUrl, originalLines, task.height, task.qualityLabel.ifBlank { "Source quality" })
+            return SelectedPlaylist(
+                originalUrl,
+                originalLines,
+                task.height,
+                task.qualityLabel.ifBlank { "Source quality" },
+            )
         }
+
         data class Variant(val height: Int, val url: String)
         val variants = mutableListOf<Variant>()
         originalLines.forEachIndexed { index, line ->
             if (!line.startsWith("#EXT-X-STREAM-INF:")) return@forEachIndexed
             val height = Regex("RESOLUTION=\\d+x(\\d+)", RegexOption.IGNORE_CASE)
                 .find(line)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-            val next = originalLines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            val next = originalLines.drop(index + 1)
+                .firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("#") }
                 ?: return@forEachIndexed
             variants += Variant(height, URI(originalUrl).resolve(next.trim()).toString())
         }
-        val selected = if (task.height > 0) variants.firstOrNull { it.height == task.height } else variants.firstOrNull()
-            ?: error("The selected HLS quality is no longer available. Choose a quality again.")
+
+        val selected = (
+            if (task.height > 0) variants.firstOrNull { it.height == task.height }
+            else variants.firstOrNull()
+        ) ?: error("The selected HLS quality is no longer available. Choose a quality again.")
+
         val mediaLines = getText(task.id, selected.url).lines()
-        return SelectedPlaylist(selected.url, mediaLines, selected.height, if (selected.height > 0) "${selected.height}p" else "Source quality")
+        return SelectedPlaylist(
+            selected.url,
+            mediaLines,
+            selected.height,
+            if (selected.height > 0) "${selected.height}p" else "Source quality",
+        )
     }
 
     private fun localizeAuxiliaryUris(
@@ -285,7 +304,12 @@ class SecureHlsDownloadService : Service() {
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)
-    private fun transformToMp4(task: SecureDownloadTask, generation: Long, playlist: File, output: File) {
+    private fun transformToMp4(
+        task: SecureDownloadTask,
+        generation: Long,
+        playlist: File,
+        output: File,
+    ) {
         val done = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>(null)
         activeDownloadId = task.id
