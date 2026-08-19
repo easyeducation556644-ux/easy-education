@@ -28,6 +28,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun EasyEducationSecureRoot(
     viewModel: NativeAppViewModel,
     onGoogleSignIn: () -> Unit,
+    loginBusy: Boolean = false,
+    activeDeviceCount: Int = 0,
     initialPath: String? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -44,25 +46,21 @@ fun EasyEducationSecureRoot(
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
                             Icon(Icons.Default.Lock, contentDescription = null)
-                            Text(
-                                "Account restricted",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                            )
+                            Text("Account restricted", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text(restriction)
                             Spacer(Modifier.height(4.dp))
-                            Button(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                                Text("Sign out")
-                            }
+                            Button(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
                         }
                     }
                 }
             }
         }
     } else {
-        EasyEducationNativeApp(
+        EasyEducationNativeAppV2(
             viewModel = viewModel,
             onGoogleSignIn = onGoogleSignIn,
+            loginBusy = loginBusy,
+            activeDeviceCount = activeDeviceCount,
             initialPath = initialPath,
         )
     }
