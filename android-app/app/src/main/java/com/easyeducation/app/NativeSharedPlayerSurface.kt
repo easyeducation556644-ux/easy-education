@@ -10,8 +10,8 @@ import androidx.media3.common.util.UnstableApi
 /**
  * Owns the single visual player view used by inline watch, fullscreen and in-app mini modes.
  * The same YoutubeStylePlayerView is reparented inside MainActivity instead of creating another
- * PlayerView for each presentation. This mirrors the player-reparenting architecture exposed by
- * the YouTube APK and prevents presentation changes from creating a second video surface/controller.
+ * PlayerView for each presentation. This mirrors the permitted YouTube player-reparenting
+ * architecture and prevents presentation changes from creating a second video surface/controller.
  */
 @UnstableApi
 object NativeSharedPlayerSurface {
@@ -24,16 +24,19 @@ object NativeSharedPlayerSurface {
         val current = surface
         if (current != null && (activity == null || hostActivity === activity)) {
             setMiniPresentation(current, false)
+            YoutubeExactPlayPauseFrames.bind(current, PersistentNativePlayer.player(context.applicationContext))
             return current
         }
 
         surface?.let { old ->
+            YoutubeExactPlayPauseFrames.unbind(old)
             (old.parent as? ViewGroup)?.removeView(old)
             old.bindPlayer(null)
         }
-        return YoutubeStylePlayerView(activity ?: context).also {
+        return YoutubeStylePlayerView(activity ?: context).also { created ->
             hostActivity = activity
-            surface = it
+            surface = created
+            YoutubeExactPlayPauseFrames.bind(created, PersistentNativePlayer.player(context.applicationContext))
         }
     }
 
@@ -71,6 +74,7 @@ object NativeSharedPlayerSurface {
     @Synchronized
     fun clear() {
         surface?.let { current ->
+            YoutubeExactPlayPauseFrames.unbind(current)
             (current.parent as? ViewGroup)?.removeView(current)
             current.bindPlayer(null)
         }
