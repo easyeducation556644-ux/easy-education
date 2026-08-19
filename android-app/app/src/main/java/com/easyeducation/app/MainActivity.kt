@@ -175,8 +175,6 @@ class MainActivity : ComponentActivity() {
         val exo = PersistentNativePlayer.player(this)
         if (exo.mediaItemCount == 0) return
 
-        // If the user presses Home from fullscreen, first remove only that presentation. The player
-        // remains prepared, then the same session is stretched into the native PiP source surface.
         if (NativeFullscreenOverlay.owns(exo)) NativeFullscreenOverlay.dismiss(immediate = true)
         if (!NativeMiniPlayerOverlay.ensureForPip(this)) return
         NativePlayerMediaSession.ensure(this)
@@ -196,7 +194,23 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (!isInPictureInPictureMode) {
-            NativeMiniPlayerOverlay.exitPipPresentation()
+            val classId = PersistentNativePlayer.currentClassId()
+            if (classId.isNotBlank() && NativeInlineSurfaceRegistry.canRestore()) {
+                val exo = PersistentNativePlayer.player(this)
+                NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
+                if (!NativeInlineSurfaceRegistry.restore(exo)) {
+                    NativeMiniPlayerOverlay.show(
+                        activity = this,
+                        exoPlayer = exo,
+                        classId = classId,
+                        sourceUrl = PersistentNativePlayer.currentSourceUrl(),
+                        title = "",
+                        requestedHeight = PersistentNativePlayer.currentHeight().takeIf { it > 0 } ?: 480,
+                    )
+                }
+            } else {
+                NativeMiniPlayerOverlay.exitPipPresentation()
+            }
         }
     }
 
