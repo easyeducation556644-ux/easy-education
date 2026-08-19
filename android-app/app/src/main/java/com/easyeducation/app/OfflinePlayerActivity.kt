@@ -56,6 +56,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
     private var rapidSeekSeconds = 0
     private var rapidSeekSide = 0
     private var lastRapidSeekAt = 0L
+    private var controlsAnimationToken = 0
     private var downX = 0f
     private var downY = 0f
     private var moved = false
@@ -245,7 +246,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
             Gravity.TOP,
         ))
 
-        playPauseButton = iconText("▶", 31f, circle = true).apply {
+        playPauseButton = iconText("", 31f, circle = true).apply {
             contentDescription = "Play or pause"
             setOnClickListener {
                 val exo = player ?: return@setOnClickListener
@@ -253,6 +254,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
                 showControlsTemporarily()
             }
         }
+        updatePlayButton(false)
         overlay.addView(playPauseButton, FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER))
 
         bufferingText = pillText("Loading…").apply {
@@ -395,7 +397,7 @@ class OfflinePlayerActivity : AppCompatActivity() {
                 if (now - lastTapAt <= RAPID_TAP_WINDOW_MS && side == lastTapSide) {
                     singleTapRunnable?.let(handler::removeCallbacks)
                     rapidSeekSeconds = if (side == rapidSeekSide && now - lastRapidSeekAt <= RAPID_RESET_MS) {
-                        (rapidSeekSeconds + 10).coerceAtMost(60)
+                        if (rapidSeekSeconds > Int.MAX_VALUE - 10) Int.MAX_VALUE else rapidSeekSeconds + 10
                     } else {
                         10
                     }
@@ -474,7 +476,16 @@ class OfflinePlayerActivity : AppCompatActivity() {
     }
 
     private fun updatePlayButton(isPlaying: Boolean) {
-        playPauseButton?.text = if (isPlaying) "❚❚" else "▶"
+        playPauseButton?.apply {
+            text = ""
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
+                0,
+                0,
+                0,
+            )
+            contentDescription = if (isPlaying) "Pause" else "Play"
+        }
     }
 
     private fun showControlsTemporarily() {
@@ -490,17 +501,50 @@ class OfflinePlayerActivity : AppCompatActivity() {
     }
 
     private fun setControlsVisible(visible: Boolean) {
+        val overlay = controls ?: return
+        if (controlsVisible == visible &&
+            ((visible && overlay.visibility == View.VISIBLE && overlay.alpha >= 0.99f) ||
+                (!visible && overlay.visibility == View.INVISIBLE))
+        ) return
         controlsVisible = visible
-        controls?.animate()?.cancel()
+        val token = ++controlsAnimationToken
+        overlay.animate().cancel()
         if (visible) {
-            controls?.visibility = View.VISIBLE
-            controls?.animate()?.alpha(1f)?.setDuration(120)?.start()
+            if (overlay.visibility != View.VISIBLE) {
+                overlay.alpha = 0f
+                overlay.scaleX = 0.985f
+                overlay.scaleY = 0.985f
+                overlay.visibility = View.VISIBLE
+            }
+            overlay.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(230L)
+                .withEndAction {
+                    if (token == controlsAnimationToken) {
+                        overlay.alpha = 1f
+                        overlay.scaleX = 1f
+                        overlay.scaleY = 1f
+                    }
+                }
+                .start()
             scheduleHide()
         } else {
-            controls?.animate()?.alpha(0f)?.setDuration(140)?.withEndAction {
-                controls?.visibility = View.INVISIBLE
-            }?.start()
             handler.removeCallbacks(hideControls)
+            overlay.animate()
+                .alpha(0f)
+                .scaleX(1.008f)
+                .scaleY(1.008f)
+                .setDuration(190L)
+                .withEndAction {
+                    if (token == controlsAnimationToken && !controlsVisible) {
+                        overlay.visibility = View.INVISIBLE
+                        overlay.scaleX = 1f
+                        overlay.scaleY = 1f
+                    }
+                }
+                .start()
         }
     }
 

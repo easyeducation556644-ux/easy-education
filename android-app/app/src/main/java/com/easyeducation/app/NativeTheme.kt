@@ -9,6 +9,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 private val EasyLight = lightColorScheme(
@@ -57,6 +60,33 @@ private val EasyShapes = Shapes(
     extraLarge = RoundedCornerShape(22.dp),
 )
 
+private val HindSiliguri = FontFamily(
+    Font(R.font.hind_siliguri_light, FontWeight.Light),
+    Font(R.font.hind_siliguri_regular, FontWeight.Normal),
+    Font(R.font.hind_siliguri_medium, FontWeight.Medium),
+    Font(R.font.hind_siliguri_semibold, FontWeight.SemiBold),
+    Font(R.font.hind_siliguri_bold, FontWeight.Bold),
+)
+
+private val BaseTypography = Typography()
+private val EasyTypography = Typography(
+    displayLarge = BaseTypography.displayLarge.copy(fontFamily = HindSiliguri),
+    displayMedium = BaseTypography.displayMedium.copy(fontFamily = HindSiliguri),
+    displaySmall = BaseTypography.displaySmall.copy(fontFamily = HindSiliguri),
+    headlineLarge = BaseTypography.headlineLarge.copy(fontFamily = HindSiliguri),
+    headlineMedium = BaseTypography.headlineMedium.copy(fontFamily = HindSiliguri),
+    headlineSmall = BaseTypography.headlineSmall.copy(fontFamily = HindSiliguri),
+    titleLarge = BaseTypography.titleLarge.copy(fontFamily = HindSiliguri),
+    titleMedium = BaseTypography.titleMedium.copy(fontFamily = HindSiliguri),
+    titleSmall = BaseTypography.titleSmall.copy(fontFamily = HindSiliguri),
+    bodyLarge = BaseTypography.bodyLarge.copy(fontFamily = HindSiliguri),
+    bodyMedium = BaseTypography.bodyMedium.copy(fontFamily = HindSiliguri),
+    bodySmall = BaseTypography.bodySmall.copy(fontFamily = HindSiliguri),
+    labelLarge = BaseTypography.labelLarge.copy(fontFamily = HindSiliguri),
+    labelMedium = BaseTypography.labelMedium.copy(fontFamily = HindSiliguri),
+    labelSmall = BaseTypography.labelSmall.copy(fontFamily = HindSiliguri),
+)
+
 @Composable
 fun EasyEducationTheme(
     themeMode: String = NativeThemePreferences.SYSTEM,
@@ -69,7 +99,7 @@ fun EasyEducationTheme(
     }
     MaterialTheme(
         colorScheme = if (dark) EasyDark else EasyLight,
-        typography = Typography(),
+        typography = EasyTypography,
         shapes = EasyShapes,
         content = content,
     )

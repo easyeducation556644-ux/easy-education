@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
     private var initialPath by mutableStateOf<String?>(null)
     private var navigationEpoch by mutableIntStateOf(0)
     private var loginBusy by mutableStateOf(false)
-    private var activeDeviceCount by mutableStateOf(0)
+    private var activeDevices by mutableStateOf<List<NativeActiveDevice>>(emptyList())
     private var deviceListener: ListenerRegistration? = null
 
     private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onGoogleSignIn = ::launchGoogleSignIn,
                     loginBusy = loginBusy,
-                    activeDeviceCount = activeDeviceCount,
+                    activeDevices = activeDevices,
                     initialPath = initialPath,
                 )
             }
@@ -121,6 +121,9 @@ class MainActivity : ComponentActivity() {
         runCatching { SecureDownloadCoordinator.resumePending(this) }
         if (FirebaseAuth.getInstance().currentUser != null) {
             lifecycleScope.launch(Dispatchers.IO) {
+                FirebaseAuth.getInstance().currentUser?.let { user ->
+                    runCatching { NativeDeviceSession.ensureCurrentDevice(this@MainActivity, user) }
+                }
                 runCatching { NativePushRegistrar.register(this@MainActivity) }
             }
         }
@@ -138,7 +141,7 @@ class MainActivity : ComponentActivity() {
         deviceListener?.remove()
         deviceListener = null
         if (user == null) {
-            activeDeviceCount = 0
+            activeDevices = emptyList()
             NativeFullscreenOverlay.dismiss(immediate = true)
             NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
             NativePlayerMediaSession.release()
@@ -148,9 +151,9 @@ class MainActivity : ComponentActivity() {
         deviceListener = NativeDeviceSession.observe(
             context = this,
             user = user,
-            onDeviceCount = { count -> activeDeviceCount = count },
+            onDevices = { devices -> activeDevices = devices },
             onForcedOut = { message ->
-                activeDeviceCount = 0
+                activeDevices = emptyList()
                 NativeFullscreenOverlay.dismiss(immediate = true)
                 NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
                 NativePlayerMediaSession.release()

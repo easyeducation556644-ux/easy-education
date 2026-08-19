@@ -90,6 +90,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     private var rapidSeekSeconds = 0
     private var rapidSeekSide = 0
     private var lastRapidSeekAt = 0L
+    private var controlsAnimationToken = 0
     private val resetRapidSeek = Runnable {
         rapidSeekSeconds = 0
         rapidSeekSide = 0
@@ -643,7 +644,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
         val side = if (x < width / 2f) -1 else 1
         val now = android.os.SystemClock.uptimeMillis()
         rapidSeekSeconds = if (side == rapidSeekSide && now - lastRapidSeekAt <= RAPID_SEEK_CHAIN_MS) {
-            (rapidSeekSeconds + 10).coerceAtMost(60)
+            if (rapidSeekSeconds > Int.MAX_VALUE - 10) Int.MAX_VALUE else rapidSeekSeconds + 10
         } else {
             10
         }
@@ -707,23 +708,20 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             return
         }
         playPause.animate().cancel()
+        // Swap the vector before animating. Fading the old drawable almost to transparent before
+        // the swap made a fast play/pause transition look like a blank button on some devices.
+        playPause.setImageResource(icon)
+        playPause.rotation = if (isPlaying) -5f else 5f
+        playPause.scaleX = 0.78f
+        playPause.scaleY = 0.78f
+        playPause.alpha = 1f
         playPause.animate()
-            .rotation(if (isPlaying) 7f else -7f)
-            .scaleX(0.70f)
-            .scaleY(0.70f)
-            .alpha(0.28f)
-            .setDuration(70L)
-            .withEndAction {
-                playPause.setImageResource(icon)
-                playPause.animate()
-                    .rotation(0f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .alpha(1f)
-                    .setInterpolator(OvershootInterpolator(0.75f))
-                    .setDuration(155L)
-                    .start()
-            }
+            .rotation(0f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .alpha(1f)
+            .setInterpolator(OvershootInterpolator(0.65f))
+            .setDuration(175L)
             .start()
     }
 
@@ -738,14 +736,51 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     }
 
     private fun setControlsVisible(visible: Boolean) {
+        if (controlsVisible == visible &&
+            ((visible && controls.visibility == View.VISIBLE && controls.alpha >= 0.99f) ||
+                (!visible && controls.visibility == View.INVISIBLE))
+        ) return
         controlsVisible = visible
+        val token = ++controlsAnimationToken
         controls.animate().cancel()
-        controls.animate()
-            .alpha(if (visible) 1f else 0f)
-            .setDuration(150L)
-            .withStartAction { if (visible) controls.visibility = View.VISIBLE }
-            .withEndAction { if (!visible) controls.visibility = View.INVISIBLE }
-            .start()
+        if (visible) {
+            if (controls.visibility != View.VISIBLE) {
+                controls.alpha = 0f
+                controls.scaleX = 0.985f
+                controls.scaleY = 0.985f
+                controls.visibility = View.VISIBLE
+            }
+            controls.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setInterpolator(DecelerateInterpolator(1.55f))
+                .setDuration(230L)
+                .withEndAction {
+                    if (token == controlsAnimationToken) {
+                        controls.alpha = 1f
+                        controls.scaleX = 1f
+                        controls.scaleY = 1f
+                    }
+                }
+                .start()
+        } else {
+            handler.removeCallbacks(hideControls)
+            controls.animate()
+                .alpha(0f)
+                .scaleX(1.008f)
+                .scaleY(1.008f)
+                .setInterpolator(DecelerateInterpolator())
+                .setDuration(190L)
+                .withEndAction {
+                    if (token == controlsAnimationToken && !controlsVisible) {
+                        controls.visibility = View.INVISIBLE
+                        controls.scaleX = 1f
+                        controls.scaleY = 1f
+                    }
+                }
+                .start()
+        }
     }
 
     override fun onAttachedToWindow() {

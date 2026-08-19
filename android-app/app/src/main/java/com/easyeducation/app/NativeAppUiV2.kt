@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -62,6 +63,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
@@ -94,6 +96,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -116,6 +119,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -140,13 +144,72 @@ private const val PAST_CLASS_PAGE_SIZE = 5
 private const val APP_MOTION_QUICK_MS = 150
 private const val APP_MOTION_STANDARD_MS = 240
 private const val APP_MOTION_EMPHASIZED_MS = 320
+private const val COURSE_STORE_BRIDGE = "EasyEducationNative"
+
+private class NativeCourseStoreBridge(
+    private val onMyCourses: () -> Unit,
+    private val onCheckoutComplete: () -> Unit,
+) {
+    @JavascriptInterface
+    fun openMyCourses() = onMyCourses()
+
+    @JavascriptInterface
+    fun checkoutComplete() = onCheckoutComplete()
+}
+
+private val COURSE_STORE_BRIDGE_SCRIPT = """
+    (function () {
+      if (window.__easyEducationNativeBridgeInstalled) return;
+      window.__easyEducationNativeBridgeInstalled = true;
+      function notifyNative() {
+        if (!window.EasyEducationNative) return;
+        if (window.location.pathname === '/my-courses') {
+          window.EasyEducationNative.openMyCourses();
+        } else if (window.location.pathname === '/checkout-complete') {
+          window.EasyEducationNative.checkoutComplete();
+        }
+      }
+      var pushState = history.pushState;
+      history.pushState = function () {
+        var result = pushState.apply(this, arguments);
+        setTimeout(notifyNative, 0);
+        return result;
+      };
+      var replaceState = history.replaceState;
+      history.replaceState = function () {
+        var result = replaceState.apply(this, arguments);
+        setTimeout(notifyNative, 0);
+        return result;
+      };
+      var nativeFetch = window.fetch.bind(window);
+      window.fetch = function () {
+        var args = arguments;
+        return nativeFetch.apply(window, args).then(function (response) {
+          try {
+            var input = args[0];
+            var requestUrl = String((input && input.url) || input || '');
+            if (requestUrl.indexOf('/api/process-enrollment') !== -1 && response.ok) {
+              response.clone().json().then(function (payload) {
+                if (payload && payload.success && window.EasyEducationNative) {
+                  window.EasyEducationNative.checkoutComplete();
+                }
+              }).catch(function () {});
+            }
+          } catch (ignored) {}
+          return response;
+        });
+      };
+      window.addEventListener('popstate', notifyNative);
+      notifyNative();
+    })();
+""".trimIndent()
 
 @Composable
 fun EasyEducationNativeAppV2(
     viewModel: NativeAppViewModel,
     onGoogleSignIn: () -> Unit,
     loginBusy: Boolean = false,
-    activeDeviceCount: Int = 0,
+    activeDevices: List<NativeActiveDevice> = emptyList(),
     initialPath: String? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -206,10 +269,14 @@ fun EasyEducationNativeAppV2(
                                         NavigationBarItem(
                                             selected = selected,
                                             onClick = {
-                                                nav.navigate(item.route) {
-                                                    launchSingleTop = true
-                                                    restoreState = true
-                                                    popUpTo("home") { saveState = true }
+                                                if (item.route == "home") {
+                                                    nav.navigateHome(currentRoute)
+                                                } else {
+                                                    nav.navigate(item.route) {
+                                                        launchSingleTop = true
+                                                        restoreState = true
+                                                        popUpTo("home") { saveState = true }
+                                                    }
                                                 }
                                             },
                                             icon = { Icon(item.icon, item.label) },
@@ -243,7 +310,7 @@ fun EasyEducationNativeAppV2(
                                     NativeThemePreferences.setMode(context, mode)
                                     themeMode = mode
                                 },
-                                activeDeviceCount = activeDeviceCount,
+                                activeDevices = activeDevices,
                             )
                         }
                     }
@@ -251,6 +318,21 @@ fun EasyEducationNativeAppV2(
                 }
             }
         }
+    }
+}
+
+private fun NavHostController.navigateHome(currentRoute: String) {
+    if (currentRoute == "home") return
+    if (popBackStack("home", inclusive = false)) return
+    // Notification/deep-link launches can start without a Home entry. Replace that isolated start
+    // destination so Home is still deterministic instead of leaving the user on the child screen.
+    navigate("home") {
+        popUpTo(graph.startDestinationId) {
+            inclusive = true
+            saveState = false
+        }
+        launchSingleTop = true
+        restoreState = false
     }
 }
 
@@ -353,7 +435,7 @@ private fun V2NavHost(
     startRoute: String,
     themeMode: String,
     onThemeMode: (String) -> Unit,
-    activeDeviceCount: Int,
+    activeDevices: List<NativeActiveDevice>,
 ) {
     NavHost(
         navController = nav,
@@ -395,7 +477,7 @@ private fun V2NavHost(
         composable("home") { V2Home(nav, viewModel, state) }
         composable("courses") { V2Courses(nav, state) }
         composable("downloads") { V2Downloads(viewModel, state) }
-        composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDeviceCount) }
+        composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDevices) }
         composable("past-classes") { V2PastCourses(nav, viewModel, state) }
         composable(
             "past-classes/{courseId}",
@@ -408,7 +490,7 @@ private fun V2NavHost(
                 courseId = entry.arguments?.getString("courseId").orEmpty(),
             )
         }
-        composable("add-course") { V2AddCourse(nav, state) }
+        composable("add-course") { V2AddCourse(nav, viewModel, state) }
         composable("course/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->
             V2Course(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty())
         }
@@ -867,14 +949,45 @@ private fun V2PastClassPage(
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+@SuppressLint("AddJavascriptInterface", "SetJavaScriptEnabled")
 @Composable
-private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
+private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState) {
     val context = LocalContext.current
+    val courseIds = state.courses.mapTo(linkedSetOf()) { it.id }
+    val currentCourseIds by rememberUpdatedState(courseIds)
     var browser by remember { mutableStateOf<WebView?>(null) }
     var loading by remember { mutableStateOf(false) }
     var pageError by remember { mutableStateOf<String?>(null) }
     var canGoBack by remember { mutableStateOf(false) }
+    var awaitingEnrollment by remember { mutableStateOf(false) }
+    var enrollmentBaseline by remember { mutableStateOf<Set<String>?>(null) }
+
+    val returnToNativeCourses = {
+        awaitingEnrollment = false
+        viewModel.refreshOnline()
+        nav.navigate("courses") {
+            popUpTo("add-course") { inclusive = true }
+            launchSingleTop = true
+        }
+    }
+    val watchForEnrollment = {
+        if (!awaitingEnrollment) enrollmentBaseline = currentCourseIds
+        awaitingEnrollment = true
+    }
+
+    LaunchedEffect(awaitingEnrollment) {
+        if (!awaitingEnrollment) return@LaunchedEffect
+        repeat(24) {
+            viewModel.refreshOnline()
+            delay(1_250L)
+        }
+    }
+    LaunchedEffect(awaitingEnrollment, courseIds) {
+        val baseline = enrollmentBaseline ?: return@LaunchedEffect
+        if (awaitingEnrollment && courseIds.any { it !in baseline }) {
+            returnToNativeCourses()
+        }
+    }
 
     BackHandler(enabled = canGoBack) {
         browser?.goBack()
@@ -907,6 +1020,7 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
                     CookieManager.getInstance().apply { setAcceptCookie(true) }
                     WebView(webContext).apply {
                         browser = this
+                        val courseStoreView = this
                         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
@@ -915,7 +1029,14 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
                         settings.allowContentAccess = false
                         settings.mediaPlaybackRequiresUserGesture = true
                         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                        settings.userAgentString = "${settings.userAgentString} EasyEducationAndroid/2.10"
+                        settings.userAgentString = "${settings.userAgentString} EasyEducationAndroid/${BuildConfig.VERSION_NAME}"
+                        addJavascriptInterface(
+                            NativeCourseStoreBridge(
+                                onMyCourses = { courseStoreView.post { returnToNativeCourses() } },
+                                onCheckoutComplete = { courseStoreView.post { watchForEnrollment() } },
+                            ),
+                            COURSE_STORE_BRIDGE,
+                        )
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                                 loading = true
@@ -926,6 +1047,14 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
                                 loading = false
                                 canGoBack = view?.canGoBack() == true
                                 CookieManager.getInstance().flush()
+                                val target = runCatching { Uri.parse(url.orEmpty()) }.getOrNull()
+                                if (target?.host == Uri.parse(WEB_ORIGIN).host) {
+                                    view?.evaluateJavascript(COURSE_STORE_BRIDGE_SCRIPT, null)
+                                    when (target.path) {
+                                        "/checkout-complete" -> watchForEnrollment()
+                                        "/my-courses" -> returnToNativeCourses()
+                                    }
+                                }
                             }
 
                             override fun onReceivedError(
@@ -941,6 +1070,10 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
 
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                 val target = request?.url ?: return false
+                                if (target.host == Uri.parse(WEB_ORIGIN).host && target.path == "/my-courses") {
+                                    view?.post { returnToNativeCourses() }
+                                    return true
+                                }
                                 val scheme = target.scheme.orEmpty().lowercase()
                                 if (scheme == "http" || scheme == "https") return false
                                 return runCatching {
@@ -1002,6 +1135,20 @@ private fun V2AddCourse(nav: NavHostController, state: NativeUiState) {
             ) { showProgress ->
                 if (showProgress) LinearProgressIndicator(Modifier.fillMaxWidth())
                 else Spacer(Modifier.fillMaxWidth().height(4.dp))
+            }
+            AnimatedVisibility(
+                visible = awaitingEnrollment,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+                enter = fadeIn(tween(APP_MOTION_QUICK_MS)) + slideInVertically(tween(APP_MOTION_STANDARD_MS)) { -it },
+                exit = fadeOut(tween(APP_MOTION_QUICK_MS)) + slideOutVertically(tween(APP_MOTION_STANDARD_MS)) { -it },
+            ) {
+                Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)) {
+                    Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Adding course to your app…", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
     }
@@ -1296,9 +1443,11 @@ private fun V2Profile(
     state: NativeUiState,
     themeMode: String,
     onThemeMode: (String) -> Unit,
-    activeDeviceCount: Int,
+    activeDevices: List<NativeActiveDevice>,
 ) {
+    val context = LocalContext.current
     val profilePhoto = state.profile?.photoUrl.orEmpty()
+    val visibleDevices = activeDevices.ifEmpty { listOf(NativeDeviceSession.currentDevice(context)) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)); Text("Profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item {
@@ -1313,7 +1462,61 @@ private fun V2Profile(
                     Column {
                         Text(state.profile?.name?.ifBlank { state.user?.displayName ?: "Student" } ?: "Student", fontWeight = FontWeight.Bold)
                         Text(state.profile?.email?.ifBlank { state.user?.email.orEmpty() }.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Active devices: ${activeDeviceCount.takeIf { it > 0 } ?: state.profile?.deviceCount ?: 1}", style = MaterialTheme.typography.bodySmall)
+                        Text("Active devices: ${visibleDevices.size}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Logged-in devices", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Text(
+                        "${visibleDevices.size} active",
+                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+        items(visibleDevices, key = { device -> device.id.ifBlank { device.name } }) { device ->
+            V2OutlinedCard {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.Top) {
+                    Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Icon(Icons.Default.PhoneAndroid, null, Modifier.padding(11.dp).size(23.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(device.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (device.isCurrent) {
+                                Surface(shape = V2Pill, color = MaterialTheme.colorScheme.primaryContainer) {
+                                    Text(
+                                        "This device",
+                                        Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    )
+                                }
+                            }
+                        }
+                        val platform = if (device.osVersion.isNotBlank()) {
+                            "${device.platform.ifBlank { "Android" }} ${device.osVersion}"
+                        } else {
+                            device.platform
+                        }
+                        if (platform.isNotBlank()) Text(platform, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        val details = listOf(
+                            device.appVersion.takeIf { it.isNotBlank() }?.let { "App $it" },
+                            device.screenResolution.takeIf { it.isNotBlank() },
+                            device.language.takeIf { it.isNotBlank() },
+                        ).filterNotNull().joinToString(" • ")
+                        if (details.isNotBlank()) Text(details, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (device.isCurrent) "Active now" else v2DeviceLastSeen(device.lastSeen),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -1349,6 +1552,14 @@ private fun V2Profile(
 private fun ThemeChoice(label: String, mode: String, selected: String, onSelect: (String) -> Unit, modifier: Modifier) {
     if (mode == selected) Button(onClick = { onSelect(mode) }, modifier = modifier, shape = V2Pill) { Text(label) }
     else OutlinedButton(onClick = { onSelect(mode) }, modifier = modifier, shape = V2Pill) { Text(label) }
+}
+
+private fun v2DeviceLastSeen(value: String): String {
+    val instant = runCatching { java.time.Instant.parse(value) }.getOrNull()
+        ?: return "Last active time unavailable"
+    val formatted = SimpleDateFormat("dd MMM yyyy • h:mm a", Locale.getDefault())
+        .format(Date.from(instant))
+    return "Last active $formatted"
 }
 
 @Composable

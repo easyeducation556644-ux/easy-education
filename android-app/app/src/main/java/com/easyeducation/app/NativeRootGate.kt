@@ -29,14 +29,14 @@ fun EasyEducationSecureRoot(
     viewModel: NativeAppViewModel,
     onGoogleSignIn: () -> Unit,
     loginBusy: Boolean = false,
-    activeDeviceCount: Int = 0,
+    activeDevices: List<NativeActiveDevice> = emptyList(),
     initialPath: String? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val restriction = state.restrictionMessage
 
     if (state.authReady && state.user != null && restriction != null) {
-        MaterialTheme {
+        EasyEducationTheme {
             Surface(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
                     Card(Modifier.fillMaxWidth()) {
@@ -60,7 +60,7 @@ fun EasyEducationSecureRoot(
             viewModel = viewModel,
             onGoogleSignIn = onGoogleSignIn,
             loginBusy = loginBusy,
-            activeDeviceCount = activeDeviceCount,
+            activeDevices = activeDevices,
             initialPath = initialPath,
         )
     }

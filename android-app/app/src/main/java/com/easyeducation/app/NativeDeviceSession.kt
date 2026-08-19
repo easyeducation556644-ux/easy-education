@@ -16,6 +16,18 @@ import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 
+data class NativeActiveDevice(
+    val id: String,
+    val name: String,
+    val platform: String,
+    val osVersion: String,
+    val appVersion: String,
+    val screenResolution: String,
+    val language: String,
+    val lastSeen: String,
+    val isCurrent: Boolean,
+)
+
 object NativeDeviceSession {
     private const val PREFS = "native_device_session_v1"
     private const val KEY_DEVICE_ID = "device_id"
@@ -48,6 +60,10 @@ object NativeDeviceSession {
             "ipAddress" to "app",
             "platform" to "Android",
             "deviceName" to model,
+            "manufacturer" to Build.MANUFACTURER,
+            "model" to Build.MODEL,
+            "osVersion" to Build.VERSION.RELEASE,
+            "appVersion" to BuildConfig.VERSION_NAME,
             "userAgent" to "EasyEducationAndroid/${BuildConfig.VERSION_NAME} (Android ${Build.VERSION.RELEASE}; $model)",
             "screenResolution" to "${metrics.widthPixels}x${metrics.heightPixels}",
             "language" to Locale.getDefault().toLanguageTag(),
@@ -90,10 +106,50 @@ object NativeDeviceSession {
         prefs(context).edit().putLong(KEY_LOGIN_AT, System.currentTimeMillis()).apply()
     }
 
+    /**
+     * Restores the server-side device card for users whose Firebase login survived an app update.
+     * It never steals a non-admin account from a different registered device: an absent current
+     * device is only created when the server list is empty (or the account is an admin account).
+     */
+    suspend fun ensureCurrentDevice(context: Context, user: FirebaseUser) {
+        val ref = FirebaseFirestore.getInstance().collection("users").document(user.uid)
+        val snapshot = runCatching { ref.get(Source.SERVER).await() }.getOrNull() ?: return
+        val role = snapshot.getString("role").orEmpty()
+        val current = deviceInfo(context)
+        val currentId = current["id"]?.toString().orEmpty()
+        val previous = (snapshot.get("devices") as? List<*>)
+            .orEmpty()
+            .mapNotNull { it as? Map<*, *> }
+            .map { entry -> entry.entries.associate { it.key.toString() to (it.value ?: "") } }
+        val hasCurrent = previous.any { entry ->
+            entry["id"]?.toString() == currentId || entry["fingerprint"]?.toString() == currentId
+        }
+        if (!hasCurrent && previous.isNotEmpty() && role != "admin") return
+
+        val nextDevices = previous
+            .filterNot { entry ->
+                entry["id"]?.toString() == currentId || entry["fingerprint"]?.toString() == currentId
+            } + current
+        ref.set(
+            mapOf(
+                "devices" to nextDevices,
+                "online" to true,
+                "lastActive" to FieldValue.serverTimestamp(),
+            ),
+            SetOptions.merge(),
+        ).await()
+        if (prefs(context).getLong(KEY_LOGIN_AT, 0L) == 0L) {
+            prefs(context).edit().putLong(KEY_LOGIN_AT, System.currentTimeMillis()).apply()
+        }
+    }
+
+    fun currentDevice(context: Context): NativeActiveDevice =
+        deviceInfo(context).toActiveDevice(deviceId(context))
+
     fun observe(
         context: Context,
         user: FirebaseUser,
-        onDeviceCount: (Int) -> Unit,
+        onDevices: (List<NativeActiveDevice>) -> Unit,
         onForcedOut: (String) -> Unit,
     ): ListenerRegistration {
         val id = deviceId(context)
@@ -104,8 +160,10 @@ object NativeDeviceSession {
                 if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
 
                 val role = snapshot.getString("role").orEmpty()
-                val devices = (snapshot.get("devices") as? List<*>).orEmpty()
-                onDeviceCount(devices.size)
+                val devices = (snapshot.get("devices") as? List<*>)
+                    .orEmpty()
+                    .mapNotNull { it as? Map<*, *> }
+                onDevices(devices.map { raw -> raw.toActiveDevice(id) })
 
                 val loginAt = prefs(context).getLong(KEY_LOGIN_AT, 0L)
                 val forceLogoutAt = timestampMillis(snapshot.get("forceLogoutAt"))
@@ -139,5 +197,27 @@ object NativeDeviceSession {
         is Number -> value.toLong()
         is String -> value.toLongOrNull() ?: 0L
         else -> 0L
+    }
+
+    private fun Map<*, *>.toActiveDevice(currentId: String): NativeActiveDevice {
+        val id = this["id"]?.toString().orEmpty()
+            .ifBlank { this["fingerprint"]?.toString().orEmpty() }
+        val userAgent = this["userAgent"]?.toString().orEmpty()
+        val osFromAgent = Regex("Android\\s+([^;)]+)").find(userAgent)?.groupValues?.getOrNull(1).orEmpty()
+        val appFromAgent = Regex("EasyEducationAndroid/([^\\s]+)").find(userAgent)?.groupValues?.getOrNull(1).orEmpty()
+        return NativeActiveDevice(
+            id = id,
+            name = this["deviceName"]?.toString().orEmpty()
+                .ifBlank { listOf(this["manufacturer"], this["model"]).joinToString(" ") { it?.toString().orEmpty() }.trim() }
+                .ifBlank { "Android device" },
+            platform = this["platform"]?.toString().orEmpty().ifBlank { "Android" },
+            osVersion = this["osVersion"]?.toString().orEmpty().ifBlank { osFromAgent },
+            appVersion = this["appVersion"]?.toString().orEmpty().ifBlank { appFromAgent },
+            screenResolution = this["screenResolution"]?.toString().orEmpty(),
+            language = this["language"]?.toString().orEmpty(),
+            lastSeen = this["lastSeen"]?.toString().orEmpty()
+                .ifBlank { this["timestamp"]?.toString().orEmpty() },
+            isCurrent = id.isNotBlank() && id == currentId,
+        )
     }
 }
