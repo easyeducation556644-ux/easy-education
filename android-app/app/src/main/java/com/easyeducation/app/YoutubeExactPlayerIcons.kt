@@ -15,12 +15,16 @@ object YoutubeExactPlayerIcons {
         val bottom = controls.child(3) as? ViewGroup
         val bottomRow = bottom?.child(1) as? ViewGroup
 
-        (top?.child(0) as? AppCompatImageButton)?.setExact(BACK)
-        (top?.child(3) as? AppCompatImageButton)?.setExact(SETTINGS)
-        (top?.child(4) as? AppCompatImageButton)?.setExact(MINIMIZE)
-        (center?.child(0) as? AppCompatImageButton)?.setExact(PREVIOUS)
-        (center?.child(2) as? AppCompatImageButton)?.setExact(NEXT)
-        (bottomRow?.child(1) as? AppCompatImageButton)?.setExact(if (fullscreen) FULLSCREEN_EXIT else FULLSCREEN)
+        (top?.child(0) as? AppCompatImageButton)?.apply { setExact(BACK); setPadding(dp(11), dp(11), dp(11), dp(11)) }
+        (top?.child(3) as? AppCompatImageButton)?.apply { setExact(SETTINGS); setPadding(dp(10), dp(10), dp(10), dp(10)) }
+        (top?.child(4) as? AppCompatImageButton)?.apply { setExact(MINIMIZE); setPadding(dp(10), dp(10), dp(10), dp(10)) }
+        (center?.child(0) as? AppCompatImageButton)?.apply { setExact(PREVIOUS); setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        (center?.child(1) as? AppCompatImageButton)?.setPadding(dp(7), dp(7), dp(7), dp(7))
+        (center?.child(2) as? AppCompatImageButton)?.apply { setExact(NEXT); setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        (bottomRow?.child(1) as? AppCompatImageButton)?.apply {
+            setExact(if (fullscreen) FULLSCREEN_EXIT else FULLSCREEN)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
     }
 
     fun applyMini(close: AppCompatImageButton, expand: AppCompatImageButton) {
@@ -36,6 +40,7 @@ object YoutubeExactPlayerIcons {
         })
     }
 
+    private fun AppCompatImageButton.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun ViewGroup.child(index: Int) = if (index in 0 until childCount) getChildAt(index) else null
 
     private const val BACK = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAQAAAD9CzEMAAAASklEQVR4Ae2WUQEAERTAtFLtfb7IEoAGALAF2MBxBgBqCRp0rj6jc/UZmat3waLPoEePvpnJ+uWBCYllm0yCBAkSMvnn97DfdwCIFY44W6EMGjoAAAAASUVORK5CYII="
