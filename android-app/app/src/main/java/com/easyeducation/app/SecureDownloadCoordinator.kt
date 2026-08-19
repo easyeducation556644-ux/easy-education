@@ -31,6 +31,7 @@ object SecureDownloadCoordinator {
     fun remove(context: Context, id: String) {
         SecureDownloadService.remove(context, id)
         SecureHlsDownloadService.tempDir(context, id).deleteRecursively()
+        SecureHlsDownloadService.cancelNotification(context, id)
     }
 
     fun resumePending(context: Context) {
