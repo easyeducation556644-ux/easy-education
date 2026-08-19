@@ -9,3 +9,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "EasyEducation"
 include(":app")
+include(":youtube-extractor-shaded")
