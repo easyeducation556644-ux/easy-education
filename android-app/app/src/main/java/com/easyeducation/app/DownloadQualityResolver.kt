@@ -37,7 +37,7 @@ class DownloadQualityResolver(
         require(url.startsWith("https://")) { "This class does not have a secure downloadable source" }
         val raw = when {
             YoutubeDeviceResolver.isYoutubeUrl(url) -> resolveYouTube(url)
-            isRumblePage(url) -> resolveRumble(classId, url)
+            isRumblePage(url) -> resolveRumbleMp4(classId, url)
             SecureDownloadCoordinator.isHlsSource(url) -> resolveHls(url)
             else -> resolveDirect(url)
         }
@@ -64,7 +64,7 @@ class DownloadQualityResolver(
         }
     }
 
-    private fun resolveRumble(classId: String, url: String): List<DownloadQualityOption> {
+    private fun resolveRumbleMp4(classId: String, url: String): List<DownloadQualityOption> {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val endpoint = APP_ORIGIN + "/api/offline-video?options=1" +
@@ -83,22 +83,14 @@ class DownloadQualityResolver(
                 val height = item.optInt("height", 0)
                 if (height <= 0) continue
                 val size = item.optLong("contentLength", 0)
-                add(DownloadQualityOption(height, "${height}p", size, size <= 0, "rumble"))
+                if (size <= 0) continue
+                add(DownloadQualityOption(height, "${height}p", size, false, "rumble"))
             }
         }
-        if (mp4.isNotEmpty()) return mp4
-
-        return buildList {
-            for (index in 0 until options.length()) {
-                val item = options.optJSONObject(index) ?: continue
-                if (item.optString("kind") != "hls") continue
-                val height = item.optInt("height", 0)
-                val playlist = item.optString("playlistUrl")
-                if (height <= 0 || playlist.isBlank()) continue
-                val estimatedSize = estimateHlsSize(playlist, item.optLong("bandwidth", 0))
-                add(DownloadQualityOption(height, "${height}p", estimatedSize, true, "hls"))
-            }
+        require(mp4.isNotEmpty()) {
+            "This Rumble class does not currently expose a secure progressive quality for offline use."
         }
+        return mp4
     }
 
     private fun resolveHls(url: String): List<DownloadQualityOption> {
@@ -130,7 +122,8 @@ class DownloadQualityResolver(
 
     private fun resolveDirect(url: String): List<DownloadQualityOption> {
         val size = probeLength(url)
-        return listOf(DownloadQualityOption(0, "Original quality", size, size <= 0, "direct"))
+        require(size > 0) { "This video server does not support safe resumable offline downloads." }
+        return listOf(DownloadQualityOption(0, "Original quality", size, false, "direct"))
     }
 
     private fun estimateHlsSize(url: String, bandwidth: Long): Long = runCatching {
@@ -154,10 +147,9 @@ class DownloadQualityResolver(
             .header("User-Agent", YoutubeDeviceResolver.DOWNLOAD_USER_AGENT)
             .build()
         return http.newCall(request).execute().use { response ->
+            if (response.code != 206) return@use 0L
             val range = response.header("Content-Range").orEmpty()
-            range.substringAfterLast('/', "").toLongOrNull()
-                ?: response.header("Content-Length")?.toLongOrNull()?.takeIf { response.code == 206 }
-                ?: 0L
+            range.substringAfterLast('/', "").toLongOrNull() ?: 0L
         }
     }
 
@@ -177,7 +169,12 @@ class DownloadQualityResolver(
 }
 
 object DownloadStoragePolicy {
-    data class Check(val allowed: Boolean, val availableBytes: Long, val requiredBytes: Long, val message: String? = null)
+    data class Check(
+        val allowed: Boolean,
+        val availableBytes: Long,
+        val requiredBytes: Long,
+        val message: String? = null,
+    )
 
     fun check(context: Context, option: DownloadQualityOption): Check {
         val available = StatFs(context.filesDir.absolutePath).availableBytes
