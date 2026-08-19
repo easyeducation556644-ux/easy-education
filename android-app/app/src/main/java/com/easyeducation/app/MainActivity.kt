@@ -134,6 +134,8 @@ class MainActivity : ComponentActivity() {
         deviceListener = null
         if (user == null) {
             activeDeviceCount = 0
+            NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
+            PersistentNativePlayer.resetForSignOut(this)
             return
         }
         deviceListener = NativeDeviceSession.observe(
@@ -142,6 +144,8 @@ class MainActivity : ComponentActivity() {
             onDeviceCount = { count -> activeDeviceCount = count },
             onForcedOut = { message ->
                 activeDeviceCount = 0
+                NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
+                PersistentNativePlayer.resetForSignOut(this)
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             },
         )
