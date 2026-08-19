@@ -13,8 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "2.2.2-native"
+        versionCode = 18
+        versionName = "2.3.0-native"
     }
 
     buildFeatures {
@@ -46,6 +46,7 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -53,6 +54,8 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
+
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-compose:1.10.1")
@@ -82,6 +85,11 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+
+    // Mature YouTube extraction engine: signatureCipher + n-parameter deobfuscation,
+    // adaptive DASH streams, current player client handling. Easy Education keeps its own
+    // encrypted downloader/player; this dependency is used only to resolve media streams.
+    implementation("com.github.libre-tube:NewPipeExtractor:738c3d4")
 
     val media3Version = "1.9.4"
     implementation("androidx.media3:media3-common:$media3Version")
