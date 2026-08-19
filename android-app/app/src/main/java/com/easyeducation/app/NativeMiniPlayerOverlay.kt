@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
-import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -156,6 +155,11 @@ object NativeMiniPlayerOverlay {
             bottomMargin = dp(activity, 48)
         })
 
+        // The large expand target sits behind the actual controls.
+        play.bringToFront()
+        titleBar.bringToFront()
+        close.bringToFront()
+
         // Drag the title strip to park the miniplayer anywhere inside the app window.
         var downRawX = 0f
         var downRawY = 0f
@@ -183,9 +187,7 @@ object NativeMiniPlayerOverlay {
                 }
                 MotionEvent.ACTION_UP -> {
                     val moved = abs(event.rawX - downRawX) > dp(activity, 8) || abs(event.rawY - downRawY) > dp(activity, 8)
-                    if (!moved && SystemClock.uptimeMillis() - downAt < 250L) {
-                        view.performClick()
-                    }
+                    if (!moved && SystemClock.uptimeMillis() - downAt < 250L) view.performClick()
                     true
                 }
                 else -> true
@@ -227,7 +229,6 @@ object NativeMiniPlayerOverlay {
         val observer = object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
                 if (player === exoPlayer) {
-                    savePosition(activity, "", exoPlayer.currentPosition)
                     exoPlayer.pause()
                     playButton.text = "▶"
                 }
