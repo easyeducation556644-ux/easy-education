@@ -28,10 +28,13 @@ private fun JSONObject.stringList(vararg keys: String): List<String> {
             is JSONArray -> return buildList {
                 for (index in 0 until raw.length()) {
                     val value = raw.opt(index)?.toString()?.trim().orEmpty()
-                    if (value.isNotBlank()) add(value)
+                    if (value.isNotBlank() && value != "[]" && value != "{}" && value != "null") add(value)
                 }
             }
-            is String -> if (raw.isNotBlank()) return listOf(raw.trim())
+            is String -> {
+                val value = raw.trim()
+                if (value.isNotBlank() && value != "[]" && value != "{}" && value != "null") return listOf(value)
+            }
         }
     }
     return emptyList()
@@ -39,8 +42,10 @@ private fun JSONObject.stringList(vararg keys: String): List<String> {
 
 private fun JSONObject.firstString(vararg keys: String): String {
     for (key in keys) {
-        val value = optString(key).trim()
-        if (value.isNotBlank()) return value
+        val raw = opt(key)
+        if (raw !is String) continue
+        val value = raw.trim()
+        if (value.isNotBlank() && value != "[]" && value != "{}" && value != "null") return value
     }
     return ""
 }
@@ -52,6 +57,14 @@ private fun JSONObject.millis(key: String): Long {
         is String -> raw.toLongOrNull() ?: 0L
         else -> 0L
     }
+}
+
+private fun JSONObject.firstMillis(vararg keys: String): Long {
+    for (key in keys) {
+        val value = millis(key)
+        if (value > 0L) return value
+    }
+    return 0L
 }
 
 data class NativeResourceLink(
@@ -156,42 +169,49 @@ data class NativeClassItem(
     val imageUrl: String = "",
     val teacherImageUrl: String = "",
     val resourceLinks: List<NativeResourceLink> = emptyList(),
+    val publishedAt: Long = 0L,
 ) {
     companion object {
-        fun from(json: JSONObject) = NativeClassItem(
-            id = json.optString("id"),
-            courseId = json.optString("courseId"),
-            title = json.firstString("title", "topic").ifBlank { "Class" },
-            topic = json.optString("topic"),
-            subjects = json.stringList("subject", "subjects"),
-            chapters = json.stringList("chapter", "chapters"),
-            order = json.optInt("order", 0),
-            duration = json.optString("duration"),
-            sourceUrl = json.firstString(
-                "hlsLink",
-                "videoURL",
-                "videoUrl",
-                "youtubeLink",
-                "rumbleLink",
-                "driveLink",
-                "dailymotionLink",
-            ),
-            downloadUrl = json.firstString(
-                "youtubeLink",
-                "rumbleLink",
-                "videoURL",
-                "videoUrl",
-                "hlsLink",
-                "driveLink",
-                "dailymotionLink",
-            ),
-            teacherName = json.stringList("teacherName").joinToString(", ").ifBlank {
-                json.optString("teacherName")
-            },
-            imageUrl = json.firstString("imageURL", "imageUrl", "image"),
-            teacherImageUrl = json.firstString("teacherImageURL", "teacherImageUrl"),
-            resourceLinks = json.resourceLinks(),
-        )
+        fun from(json: JSONObject): NativeClassItem {
+            val teacher = json.stringList("teacherName", "teacherNames").joinToString(", ")
+                .ifBlank { json.firstString("teacherName", "teacher", "instructorName") }
+                .takeUnless { it == "[]" || it == "{}" }
+                .orEmpty()
+                .ifBlank { "Easy Education" }
+            return NativeClassItem(
+                id = json.optString("id"),
+                courseId = json.optString("courseId"),
+                title = json.firstString("title", "topic").ifBlank { "Class" },
+                topic = json.optString("topic"),
+                subjects = json.stringList("subject", "subjects"),
+                chapters = json.stringList("chapter", "chapters"),
+                order = json.optInt("order", 0),
+                duration = json.firstString("duration"),
+                sourceUrl = json.firstString(
+                    "hlsLink",
+                    "videoURL",
+                    "videoUrl",
+                    "youtubeLink",
+                    "rumbleLink",
+                    "driveLink",
+                    "dailymotionLink",
+                ),
+                downloadUrl = json.firstString(
+                    "youtubeLink",
+                    "rumbleLink",
+                    "videoURL",
+                    "videoUrl",
+                    "hlsLink",
+                    "driveLink",
+                    "dailymotionLink",
+                ),
+                teacherName = teacher,
+                imageUrl = json.firstString("imageURL", "imageUrl", "image"),
+                teacherImageUrl = json.firstString("teacherImageURL", "teacherImageUrl", "teacherPhotoURL", "teacherPhotoUrl"),
+                resourceLinks = json.resourceLinks(),
+                publishedAt = json.firstMillis("createdAt", "publishedAt", "timestamp", "date", "updatedAt"),
+            )
+        }
     }
 }
 
