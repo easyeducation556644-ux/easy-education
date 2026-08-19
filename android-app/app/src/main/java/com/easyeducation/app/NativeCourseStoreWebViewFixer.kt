@@ -91,14 +91,13 @@ object NativeCourseStoreWebViewFixer {
                 target.evaluateJavascript(NativeCourseStoreWebAuth.pageScript(activity), null)
                 val path = runCatching { Uri.parse(url.orEmpty()).path.orEmpty() }.getOrDefault("")
 
-                // If V2AddCourse reached /courses before this wrapper was attached (or after the
-                // device came back online), route through /login once to restore the web Firebase
-                // session from the already-active native Google account.
+                // If V2AddCourse reached the store before this wrapper was attached (or after the
+                // device came back online), restart through a tiny same-origin auth bootstrap once.
                 if (!state.authBootstrapStarted && path != "/login" &&
                     FirebaseAuth.getInstance().currentUser != null && isOnline(activity)
                 ) {
                     state.authBootstrapStarted = true
-                    target.loadUrl(LOGIN_URL)
+                    bootstrapWebAuth(target)
                     return
                 }
                 if (path == "/login") state.authBootstrapStarted = true
@@ -122,12 +121,49 @@ object NativeCourseStoreWebViewFixer {
                 delegate.shouldOverrideUrlLoading(view, request)
         }
 
-        // V2AddCourse normally begins at /courses. For an authenticated native user, bootstrap the
-        // web Firebase session first. No chooser is shown: NativeCourseStoreWebAuth uses silentSignIn.
+        // V2AddCourse normally begins at /courses. Before /login, clear only Firebase Web Auth's
+        // persisted user record. This prevents a stale/different WebView account from winning the
+        // race against the native account. Course-store cookies and unrelated local data are kept.
         if (FirebaseAuth.getInstance().currentUser != null && isOnline(activity)) {
             state.authBootstrapStarted = true
-            webView.post { webView.loadUrl(LOGIN_URL) }
+            webView.post { bootstrapWebAuth(webView) }
         }
+    }
+
+    private fun bootstrapWebAuth(webView: WebView) {
+        val html = """
+            <!doctype html><html><head><meta charset="utf-8"></head><body>
+            <script>
+            (function () {
+              function clearAuthKeys(storage) {
+                try {
+                  for (var i = storage.length - 1; i >= 0; i--) {
+                    var key = storage.key(i) || '';
+                    if (key.indexOf('firebase:authUser:') === 0 || key.indexOf('firebase:redirectUser:') === 0) {
+                      storage.removeItem(key);
+                    }
+                  }
+                } catch (_) {}
+              }
+              clearAuthKeys(window.localStorage);
+              clearAuthKeys(window.sessionStorage);
+              var moved = false;
+              function go() {
+                if (moved) return;
+                moved = true;
+                window.location.replace('/login');
+              }
+              try {
+                var request = window.indexedDB.deleteDatabase('firebaseLocalStorageDb');
+                request.onsuccess = go;
+                request.onerror = go;
+                request.onblocked = function () { window.setTimeout(go, 180); };
+                window.setTimeout(go, 650);
+              } catch (_) { go(); }
+            })();
+            </script></body></html>
+        """.trimIndent()
+        webView.loadDataWithBaseURL(WEB_ORIGIN, html, "text/html", "UTF-8", LOGIN_URL)
     }
 
     private fun isAppUrl(value: String?): Boolean = runCatching {
