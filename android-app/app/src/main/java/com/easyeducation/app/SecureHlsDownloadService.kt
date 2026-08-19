@@ -57,7 +57,9 @@ class SecureHlsDownloadService : Service() {
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
-        return START_STICKY
+        // Coordinator/BootReceiver explicitly resume pending jobs. Avoid a null-intent
+        // sticky restart that could lose the job identity.
+        return START_NOT_STICKY
     }
 
     private fun process(initial: SecureDownloadTask) {
@@ -165,6 +167,7 @@ class SecureHlsDownloadService : Service() {
                 }
             }
 
+            ensureRunning(task.id)
             task = task.copy(
                 state = "completed",
                 downloadedBytes = totalBytes,
@@ -178,15 +181,17 @@ class SecureHlsDownloadService : Service() {
             sendBroadcast(Intent(SecureDownloadService.ACTION_DOWNLOAD_CHANGED).putExtra(SecureDownloadService.EXTRA_ID, task.id))
         } catch (_: DownloadPaused) {
             cancelTransformer()
-            // Segment-stage pause is resumable. If pause happened after conversion started,
-            // the temporary work files remain private and the job safely restarts from them.
-            task = store.get(task.id)?.copy(state = "paused", error = null) ?: task.copy(state = "paused")
+            task = store.get(task.id)?.copy(state = "paused", error = null) ?: return
             store.save(task)
             updateNotification(task)
+        } catch (_: DownloadStopped) {
+            cancelTransformer()
+            workDir.deleteRecursively()
+            cancelNotification(this, task.id)
         } catch (error: Throwable) {
             cancelTransformer()
-            task = store.get(task.id)?.copy(state = "failed", error = error.message ?: "HLS download failed")
-                ?: task.copy(state = "failed", error = error.message ?: "HLS download failed")
+            val existing = store.get(task.id) ?: return
+            task = existing.copy(state = "failed", error = error.message ?: "HLS download failed")
             store.save(task)
             updateNotification(task)
         }
@@ -199,7 +204,8 @@ class SecureHlsDownloadService : Service() {
     }
 
     private fun ensureRunning(id: String) {
-        if (store.get(id)?.state == "paused") throw DownloadPaused()
+        val current = store.get(id) ?: throw DownloadStopped()
+        if (current.state == "paused") throw DownloadPaused()
     }
 
     private fun getText(url: String): String = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
@@ -347,12 +353,17 @@ class SecureHlsDownloadService : Service() {
     }
 
     private class DownloadPaused : Exception()
+    private class DownloadStopped : Exception()
 
     companion object {
         private const val CHANNEL_ID = "secure_offline_classes_hls_v2"
 
         fun tempDir(context: Context, id: String): File =
             File(context.cacheDir, "secure_hls/${SecureMediaStore.safe(id)}")
+
+        fun cancelNotification(context: Context, id: String) {
+            context.getSystemService(NotificationManager::class.java).cancel(notificationId(id))
+        }
 
         private fun notificationId(id: String): Int = ("hls:" + SecureMediaStore.safe(id)).hashCode()
     }
