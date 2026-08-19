@@ -11,18 +11,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Process-local player session used by the watch page, fullscreen surface and in-app miniplayer.
- * The media source is resolved only when the active class/source/quality changes. Presentation
- * changes therefore do not recreate ExoPlayer, re-run the YouTube extractor or lose buffer state.
+ * Presentation changes never recreate ExoPlayer. A separate short-lived resolver cache can warm the
+ * next class without mutating the currently playing media session.
  */
 object PersistentNativePlayer {
     private const val PLAYER_PREFS = "native_player_positions_v2"
     private const val SPEED_KEY = "youtube_style_speed"
+    private const val WARM_SOURCE_TTL_MS = 90_000L
+
+    private data class WarmSource(
+        val source: NativeOnlinePlaybackSource,
+        val createdAt: Long,
+    )
 
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val warmSources = ConcurrentHashMap<String, WarmSource>()
 
     @Volatile private var playerInstance: ExoPlayer? = null
     @Volatile private var activeClassId: String = ""
@@ -74,13 +82,15 @@ object PersistentNativePlayer {
             saveActivePosition(app, exo)
         }
 
-        val resolved = withContext(Dispatchers.IO) {
+        val key = warmKey(classId, sourceUrl, requestedHeight)
+        val now = System.currentTimeMillis()
+        val warmed = warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
+        val resolved = warmed?.source ?: withContext(Dispatchers.IO) {
             NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
         }
         val mediaSource = NativePlaybackSourceResolver.toMediaSource(resolved)
 
         withContext(Dispatchers.Main.immediate) {
-            // Another presentation can safely bind to this same player while it is prepared.
             exo.setMediaSource(mediaSource)
             val saved = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .getLong("class:$classId", 0L)
@@ -95,9 +105,14 @@ object PersistentNativePlayer {
             activeSourceUrl = sourceUrl
             activeHeight = requestedHeight
         }
+        pruneWarmSources(now)
         exo
     }
 
+    /**
+     * Resolves only metadata/direct stream URLs. It never calls setMediaSource or touches the active
+     * decoder, so a playing class cannot be interrupted by watch-next preloading.
+     */
     fun prefetch(
         context: Context,
         classId: String,
@@ -105,10 +120,20 @@ object PersistentNativePlayer {
         requestedHeight: Int = 480,
     ) {
         if (classId.isBlank() || sourceUrl.isBlank() || matches(classId, sourceUrl, requestedHeight)) return
+        val key = warmKey(classId, sourceUrl, requestedHeight)
+        val existing = warmSources[key]
+        val now = System.currentTimeMillis()
+        if (existing != null && now - existing.createdAt <= WARM_SOURCE_TTL_MS) return
         val app = context.applicationContext
         scope.launch {
-            runCatching {
-                ensureOnline(app, classId, sourceUrl, requestedHeight, autoPlay = false)
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching {
+                    NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
+                }.getOrNull()
+            }
+            if (resolved != null) {
+                warmSources[key] = WarmSource(resolved, System.currentTimeMillis())
+                pruneWarmSources(System.currentTimeMillis())
             }
         }
     }
@@ -141,6 +166,7 @@ object PersistentNativePlayer {
     }
 
     fun resetForSignOut(context: Context) {
+        warmSources.clear()
         stopSession(context, savePosition = true)
     }
 
@@ -152,5 +178,17 @@ object PersistentNativePlayer {
             .edit()
             .putLong("class:$classId", position)
             .apply()
+    }
+
+    private fun warmKey(classId: String, sourceUrl: String, height: Int): String =
+        "$classId|$height|$sourceUrl"
+
+    private fun pruneWarmSources(now: Long) {
+        warmSources.entries.removeIf { now - it.value.createdAt > WARM_SOURCE_TTL_MS }
+        if (warmSources.size <= 4) return
+        warmSources.entries
+            .sortedBy { it.value.createdAt }
+            .take(warmSources.size - 4)
+            .forEach { warmSources.remove(it.key, it.value) }
     }
 }
