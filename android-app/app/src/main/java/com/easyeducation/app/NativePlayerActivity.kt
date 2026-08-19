@@ -20,7 +20,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Fullscreen presentation of the same native player surface. Shared-session launches reuse the
- * process-local ExoPlayer, including its buffer, speed and chapter queue.
+ * process-local ExoPlayer, including buffer, speed and chapter queue. The surface itself handles a
+ * continuous downward drag and calls back here only after the exit threshold is committed.
  */
 @UnstableApi
 class NativePlayerActivity : AppCompatActivity() {
@@ -33,11 +34,12 @@ class NativePlayerActivity : AppCompatActivity() {
     private var currentClassId: String = ""
     private var currentSourceUrl: String = ""
     private var currentHeight: Int = 480
+    private var finishingAnimated = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         @Suppress("DEPRECATION")
-        overridePendingTransition(0, 0)
+        overridePendingTransition(R.anim.ee_player_fullscreen_enter, R.anim.ee_player_background_hold)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -51,9 +53,11 @@ class NativePlayerActivity : AppCompatActivity() {
         sharedSession = intent.getBooleanExtra(EXTRA_SHARED_SESSION, false)
 
         playerView = YoutubeStylePlayerView(this).apply {
+            setFullscreenPresentation(true)
             setTitle(title)
             onBack = { finish() }
             onMinimize = { finish() }
+            onExitFullscreenGesture = { finish() }
             onFullscreen = { enterImmersiveMode() }
         }
         setContentView(playerView)
@@ -102,9 +106,7 @@ class NativePlayerActivity : AppCompatActivity() {
         playerView.onNext = null
         val mediaSource = ProgressiveMediaSource.Factory(
             SecureChunkDataSource.Factory(this, downloadId, uid),
-        ).createMediaSource(
-            MediaItem.fromUri(Uri.parse("secure://easy-education/$downloadId")),
-        )
+        ).createMediaSource(MediaItem.fromUri(Uri.parse("secure://easy-education/$downloadId")))
         prepareOwnedPlayer(mediaSource)
     }
 
@@ -236,10 +238,12 @@ class NativePlayerActivity : AppCompatActivity() {
     }
 
     override fun finish() {
+        if (finishingAnimated) return
+        finishingAnimated = true
         player?.let { savePosition(it.currentPosition) }
         super.finish()
         @Suppress("DEPRECATION")
-        overridePendingTransition(0, 0)
+        overridePendingTransition(R.anim.ee_player_background_hold, R.anim.ee_player_fullscreen_exit)
     }
 
     private fun releaseOwnedPlayer(savePosition: Boolean) {
