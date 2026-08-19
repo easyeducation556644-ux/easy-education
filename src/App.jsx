@@ -96,7 +96,7 @@ function App() {
                   <Route path="/course/:courseId/classes/:subject/:chapter" element={<ProtectedRoute><CourseClasses /></ProtectedRoute>} />
                   <Route path="/course/:courseId/watch/:classId" element={<ProtectedRoute><CourseWatch /></ProtectedRoute>} />
                   <Route path="/course/:courseId/watch" element={<ProtectedRoute><CourseWatch /></ProtectedRoute>} />
-                  <Route path="/checkout" element={<Checkout />} />
+                  <Route path="/checkout" element={<ProtectedRoute><Checkout /></ProtectedRoute>} />
                   <Route path="/checkout-complete" element={<CheckoutComplete />} />
                   <Route path="/payment-success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
                   <Route path="/payment-cancel" element={<PaymentCancel />} />
