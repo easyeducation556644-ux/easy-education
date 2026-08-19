@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
@@ -47,12 +46,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
@@ -126,6 +123,7 @@ fun EasyEducationNativeAppV2(
                     val startRoute = if (initialPath == "/downloads") "downloads" else "home"
                     val backStack by nav.currentBackStackEntryAsState()
                     val currentRoute = backStack?.destination?.route.orEmpty()
+                    val isWatchRoute = currentRoute.startsWith("class/")
 
                     LaunchedEffect(state.error) {
                         state.error?.let { raw ->
@@ -138,28 +136,30 @@ fun EasyEducationNativeAppV2(
                         snackbarHost = { SnackbarHost(snackbar) },
                         containerColor = MaterialTheme.colorScheme.background,
                         bottomBar = {
-                            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
-                                v2BottomItems.forEach { item ->
-                                    val selected = currentRoute == item.route ||
-                                        (item.route == "courses" && currentRoute.inCourseRoutes())
-                                    NavigationBarItem(
-                                        selected = selected,
-                                        onClick = {
-                                            nav.navigate(item.route) {
-                                                launchSingleTop = true
-                                                restoreState = true
-                                                popUpTo("home") { saveState = true }
-                                            }
-                                        },
-                                        icon = { Icon(item.icon, item.label) },
-                                        label = { Text(item.label) },
-                                    )
+                            if (!isWatchRoute) {
+                                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                                    v2BottomItems.forEach { item ->
+                                        val selected = currentRoute == item.route ||
+                                            (item.route == "courses" && currentRoute.inCourseRoutes())
+                                        NavigationBarItem(
+                                            selected = selected,
+                                            onClick = {
+                                                nav.navigate(item.route) {
+                                                    launchSingleTop = true
+                                                    restoreState = true
+                                                    popUpTo("home") { saveState = true }
+                                                }
+                                            },
+                                            icon = { Icon(item.icon, item.label) },
+                                            label = { Text(item.label) },
+                                        )
+                                    }
                                 }
                             }
                         },
                     ) { padding ->
                         Column(Modifier.fillMaxSize().padding(padding)) {
-                            if (!state.online) V2OfflineBanner()
+                            if (!state.online && !isWatchRoute) V2OfflineBanner()
                             if (state.syncing) LinearProgressIndicator(Modifier.fillMaxWidth())
                             V2NavHost(
                                 nav = nav,
@@ -310,12 +310,12 @@ private fun V2NavHost(
             "class/{courseId}/{classId}",
             listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("classId") { type = NavType.StringType }),
         ) { entry ->
-            V2Class(
-                nav,
-                viewModel,
-                state,
-                entry.arguments?.getString("courseId").orEmpty(),
-                entry.arguments?.getString("classId").orEmpty(),
+            YoutubeClassWatchPage(
+                nav = nav,
+                viewModel = viewModel,
+                state = state,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+                classId = entry.arguments?.getString("classId").orEmpty(),
             )
         }
     }
@@ -493,6 +493,7 @@ private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: St
 
 @Composable
 private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: String, subject: String, chapter: String) {
+    val context = LocalContext.current
     val content = state.courseContent[courseId] ?: run { V2Loading("Loading chapter…"); return }
     val classes = content.classes.filter { classItem ->
         classItem.chapters.any { it.equals(chapter, true) } &&
@@ -502,7 +503,12 @@ private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: St
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, chapter) }
         item { V2Section("Classes") }
         if (classes.isEmpty()) item { V2Empty("No classes are available in this chapter yet.") }
-        else items(classes, key = { it.id }) { classItem -> V2ClassRow(classItem) { nav.navigate("class/$courseId/${classItem.id}") } }
+        else items(classes, key = { it.id }) { classItem ->
+            V2ClassRow(classItem) {
+                PersistentNativePlayer.prefetch(context, classItem.id, classItem.sourceUrl, 480)
+                nav.navigate("class/$courseId/${classItem.id}")
+            }
+        }
         item { Spacer(Modifier.height(12.dp)) }
     }
 }
@@ -565,175 +571,6 @@ private fun V2Thumbnail(imageUrl: String, icon: androidx.compose.ui.graphics.vec
 }
 
 @Composable
-private fun V2Class(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, courseId: String, classId: String) {
-    val context = LocalContext.current
-    val content = state.courseContent[courseId]
-    val classItem = content?.classes?.firstOrNull { it.id == classId }
-    val course = content?.course ?: state.courses.firstOrNull { it.id == courseId }
-    if (classItem == null || course == null) { V2Loading("Loading class…"); return }
-    val task = state.downloads.firstOrNull { it.classId == classId }
-    var qualitySheet by remember { mutableStateOf(false) }
-
-    LaunchedEffect(state.qualityOptions[classId], state.qualityLoadingClassId) {
-        if (state.qualityOptions[classId]?.isNotEmpty() == true) qualitySheet = true
-    }
-
-    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
-        item {
-            NativeInlinePlayer(
-                classId = classId,
-                sourceUrl = classItem.sourceUrl,
-                online = state.online,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-                    Text(classItem.title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                }
-                val meta = listOf(classItem.teacherName, classItem.duration).filter { it.isNotBlank() }.joinToString(" • ")
-                if (meta.isNotBlank()) Text(meta, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (classItem.topic.isNotBlank() && !classItem.topic.equals(classItem.title, true)) {
-                    Text(classItem.topic, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    when (task?.state) {
-                        "completed" -> OutlinedButton(
-                            onClick = {
-                                context.startActivity(
-                                    Intent(context, NativePlayerActivity::class.java)
-                                        .putExtra(NativePlayerActivity.EXTRA_DOWNLOAD_ID, task.id)
-                                        .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classItem.id),
-                                )
-                            },
-                            enabled = viewModel.hasOfflineLease(courseId),
-                            shape = V2Pill,
-                        ) { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Offline") }
-                        "downloading", "queued" -> OutlinedButton(onClick = { viewModel.pauseDownload(context, task.id) }, shape = V2Pill) {
-                            Icon(Icons.Default.Pause, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Pause ${task.progress}%")
-                        }
-                        "paused", "failed" -> OutlinedButton(onClick = { viewModel.resumeDownload(context, task.id) }, shape = V2Pill) {
-                            Icon(Icons.Default.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Resume")
-                        }
-                        else -> OutlinedButton(
-                            onClick = {
-                                viewModel.loadDownloadQualities(classItem)
-                                qualitySheet = true
-                            },
-                            enabled = state.online && state.qualityLoadingClassId != classId && classItem.downloadUrl.isNotBlank(),
-                            shape = V2Pill,
-                        ) {
-                            if (state.qualityLoadingClassId == classId) CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.Default.Download, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(5.dp)); Text("Download")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(context, NativePlayerActivity::class.java)
-                                    .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, classItem.sourceUrl)
-                                    .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, classItem.id)
-                                    .putExtra(NativePlayerActivity.EXTRA_HEIGHT, 480),
-                            )
-                        },
-                        enabled = state.online && classItem.sourceUrl.isNotBlank(),
-                        shape = V2Pill,
-                    ) { Icon(Icons.Default.OpenInFull, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Full screen") }
-                }
-
-                if (task != null) {
-                    Text(
-                        "${task.qualityLabel.ifBlank { "${task.height}p" }} • ${v2DownloadState(task)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                if (classItem.resourceLinks.isNotEmpty()) {
-                    HorizontalDivider()
-                    V2Section("Resources")
-                    classItem.resourceLinks.forEach { resource ->
-                        OutlinedButton(onClick = { openWeb(context, resource.url) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-                            Icon(Icons.Default.Language, null, Modifier.size(17.dp)); Spacer(Modifier.width(8.dp)); Text(resource.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-                NativeClassSocial(classId = classItem.id, user = state.user)
-                Spacer(Modifier.height(14.dp))
-            }
-        }
-    }
-
-    if (qualitySheet) {
-        V2QualitySheet(
-            loading = state.qualityLoadingClassId == classId,
-            options = state.qualityOptions[classId].orEmpty(),
-            onDismiss = {
-                qualitySheet = false
-                if (state.qualityLoadingClassId != classId) viewModel.clearDownloadQualities(classId)
-            },
-            onRetry = { viewModel.loadDownloadQualities(classItem) },
-            onSelect = { option ->
-                viewModel.startDownload(context, course, classItem, option)
-                qualitySheet = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun V2QualitySheet(
-    loading: Boolean,
-    options: List<DownloadQualityOption>,
-    onDismiss: () -> Unit,
-    onRetry: () -> Unit,
-    onSelect: (DownloadQualityOption) -> Unit,
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Download quality", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("Available from this video right now", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            when {
-                loading -> Row(Modifier.padding(vertical = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp); Spacer(Modifier.width(10.dp)); Text("Checking real qualities…")
-                }
-                options.isEmpty() -> {
-                    Text("No quality list is loaded yet.", Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth(), shape = V2Pill) { Text("Try again") }
-                }
-                else -> options.forEach { option ->
-                    Card(
-                        Modifier.fillMaxWidth().clickable { onSelect(option) },
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    ) {
-                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(option.label, fontWeight = FontWeight.Bold)
-                                    if (option.recommended) {
-                                        Spacer(Modifier.width(7.dp)); Text("Recommended", style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                                val size = if (option.sizeBytes > 0) DownloadNotifier.formatBytes(option.sizeBytes) else "Size calculated during download"
-                                Text(size + if (option.estimated) " approx." else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Icon(Icons.Default.Download, null)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
     val context = LocalContext.current
     var deleteId by remember { mutableStateOf<String?>(null) }
@@ -769,7 +606,8 @@ private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
                                     context.startActivity(
                                         Intent(context, NativePlayerActivity::class.java)
                                             .putExtra(NativePlayerActivity.EXTRA_DOWNLOAD_ID, task.id)
-                                            .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, task.classId),
+                                            .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, task.classId)
+                                            .putExtra(NativePlayerActivity.EXTRA_TITLE, task.title),
                                     )
                                 },
                                 enabled = viewModel.hasOfflineLease(task.courseId),
