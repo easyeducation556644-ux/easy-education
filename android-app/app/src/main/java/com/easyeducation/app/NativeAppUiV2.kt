@@ -2,8 +2,11 @@
 
 package com.easyeducation.app
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -102,6 +105,7 @@ private val v2BottomItems = listOf(
 )
 private val V2Pill = RoundedCornerShape(999.dp)
 private const val WEB_ORIGIN = "https://easy-education.vercel.app"
+private const val CLASS_ROUTE = "class/{courseId}/{classId}"
 
 @Composable
 fun EasyEducationNativeAppV2(
@@ -284,12 +288,20 @@ private fun V2NavHost(
                 slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> -fullWidth / 30 }
         },
         popEnterTransition = {
-            fadeIn(animationSpec = tween(170)) +
-                slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth / 16 }
+            if (initialState.destination.route == CLASS_ROUTE) {
+                EnterTransition.None
+            } else {
+                fadeIn(animationSpec = tween(170)) +
+                    slideInHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth / 16 }
+            }
         },
         popExitTransition = {
-            fadeOut(animationSpec = tween(120)) +
-                slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> fullWidth / 30 }
+            if (initialState.destination.route == CLASS_ROUTE) {
+                ExitTransition.None
+            } else {
+                fadeOut(animationSpec = tween(120)) +
+                    slideOutHorizontally(animationSpec = tween(170)) { fullWidth -> fullWidth / 30 }
+            }
         },
     ) {
         composable("home") { V2Home(nav, viewModel, state) }
@@ -450,6 +462,7 @@ private fun V2CourseCard(course: NativeCourse, onClick: () -> Unit) {
 
 @Composable
 private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, courseId: String) {
+    val context = LocalContext.current
     LaunchedEffect(courseId) { viewModel.loadCourse(courseId) }
     val content = state.courseContent[courseId]
     if (content == null) { V2Loading("Loading course…"); return }
@@ -477,7 +490,9 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
             }
             else -> {
                 item { V2Section("Classes") }
-                items(content.classes, key = { it.id }) { classItem -> V2ClassRow(classItem) { nav.navigate("class/$courseId/${classItem.id}") } }
+                items(content.classes, key = { it.id }) { classItem ->
+                    V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+                }
             }
         }
         item { Spacer(Modifier.height(12.dp)) }
@@ -486,6 +501,7 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
 
 @Composable
 private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: String, subject: String) {
+    val context = LocalContext.current
     val content = state.courseContent[courseId] ?: run { V2Loading("Loading subject…"); return }
     val chapters = content.chapters.filter { it.subject.isBlank() || it.subject.equals(subject, true) }.distinctBy { it.title.lowercase() }
     val classes = content.classes.filter { classItem -> classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) } }
@@ -500,7 +516,9 @@ private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: St
             }
         } else {
             item { V2Section("Classes") }
-            items(classes, key = { it.id }) { classItem -> V2ClassRow(classItem) { nav.navigate("class/$courseId/${classItem.id}") } }
+            items(classes, key = { it.id }) { classItem ->
+                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+            }
         }
         item { Spacer(Modifier.height(12.dp)) }
     }
@@ -521,11 +539,16 @@ private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: St
         else items(classes, key = { it.id }) { classItem ->
             V2ClassRow(classItem) {
                 PersistentNativePlayer.prefetch(context, classItem.id, classItem.sourceUrl, 480)
-                nav.navigate("class/$courseId/${classItem.id}")
+                openClass(context, nav, courseId, classItem.id)
             }
         }
         item { Spacer(Modifier.height(12.dp)) }
     }
+}
+
+private fun openClass(context: Context, nav: NavHostController, courseId: String, classId: String) {
+    NativeWatchBackdrop.capture(context)
+    nav.navigate("class/$courseId/$classId")
 }
 
 @Composable

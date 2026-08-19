@@ -44,6 +44,8 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     private var sourceY = 0f
     private var sourceWidth = 0
     private var sourceHeight = 0
+    private var presentationPage: View? = null
+    private var hasBackdrop = false
 
     init {
         clipChildren = false
@@ -144,6 +146,10 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         if (!surface.getGlobalVisibleRect(rect) || rect.isEmpty) return
         val rootLocation = IntArray(2)
         root.getLocationOnScreen(rootLocation)
+        presentationPage = composePageRoot()
+        hasBackdrop = presentationPage?.let { page ->
+            NativeWatchBackdrop.attachBelow(activity, page) != null
+        } == true
 
         sourceX = (rect.left - rootLocation[0]).toFloat()
         sourceY = (rect.top - rootLocation[1]).toFloat()
@@ -163,13 +169,14 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         dragRoot = root
         dragging = true
 
+        surface.cancelPendingSurfaceGesture()
         NativeSharedPlayerSurface.setMiniPresentation(surface, true)
         (surface.parent as? ViewGroup)?.removeView(surface)
         shell.addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         root.addView(shell, FrameLayout.LayoutParams(sourceWidth, sourceHeight))
         shell.bringToFront()
         parent?.requestDisallowInterceptTouchEvent(true)
-        applyBackgroundProgress(0f)
+        applyBackgroundProgress(0f, 0f)
     }
 
     private fun updateFloatingDrag(dx: Float, dy: Float) {
@@ -189,21 +196,30 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
         shell.y = (sourceY + positiveY * 0.84f).coerceAtMost(root.height - sourceHeight * targetScale * 0.30f)
         shell.background = roundedBlack(dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * progress)
         shell.elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
-        applyBackgroundProgress(progress)
+        applyBackgroundProgress(progress, positiveY)
     }
 
     private fun commitFloatingDrag() {
         val shell = dragShell ?: return resetPagePresentation()
         val surface = playerSurface
         shell.animate().cancel()
-        applyBackgroundProgress(1f)
+        presentationPage?.let { page ->
+            page.animate().cancel()
+            if (hasBackdrop) page.alpha = 0f
+        }
         surface.onMinimize?.invoke()
         post {
             if (surface.parent === shell) shell.removeView(surface)
             (shell.parent as? ViewGroup)?.removeView(shell)
             dragShell = null
             dragRoot = null
-            resetPagePresentation()
+            // The class destination has a zero-duration pop transition. Keep the captured previous
+            // page visible for two UI frames while Compose swaps destinations, then reveal the live
+            // destination and release the snapshot. This prevents the one-frame black flash.
+            postDelayed({
+                resetPagePresentation()
+                releaseBackdrop(clearSnapshot = true)
+            }, HANDOFF_SETTLE_MS)
         }
     }
 
@@ -227,6 +243,7 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
                 (surface.parent as? ViewGroup)?.removeView(surface)
                 if (surface.parent !== this) addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                 resetPagePresentation()
+                releaseBackdrop(clearSnapshot = false)
             }
             .start()
     }
@@ -234,26 +251,32 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     private fun composePageRoot(): View? {
         val activity = context.findActivity() ?: return null
         val content = activity.findViewById<FrameLayout>(android.R.id.content) ?: return null
-        return content.getChildAt(0)?.takeIf { it !== dragShell }
+        var current: View = this
+        while (current.parent is View && current.parent !== content) {
+            current = current.parent as View
+        }
+        return current.takeIf { it.parent === content && it !== dragShell }
     }
 
-    private fun applyBackgroundProgress(p: Float) {
-        val page = composePageRoot() ?: return
+    private fun applyBackgroundProgress(p: Float, dragY: Float) {
+        val page = presentationPage ?: composePageRoot() ?: return
         page.animate().cancel()
         page.pivotX = page.width / 2f
-        page.pivotY = page.height / 2f
-        val scale = 1f - 0.018f * p
+        page.pivotY = 0f
+        val scale = 1f - 0.012f * p
         page.scaleX = scale
         page.scaleY = scale
-        page.alpha = 1f - 0.48f * p
+        page.translationY = dragY * 0.38f
+        page.alpha = 1f
     }
 
     private fun animateBackgroundReset() {
-        val page = composePageRoot() ?: return
+        val page = presentationPage ?: composePageRoot() ?: return
         page.animate().cancel()
         page.animate()
             .scaleX(1f)
             .scaleY(1f)
+            .translationY(0f)
             .alpha(1f)
             .setDuration(YoutubeParityMotion.WATCH_TRANSITION_MS)
             .start()
@@ -271,10 +294,10 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     }
 
     private fun finishDragImmediately(reattach: Boolean) {
-        val shell = dragShell ?: return
         val surface = playerSurface
-        if (surface.parent === shell) shell.removeView(surface)
-        (shell.parent as? ViewGroup)?.removeView(shell)
+        val shell = dragShell
+        if (shell != null && surface.parent === shell) shell.removeView(surface)
+        if (shell != null) (shell.parent as? ViewGroup)?.removeView(shell)
         dragShell = null
         dragRoot = null
         if (reattach) {
@@ -283,16 +306,23 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
             addView(surface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }
         resetPagePresentation()
+        releaseBackdrop(clearSnapshot = false)
     }
 
     fun resetPagePresentation() {
-        composePageRoot()?.let(::resetPageImmediately)
+        (presentationPage ?: composePageRoot())?.let(::resetPageImmediately)
         playerSurface.animate().cancel()
         playerSurface.scaleX = 1f
         playerSurface.scaleY = 1f
         playerSurface.translationX = 0f
         playerSurface.translationY = 0f
         playerSurface.alpha = 1f
+    }
+
+    private fun releaseBackdrop(clearSnapshot: Boolean) {
+        NativeWatchBackdrop.detach(clearSnapshot)
+        presentationPage = null
+        hasBackdrop = false
     }
 
     fun globalBounds(): Rect {
@@ -329,5 +359,6 @@ class YoutubeWatchGestureHost(context: Context) : FrameLayout(context) {
     companion object {
         private const val MINI_COMMIT_FRACTION = 0.30f
         private const val MINI_COMMIT_VELOCITY = 900f
+        private const val HANDOFF_SETTLE_MS = 80L
     }
 }

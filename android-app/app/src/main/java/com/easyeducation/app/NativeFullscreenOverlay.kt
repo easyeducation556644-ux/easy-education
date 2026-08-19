@@ -276,6 +276,11 @@ object NativeFullscreenOverlay {
         private var progress = 0f
         private var velocity: VelocityTracker? = null
 
+        /** Keep the player from blocking this shell's vertical presentation gesture. */
+        override fun requestDisallowInterceptTouchEvent(disallowIntercept: Boolean) {
+            parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
+        }
+
         override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -294,8 +299,14 @@ object NativeFullscreenOverlay {
                     if (!eligible) return false
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    val distance = hypot(dx, dy)
-                    if (!dragging && distance > touchSlop * 1.10f) dragging = true
+                    if (
+                        !dragging &&
+                        dy > touchSlop &&
+                        abs(dy) > abs(dx) * 0.86f
+                    ) {
+                        dragging = true
+                        (target as? YoutubeStylePlayerView)?.cancelPendingSurfaceGesture()
+                    }
                     if (dragging) {
                         updateDrag(dx, dy)
                         return true
@@ -324,10 +335,11 @@ object NativeFullscreenOverlay {
 
                 MotionEvent.ACTION_UP -> {
                     velocity?.computeCurrentVelocity(1000)
-                    val speed = hypot(velocity?.xVelocity ?: 0f, velocity?.yVelocity ?: 0f)
+                    val yVelocity = velocity?.yVelocity ?: 0f
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    val commit = progress >= EXIT_FRACTION || speed >= EXIT_VELOCITY_PX_S
+                    val commit = progress >= EXIT_FRACTION ||
+                        (dy > 0f && yVelocity >= EXIT_VELOCITY_PX_S)
                     finishGestureState()
                     if (commit) onExitGesture?.invoke(dx, dy) else animateReset()
                     return true
@@ -343,10 +355,10 @@ object NativeFullscreenOverlay {
         }
 
         private fun updateDrag(dx: Float, dy: Float) {
-            val distance = hypot(dx, dy)
-            val denominator = minOf(width, height).coerceAtLeast(dp(180)) * 0.55f
-            progress = (distance / denominator).coerceIn(0f, 1f)
-            applyTransform(dx, dy, progress)
+            val positiveY = dy.coerceAtLeast(0f)
+            val denominator = height.coerceAtLeast(dp(180)) * 0.55f
+            progress = (positiveY / denominator).coerceIn(0f, 1f)
+            applyTransform(dx, positiveY, progress)
         }
 
         private fun finishGestureState() {
@@ -370,11 +382,11 @@ object NativeFullscreenOverlay {
             scrim?.animate()?.cancel()
             video.pivotX = width / 2f
             video.pivotY = height / 2f
-            val scale = 1f - 0.20f * p
+            val scale = 1f - 0.22f * p
             video.scaleX = scale
             video.scaleY = scale
-            video.translationX = dx * 0.64f
-            video.translationY = dy * 0.64f
+            video.translationX = dx * 0.55f
+            video.translationY = dy * 0.82f
             video.alpha = 1f
             video.elevation = dp(YoutubeParityMotion.MINI_ELEVATION_DP).toFloat()
             if (p > 0.04f) {
@@ -385,7 +397,9 @@ object NativeFullscreenOverlay {
                     cornerRadius = dpF(YoutubeParityMotion.MINI_CORNER_RADIUS_DP) * p
                 }
             }
-            scrim?.alpha = (1f - 0.93f * p).coerceIn(0.04f, 1f)
+            // The live watch page is already rendered below this shell. Remove the black layer
+            // quickly enough that it is visibly behind the finger instead of flashing in at exit.
+            scrim?.alpha = (1f - 1.35f * p).coerceIn(0f, 1f)
         }
 
         private fun animateReset() {

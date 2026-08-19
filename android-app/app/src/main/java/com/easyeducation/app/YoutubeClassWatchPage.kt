@@ -216,9 +216,13 @@ fun YoutubeClassWatchPage(
                 onSharedSessionClassChanged = { activeId ->
                     chapterClasses.firstOrNull { it.id == activeId }?.let(::navigateTo)
                 },
-                onBack = { nav.popBackStack() },
+                onBack = {
+                    NativeWatchBackdrop.clear()
+                    nav.popBackStack()
+                },
                 onMinimize = { nav.popBackStack() },
                 onExpandFromMini = {
+                    NativeWatchBackdrop.capture(context)
                     nav.navigate("class/$courseId/$classId") {
                         launchSingleTop = true
                     }

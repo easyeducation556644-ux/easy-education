@@ -86,6 +86,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     private var dragProgress = 0f
     private var downOnControl = false
     private var surfaceGestureOwned = false
+    private var longPressEligible = false
     private var minimizeCommitted = false
     private var rapidSeekSeconds = 0
 
@@ -153,7 +154,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             }
 
             override fun onLongPress(e: MotionEvent) {
-                if (draggingDown || downOnControl) return
+                if (!surfaceGestureOwned || !longPressEligible || draggingDown || downOnControl) return
                 val exo = attachedPlayer ?: return
                 if (holdSpeedActive) return
                 holdSpeedActive = true
@@ -341,6 +342,7 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 rapidSeekSeconds = 0
                 downOnControl = interactiveControls().any { hit(it, ev.rawX, ev.rawY) }
                 surfaceGestureOwned = !downOnControl && !isSeeking
+                longPressEligible = surfaceGestureOwned
                 if (surfaceGestureOwned) {
                     parent?.requestDisallowInterceptTouchEvent(true)
                     gestureDetector.onTouchEvent(ev)
@@ -352,6 +354,11 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                 parent?.requestDisallowInterceptTouchEvent(true)
                 val dx = ev.x - touchDownX
                 val dy = ev.y - touchDownY
+                if (longPressEligible && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                    longPressEligible = false
+                    cancelGestureDetector(ev)
+                    if (holdSpeedActive) finishHoldSpeed()
+                }
                 if (!draggingDown && dy > touchSlop && abs(dy) > abs(dx) * 1.05f) {
                     draggingDown = true
                     handler.removeCallbacks(hideControls)
@@ -363,13 +370,14 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
                     dragProgress = (dragY / denominator).coerceIn(0f, 1f)
                     applyDragTransform(dragY, dragProgress)
                 } else {
-                    gestureDetector.onTouchEvent(ev)
+                    if (longPressEligible) gestureDetector.onTouchEvent(ev)
                 }
                 return true
             }
 
             MotionEvent.ACTION_UP -> if (surfaceGestureOwned) {
-                gestureDetector.onTouchEvent(ev)
+                if (longPressEligible) gestureDetector.onTouchEvent(ev)
+                longPressEligible = false
                 if (holdSpeedActive) finishHoldSpeed()
                 parent?.requestDisallowInterceptTouchEvent(false)
                 surfaceGestureOwned = false
@@ -382,6 +390,8 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_CANCEL -> if (surfaceGestureOwned) {
+                cancelGestureDetector(ev)
+                longPressEligible = false
                 if (holdSpeedActive) finishHoldSpeed()
                 parent?.requestDisallowInterceptTouchEvent(false)
                 surfaceGestureOwned = false
@@ -394,6 +404,33 @@ class YoutubeStylePlayerView @JvmOverloads constructor(
     }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = false
+
+    /**
+     * A presentation parent calls this before it reparents the view. Waiting for Android's deferred
+     * child CANCEL is not sufficient because the detach can happen inside the parent's intercept
+     * pass; GestureDetector's long-press callback could otherwise survive and enable 2x mid-drag.
+     */
+    fun cancelPendingSurfaceGesture() {
+        val now = android.os.SystemClock.uptimeMillis()
+        MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, touchDownX, touchDownY, 0).also { cancel ->
+            gestureDetector.onTouchEvent(cancel)
+            cancel.recycle()
+        }
+        longPressEligible = false
+        if (holdSpeedActive) finishHoldSpeed()
+        surfaceGestureOwned = false
+        draggingDown = false
+        dragProgress = 0f
+        parent?.requestDisallowInterceptTouchEvent(false)
+    }
+
+    private fun cancelGestureDetector(source: MotionEvent) {
+        MotionEvent.obtain(source).also { cancel ->
+            cancel.action = MotionEvent.ACTION_CANCEL
+            gestureDetector.onTouchEvent(cancel)
+            cancel.recycle()
+        }
+    }
 
     fun bindPlayer(player: ExoPlayer?) {
         if (attachedPlayer === player) return

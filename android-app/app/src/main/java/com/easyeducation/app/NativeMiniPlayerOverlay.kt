@@ -240,52 +240,52 @@ object NativeMiniPlayerOverlay {
             }
         }
 
+        val miniInset = dp(activity, YoutubeParityMotion.MINI_INSET_DP)
+        val miniBottomInset = dp(activity, 82)
+        fun targetX(): Float = (contentRoot.width - baseWidth - miniInset).coerceAtLeast(0).toFloat()
+        fun targetY(): Float = (contentRoot.height - baseHeight - miniBottomInset).coerceAtLeast(0).toFloat()
+
+        val initialBounds = sourceBounds?.takeUnless { it.isEmpty }
+        val hasSourceBounds = initialBounds != null
+        if (initialBounds != null) {
+            val rootLocation = IntArray(2)
+            contentRoot.getLocationOnScreen(rootLocation)
+            shell.pivotX = 0f
+            shell.pivotY = 0f
+            shell.x = (initialBounds.left - rootLocation[0]).toFloat()
+            shell.y = (initialBounds.top - rootLocation[1]).toFloat()
+            // Use the exact visual rectangle handed off by the drag shell. The old 1.75x clamp
+            // made a full-width player jump to half its size for one frame before the morph began.
+            shell.scaleX = initialBounds.width().toFloat() / baseWidth.coerceAtLeast(1)
+            shell.scaleY = initialBounds.height().toFloat() / baseHeight.coerceAtLeast(1)
+            shell.alpha = 1f
+        } else {
+            shell.x = targetX()
+            shell.y = targetY()
+            shell.alpha = 0f
+            shell.scaleX = 0.82f
+            shell.scaleY = 0.82f
+        }
+
         contentRoot.addView(
             shell,
-            FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.BOTTOM or Gravity.END).apply {
-                marginEnd = dp(activity, YoutubeParityMotion.MINI_INSET_DP)
-                bottomMargin = dp(activity, 82)
-            },
+            FrameLayout.LayoutParams(baseWidth, baseHeight, Gravity.TOP or Gravity.START),
         )
 
-        shell.post {
-            normalX = shell.x
-            normalY = shell.y
-            if (sourceBounds != null && !sourceBounds.isEmpty) {
-                val rootLocation = IntArray(2)
-                contentRoot.getLocationOnScreen(rootLocation)
-                val sourceX = (sourceBounds.left - rootLocation[0]).toFloat()
-                val sourceY = (sourceBounds.top - rootLocation[1]).toFloat()
-                val sourceScale = min(
-                    sourceBounds.width().toFloat() / shell.width.coerceAtLeast(1),
-                    sourceBounds.height().toFloat() / shell.height.coerceAtLeast(1),
-                ).coerceIn(0.60f, 1.75f)
-                val targetX = shell.x
-                val targetY = shell.y
-                shell.pivotX = 0f
-                shell.pivotY = 0f
-                shell.x = sourceX
-                shell.y = sourceY
-                shell.scaleX = sourceScale
-                shell.scaleY = sourceScale
-                shell.animate()
-                    .x(targetX)
-                    .y(targetY)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(YoutubeParityMotion.WATCH_MIN_MAX_MS)
-                    .start()
-            } else {
-                shell.alpha = 0f
-                shell.scaleX = 0.82f
-                shell.scaleY = 0.82f
-                shell.animate()
-                    .alpha(1f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(YoutubeParityMotion.WATCH_REVEAL_FROM_BOTTOM_MS)
-                    .start()
-            }
+        shell.postOnAnimation {
+            normalX = targetX()
+            normalY = targetY()
+            shell.animate()
+                .x(normalX)
+                .y(normalY)
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(
+                    if (hasSourceBounds) YoutubeParityMotion.WATCH_MIN_MAX_MS
+                    else YoutubeParityMotion.WATCH_REVEAL_FROM_BOTTOM_MS,
+                )
+                .start()
         }
 
         play.bringToFront()
