@@ -34,9 +34,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /**
- * Inline surface for the process-local persistent player. Inline, fullscreen and miniplayer attach
- * to the same ExoPlayer instance, so changing presentation does not re-resolve YouTube/Rumble,
- * recreate the decoder or throw away buffered media.
+ * Inline presentation of the process-local persistent player. Inline, fullscreen and miniplayer all
+ * bind to the same ExoPlayer session; presentation changes do not re-resolve YouTube/Rumble media.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -46,9 +45,14 @@ fun NativeInlinePlayer(
     modifier: Modifier = Modifier,
     requestedHeight: Int = 480,
     title: String = "",
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onPrevious: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
     onBack: (() -> Unit)? = null,
     onMinimize: (() -> Unit)? = null,
     onFullscreen: (() -> Unit)? = null,
+    onSharedSessionClassChanged: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -63,6 +67,13 @@ fun NativeInlinePlayer(
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     if (!handedToMini) handedToFullscreen = false
+                    val active = PersistentNativePlayer.currentClassId()
+                    if (
+                        active.isNotBlank() && active != classId &&
+                        PlayerChapterQueue.contains(active)
+                    ) {
+                        onSharedSessionClassChanged?.invoke(active)
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> {
                     PersistentNativePlayer.savePosition(context)
@@ -75,7 +86,8 @@ fun NativeInlinePlayer(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             PersistentNativePlayer.savePosition(context)
-            if (!handedToMini && !handedToFullscreen &&
+            if (
+                !handedToMini && !handedToFullscreen &&
                 PersistentNativePlayer.currentClassId() == classId
             ) {
                 PersistentNativePlayer.pause()
@@ -89,8 +101,6 @@ fun NativeInlinePlayer(
             errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
-        // A floating miniplayer can still own the shared video surface when the user taps a class.
-        // Detach only that presentation; keep the process-local player/session alive for reuse.
         NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
         handedToMini = false
         loading = true
@@ -162,11 +172,14 @@ fun NativeInlinePlayer(
                     bindPlayer(if (handedToFullscreen) null else exoPlayer)
                     setTitle(title)
                     setLoading(loading)
+                    setNavigationAvailability(hasPrevious, hasNext)
                     this.onBack = {
                         onBack?.invoke()
                             ?: (ctx.findActivity() as? ComponentActivity)
                                 ?.onBackPressedDispatcher?.onBackPressed()
                     }
+                    this.onPrevious = onPrevious
+                    this.onNext = onNext
                     this.onMinimize = { minimizePlayer() }
                     this.onFullscreen = { fullscreenPlayer() }
                 }
@@ -175,11 +188,14 @@ fun NativeInlinePlayer(
                 view.bindPlayer(if (handedToFullscreen) null else exoPlayer)
                 view.setTitle(title)
                 view.setLoading(loading)
+                view.setNavigationAvailability(hasPrevious, hasNext)
                 view.onBack = {
                     onBack?.invoke()
                         ?: (context.findActivity() as? ComponentActivity)
                             ?.onBackPressedDispatcher?.onBackPressed()
                 }
+                view.onPrevious = onPrevious
+                view.onNext = onNext
                 view.onMinimize = { minimizePlayer() }
                 view.onFullscreen = { fullscreenPlayer() }
             },
