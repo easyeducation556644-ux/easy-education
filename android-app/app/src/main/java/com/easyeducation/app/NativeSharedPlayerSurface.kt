@@ -1,0 +1,64 @@
+package com.easyeducation.app
+
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.view.ViewGroup
+import androidx.media3.common.util.UnstableApi
+
+/**
+ * Owns the single visual player view used by inline watch, fullscreen and in-app mini modes.
+ * The same YoutubeStylePlayerView is reparented inside MainActivity instead of creating another
+ * PlayerView for each presentation. This mirrors the player-reparenting architecture exposed by
+ * the YouTube APK and prevents presentation changes from creating a second video surface/controller.
+ */
+@UnstableApi
+object NativeSharedPlayerSurface {
+    private var hostActivity: Activity? = null
+    private var surface: YoutubeStylePlayerView? = null
+
+    @Synchronized
+    fun obtain(context: Context): YoutubeStylePlayerView {
+        val activity = context.findActivity()
+        val current = surface
+        if (current != null && (activity == null || hostActivity === activity)) return current
+
+        surface?.let { old ->
+            (old.parent as? ViewGroup)?.removeView(old)
+            old.bindPlayer(null)
+        }
+        return YoutubeStylePlayerView(activity ?: context).also {
+            hostActivity = activity
+            surface = it
+        }
+    }
+
+    @Synchronized
+    fun detach(): YoutubeStylePlayerView? {
+        val current = surface ?: return null
+        (current.parent as? ViewGroup)?.removeView(current)
+        return current
+    }
+
+    @Synchronized
+    fun current(): YoutubeStylePlayerView? = surface
+
+    @Synchronized
+    fun clear() {
+        surface?.let { current ->
+            (current.parent as? ViewGroup)?.removeView(current)
+            current.bindPlayer(null)
+        }
+        surface = null
+        hostActivity = null
+    }
+
+    private fun Context.findActivity(): Activity? {
+        var current: Context? = this
+        while (current is ContextWrapper) {
+            if (current is Activity) return current
+            current = current.baseContext
+        }
+        return current as? Activity
+    }
+}
