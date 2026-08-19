@@ -89,6 +89,10 @@ fun NativeInlinePlayer(
             errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
+        // A floating miniplayer can still own the shared video surface when the user taps a class.
+        // Detach only that presentation; keep the process-local player/session alive for reuse.
+        NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
+        handedToMini = false
         loading = true
         errorText = null
         runCatching {
@@ -142,8 +146,6 @@ fun NativeInlinePlayer(
         }
     }
 
-    // Once minimized the player is physically rendering in the activity overlay, while the watch
-    // route is popped. Do not leave a dead black 16:9 slot behind.
     if (handedToMini) return
 
     Box(
