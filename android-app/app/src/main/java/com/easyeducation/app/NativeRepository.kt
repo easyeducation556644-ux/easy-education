@@ -51,7 +51,7 @@ class NativeRepository(context: Context) {
     suspend fun cachedCourses(uid: String): List<NativeCourse> = withContext(Dispatchers.IO) {
         val orderedEnrollments = cachedEnrollments(uid)
             .sortedWith(
-                compareBy<NativeEnrollment> { if (it.enrolledAt > 0L) it.enrolledAt else Long.MIN_VALUE }
+                compareBy<NativeEnrollment> { if (it.enrolledAt > 0L) it.enrolledAt else Long.MAX_VALUE }
                     .thenBy { it.id },
             )
         val seen = linkedSetOf<String>()
