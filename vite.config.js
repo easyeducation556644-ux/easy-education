@@ -33,6 +33,41 @@ function learningSkeletonPlugin() {
   }
 }
 
+function rumbleEmbedPlugin() {
+  const targetSuffix = '/src/components/CustomVideoPlayer.jsx'
+  const providerMarker = 'const isRumble = provider === "rumble"'
+  const iframePattern = /src=\{`https:\/\/rumble\.com\/embed\/\$\{(?:rumbleId|getRumbleId\(url\))\}\/`\}/g
+
+  return {
+    name: 'easy-education-rumble-embed-resolver',
+    enforce: 'pre',
+    transform(code, id) {
+      const normalizedId = id.split('?')[0]
+      if (!normalizedId.endsWith(targetSuffix)) return null
+      if (!code.includes(providerMarker)) {
+        throw new Error('Rumble player provider marker changed; canonical embed resolver was not injected')
+      }
+
+      let transformed = `import useRumbleEmbedUrl from "../hooks/useRumbleEmbedUrl.js"\n${code}`
+      transformed = transformed.replace(
+        providerMarker,
+        `${providerMarker}\n  const resolvedRumbleEmbedUrl = useRumbleEmbedUrl(url, isRumble)`,
+      )
+
+      let replacements = 0
+      transformed = transformed.replace(iframePattern, () => {
+        replacements += 1
+        return 'src={resolvedRumbleEmbedUrl || "about:blank"}'
+      })
+      if (replacements !== 2) {
+        throw new Error(`Expected to rewrite 2 Rumble iframes, rewrote ${replacements}`)
+      }
+
+      return { code: transformed, map: null }
+    },
+  }
+}
+
 function firestoreReadTrackerPlugin() {
   // Cache V2 is the global Firestore facade. It serves previously server-primed
   // documents/queries from persistent cache and relies on the tiny sync feeds to
@@ -63,7 +98,7 @@ function firestoreReadTrackerPlugin() {
 
 export default defineConfig({
   base: '/', 
-  plugins: [learningSkeletonPlugin(), firestoreReadTrackerPlugin(), react()],
+  plugins: [learningSkeletonPlugin(), rumbleEmbedPlugin(), firestoreReadTrackerPlugin(), react()],
   server: {
     host: '0.0.0.0',
     port: 5000,
