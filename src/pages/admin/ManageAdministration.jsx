@@ -157,6 +157,8 @@ export default function ManageAdministration() {
     return courses.filter((course) => course.title?.toLowerCase().includes(search))
   }, [courses, courseSearchQuery])
 
+  const allCourseIds = useMemo(() => courses.map((course) => course.id), [courses])
+
   const openAccessEditor = (user) => {
     const full = isFullAdmin(user)
     const normal = !user.role || user.role === "user"
@@ -195,6 +197,17 @@ export default function ManageAdministration() {
       return {
         ...current,
         [pageId]: ids.includes(courseId) ? ids.filter((id) => id !== courseId) : [...ids, courseId],
+      }
+    })
+  }
+
+  const toggleAllCourses = (pageId) => {
+    setCourseIdsByPage((current) => {
+      const selectedIds = current[pageId] || []
+      const allSelected = allCourseIds.length > 0 && allCourseIds.every((courseId) => selectedIds.includes(courseId))
+      return {
+        ...current,
+        [pageId]: allSelected ? [] : [...allCourseIds],
       }
     })
   }
@@ -434,8 +447,10 @@ export default function ManageAdministration() {
                         {enabled && pageDefinition.courseScoped && (
                           <CourseSelector
                             courses={filteredCourses}
+                            allCourseIds={allCourseIds}
                             selectedIds={courseIdsByPage[pageDefinition.id] || []}
                             onToggle={(courseId) => toggleCourse(pageDefinition.id, courseId)}
+                            onToggleAll={() => toggleAllCourses(pageDefinition.id)}
                           />
                         )}
 
@@ -461,8 +476,10 @@ export default function ManageAdministration() {
                                 <p className="text-xs text-muted-foreground mb-2">Grant/remove course access buttons will only operate on these courses.</p>
                                 <CourseSelector
                                   courses={filteredCourses}
+                                  allCourseIds={allCourseIds}
                                   selectedIds={courseIdsByPage[ADMIN_PERMISSION_KEYS.USERS] || []}
                                   onToggle={(courseId) => toggleCourse(ADMIN_PERMISSION_KEYS.USERS, courseId)}
+                                  onToggleAll={() => toggleAllCourses(ADMIN_PERMISSION_KEYS.USERS)}
                                 />
                               </div>
                             )}
@@ -488,17 +505,27 @@ export default function ManageAdministration() {
   )
 }
 
-function CourseSelector({ courses, selectedIds, onToggle }) {
+function CourseSelector({ courses, allCourseIds, selectedIds, onToggle, onToggleAll }) {
+  const allSelected = allCourseIds.length > 0 && allCourseIds.every((courseId) => selectedIds.includes(courseId))
+
   return (
-    <div className="mt-3 max-h-52 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-2 rounded-lg bg-muted/25 p-2">
-      {courses.length === 0 ? (
-        <p className="col-span-full text-sm text-muted-foreground p-2">No matching course.</p>
-      ) : courses.map((course) => (
-        <label key={course.id} className="flex items-center gap-2 p-2 border border-border rounded-lg cursor-pointer hover:bg-muted/50 bg-card">
-          <input type="checkbox" checked={selectedIds.includes(course.id)} onChange={() => onToggle(course.id)} className="w-4 h-4" />
-          <span className="text-sm truncate">{course.title}</span>
-        </label>
-      ))}
+    <div className="mt-3 rounded-lg bg-muted/25 p-2">
+      <label className={`mb-2 flex items-center gap-2 rounded-lg border p-2 cursor-pointer ${allSelected ? "border-primary/50 bg-primary/10" : "border-border bg-card hover:bg-muted/50"}`}>
+        <input type="checkbox" checked={allSelected} onChange={onToggleAll} disabled={allCourseIds.length === 0} className="w-4 h-4" />
+        <span className="text-sm font-semibold">All courses</span>
+        <span className="ml-auto text-xs text-muted-foreground">{allCourseIds.length} total</span>
+      </label>
+
+      <div className="max-h-52 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-2">
+        {courses.length === 0 ? (
+          <p className="col-span-full text-sm text-muted-foreground p-2">No matching course.</p>
+        ) : courses.map((course) => (
+          <label key={course.id} className="flex items-center gap-2 p-2 border border-border rounded-lg cursor-pointer hover:bg-muted/50 bg-card">
+            <input type="checkbox" checked={selectedIds.includes(course.id)} onChange={() => onToggle(course.id)} className="w-4 h-4" />
+            <span className="text-sm truncate">{course.title}</span>
+          </label>
+        ))}
+      </div>
     </div>
   )
 }
