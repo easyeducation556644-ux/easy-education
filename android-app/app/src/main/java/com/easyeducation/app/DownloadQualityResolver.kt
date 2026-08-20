@@ -45,7 +45,10 @@ class DownloadQualityResolver(
         val unique = raw
             .groupBy { it.height }
             .map { (_, choices) ->
-                choices.firstOrNull { it.kind == "rumble" }
+                // Rumble HLS is preferred because it is the most stable direct CDN path across
+                // current uploads. Progressive Rumble remains a fallback for HLS-less videos.
+                choices.firstOrNull { it.kind == "rumble-hls" }
+                    ?: choices.firstOrNull { it.kind == "rumble" }
                     ?: choices.firstOrNull { it.kind == "youtube" }
                     ?: choices.maxByOrNull { it.sizeBytes }
                     ?: choices.first()
@@ -70,6 +73,32 @@ class DownloadQualityResolver(
     }
 
     private fun resolveRumble(classId: String, url: String): List<DownloadQualityOption> {
+        val direct = runCatching {
+            NativeRumbleDirectResolver(http).resolveAll(url)
+        }.getOrNull().orEmpty()
+        if (direct.isNotEmpty()) {
+            val hls = direct.filter { it.hls }
+            val selected = if (hls.isNotEmpty()) hls else direct.filter { !it.hls }
+            val options = selected
+                .filter { it.height > 0 || selected.size == 1 }
+                .map { stream ->
+                    DownloadQualityOption(
+                        height = stream.height,
+                        label = if (stream.height > 0) "${stream.height}p" else "Source quality",
+                        sizeBytes = stream.contentLength,
+                        estimated = stream.hls || stream.contentLength <= 0L,
+                        kind = if (stream.hls) "rumble-hls" else "rumble",
+                    )
+                }
+                .distinctBy { "${it.kind}:${it.height}" }
+            if (options.isNotEmpty()) return options
+        }
+
+        // Compatibility fallback for unusual Rumble payloads that the server knows how to parse.
+        return resolveRumbleServer(classId, url)
+    }
+
+    private fun resolveRumbleServer(classId: String, url: String): List<DownloadQualityOption> {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val endpoint = APP_ORIGIN + "/api/offline-video?options=1" +
