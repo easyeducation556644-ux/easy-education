@@ -1,15 +1,15 @@
 /**
  * Manual Payment Enrollment Processing
- * Used when webhook fails or for manual verification
- * Official Docs: https://rupantorpay.com/developers/docs
- *
- * CRITICAL FIXES according to official documentation:
- * 1. Verify endpoint returns direct payment object (not wrapped)
- * 2. Status is string: "COMPLETED", "PENDING", or "ERROR"
+ * Used when webhook fails or for manual verification.
  */
 
 import { processPaymentAndEnrollUser } from './utils/process-payment.js';
-import { getAdminServices } from './utils/firebase-admin.js';
+import {
+  getAdminServices,
+  profileHasUserAction,
+  profilePageCourseIds,
+  requireAuthenticatedUser,
+} from './utils/firebase-admin.js';
 import { publishEnrollmentSync } from './_sync-event.js';
 
 const RUPANTORPAY_API_KEY = process.env.RUPANTORPAY_API_KEY;
@@ -26,34 +26,69 @@ async function syncEnrollmentCache(userId, transactionId, result) {
       enrolledCourseIds: result.enrollmentDetails?.enrolledCourses || [],
     });
   } catch (error) {
-    // Enrollment has already succeeded. Cache invalidation is best-effort and can be
-    // republished by another successful verification/webhook call using stable IDs.
     console.error('Failed to publish enrollment cache sync:', error);
+  }
+}
+
+function isManualAdminGrant({ couponCode, paymentMethod }) {
+  return couponCode === 'MANUAL_ADMIN_GRANT' || paymentMethod === 'Manual Grant by Admin';
+}
+
+async function authorizeManualAdminGrant(req, requestCourses) {
+  const { userProfile } = await requireAuthenticatedUser(req);
+  if (!profileHasUserAction(userProfile, 'grantCourseAccess')) {
+    const error = new Error('You do not have permission to grant course access');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const allowedCourseIds = profilePageCourseIds(userProfile, 'users');
+  if (allowedCourseIds !== null) {
+    const allowed = new Set(allowedCourseIds);
+    const denied = (requestCourses || [])
+      .map((course) => course?.id || course?.courseId)
+      .filter(Boolean)
+      .filter((courseId) => !allowed.has(courseId));
+    if (denied.length > 0) {
+      const error = new Error('One or more selected courses are outside your assigned Users course scope');
+      error.statusCode = 403;
+      throw error;
+    }
   }
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
-    return res.status(405).json({
-      success: false,
-      error: "Method Not Allowed"
-    });
+    return res.status(405).json({ success: false, error: 'Method Not Allowed' });
   }
 
-  const { transaction_id, userId, skipPaymentVerification, userName, userEmail, mobileNumber, courses: requestCourses, subtotal, discount, couponCode, finalAmount, paymentMethod } = req.body;
+  const {
+    transaction_id,
+    userId,
+    skipPaymentVerification,
+    userName,
+    userEmail,
+    mobileNumber,
+    courses: requestCourses,
+    subtotal,
+    discount,
+    couponCode,
+    finalAmount,
+    paymentMethod,
+  } = req.body;
 
   if (!userId) {
-    return res.status(400).json({
-      success: false,
-      error: "Missing userId in request body."
-    });
+    return res.status(400).json({ success: false, error: 'Missing userId in request body.' });
   }
 
   if (skipPaymentVerification && finalAmount === 0) {
     try {
-      console.log('Processing free enrollment for userId:', userId);
+      if (isManualAdminGrant({ couponCode, paymentMethod })) {
+        await authorizeManualAdminGrant(req, requestCourses || []);
+      }
 
+      console.log('Processing free enrollment for userId:', userId);
       const result = await processPaymentAndEnrollUser({
         userId,
         userName: userName || 'N/A',
@@ -68,7 +103,7 @@ export default async function handler(req, res) {
         discount: parseFloat(discount || 0),
         couponCode: couponCode || '',
         finalAmount: 0,
-        currency: 'BDT'
+        currency: 'BDT',
       });
 
       if (result.success) {
@@ -83,56 +118,45 @@ export default async function handler(req, res) {
           payment: {
             transaction_id,
             amount: 0,
-            metadata: {
-              userId,
-              courses: requestCourses || []
-            }
-          }
-        });
-      } else {
-        console.error('Enrollment failed:', result.error, result.details);
-        return res.status(500).json({
-          success: false,
-          error: result.error || 'Enrollment failed',
-          details: result.details
+            metadata: { userId, courses: requestCourses || [] },
+          },
         });
       }
-    } catch (error) {
-      console.error("Error processing free enrollment:", error);
-      console.error("Error stack:", error.stack);
+
+      console.error('Enrollment failed:', result.error, result.details);
       return res.status(500).json({
         success: false,
-        error: "Failed to process free enrollment. Please try again.",
-        details: error.message
+        error: result.error || 'Enrollment failed',
+        details: result.details,
+      });
+    } catch (error) {
+      console.error('Error processing free enrollment:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        error: error.statusCode ? error.message : 'Failed to process free enrollment. Please try again.',
+        details: error.statusCode ? undefined : error.message,
       });
     }
   }
 
   if (!transaction_id) {
-    return res.status(400).json({
-      success: false,
-      error: "Missing transaction_id in request body."
-    });
+    return res.status(400).json({ success: false, error: 'Missing transaction_id in request body.' });
   }
 
   if (!RUPANTORPAY_API_KEY) {
-    console.error("RUPANTORPAY_API_KEY is missing!");
-    return res.status(500).json({
-      success: false,
-      error: "Server configuration error"
-    });
+    console.error('RUPANTORPAY_API_KEY is missing!');
+    return res.status(500).json({ success: false, error: 'Server configuration error' });
   }
 
   try {
     console.log('Processing enrollment for transaction_id:', transaction_id, 'userId:', userId);
-
     const verifyResponse = await fetch(VERIFY_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-KEY': RUPANTORPAY_API_KEY
+        'X-API-KEY': RUPANTORPAY_API_KEY,
       },
-      body: JSON.stringify({ transaction_id })
+      body: JSON.stringify({ transaction_id }),
     });
 
     const paymentData = await verifyResponse.json();
@@ -142,7 +166,7 @@ export default async function handler(req, res) {
       return res.status(400).json({
         success: false,
         verified: false,
-        error: paymentData.message || "Payment verification failed or not completed"
+        error: paymentData.message || 'Payment verification failed or not completed',
       });
     }
 
@@ -151,18 +175,13 @@ export default async function handler(req, res) {
       if (typeof paymentData.metadata === 'string') {
         try {
           metadata = JSON.parse(paymentData.metadata);
-          console.log('✅ Metadata parsed from string');
-        } catch (e) {
-          console.error('❌ Failed to parse metadata:', e);
-          console.error('Raw metadata:', paymentData.metadata);
+        } catch (error) {
+          console.error('Failed to parse payment metadata:', error);
         }
       } else if (typeof paymentData.metadata === 'object') {
         metadata = paymentData.metadata;
-        console.log('✅ Metadata is already object');
       }
     }
-
-    console.log('Parsed metadata:', metadata);
 
     const courses = metadata.courses || [];
     const metadataUserId = metadata.userId;
@@ -171,15 +190,12 @@ export default async function handler(req, res) {
     if (!metadataUserId) {
       return res.status(400).json({
         success: false,
-        error: "No userId found in payment metadata. Please ensure metadata was sent during payment creation."
+        error: 'No userId found in payment metadata. Please ensure metadata was sent during payment creation.',
       });
     }
 
     if (metadataUserId !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: "User ID mismatch - this payment belongs to a different user"
-      });
+      return res.status(403).json({ success: false, error: 'User ID mismatch - this payment belongs to a different user' });
     }
 
     const result = await processPaymentAndEnrollUser({
@@ -196,7 +212,7 @@ export default async function handler(req, res) {
       discount: parseFloat(metadata.discount || 0),
       couponCode: metadata.couponCode || '',
       finalAmount: parseFloat(paymentData.amount),
-      currency: paymentData.currency || 'BDT'
+      currency: paymentData.currency || 'BDT',
     });
 
     if (result.success) {
@@ -211,23 +227,19 @@ export default async function handler(req, res) {
         payment: {
           transaction_id: paymentData.transaction_id,
           amount: paymentData.amount,
-          metadata: metadata
-        }
-      });
-    } else {
-      console.error('Enrollment failed:', result.error, result.details);
-      return res.status(500).json({
-        success: false,
-        error: result.error || 'Enrollment failed',
-        details: result.details
+          metadata,
+        },
       });
     }
 
-  } catch (error) {
-    console.error("Error processing enrollment:", error);
+    console.error('Enrollment failed:', result.error, result.details);
     return res.status(500).json({
       success: false,
-      error: "Failed to process enrollment. Please try again."
+      error: result.error || 'Enrollment failed',
+      details: result.details,
     });
+  } catch (error) {
+    console.error('Error processing enrollment:', error);
+    return res.status(500).json({ success: false, error: 'Failed to process enrollment. Please try again.' });
   }
 }
