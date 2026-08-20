@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.SystemClock
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -25,18 +26,19 @@ import java.util.concurrent.ConcurrentHashMap
  * Presentation changes never recreate ExoPlayer. Resolver prefetch is isolated from the active
  * decoder and an in-flight resolve is shared with the watch page instead of duplicated on tap.
  *
- * Long classes are guarded for the full lifetime of the active session. Temporary CDN URLs may
- * expire many times during an 18-19 hour class, so recovery has no one-shot limit: IO/HTTP errors
- * and prolonged buffering trigger a fresh provider resolve, preserve the exact position, and retry
- * with capped backoff until the source recovers or the user leaves the class.
+ * Long classes keep a deep playback buffer and a fresh provider source waiting in the background.
+ * When a signed CDN URL expires, recovery can therefore swap to an already-resolved source at the
+ * same position instead of making the student wait for a resolver/network round trip.
  */
 object PersistentNativePlayer {
     private const val PLAYER_PREFS = "native_player_positions_v2"
     private const val SPEED_KEY = "youtube_style_speed"
     private const val WARM_SOURCE_TTL_MS = 90_000L
-    private const val GUARDIAN_TICK_MS = 15_000L
+    private const val RECOVERY_WARM_TTL_MS = 20 * 60_000L
+    private const val PREWARM_INTERVAL_MS = 10 * 60_000L
+    private const val GUARDIAN_TICK_MS = 5_000L
     private const val POSITION_SAVE_INTERVAL_MS = 30_000L
-    private const val STALL_RECOVERY_MS = 75_000L
+    private const val STALL_RECOVERY_MS = 3_500L
 
     private data class WarmSource(
         val source: NativeOnlinePlaybackSource,
@@ -57,18 +59,33 @@ object PersistentNativePlayer {
     @Volatile private var guardianJob: Job? = null
     @Volatile private var bufferingSinceMs: Long = 0L
     @Volatile private var lastPositionSaveMs: Long = 0L
+    @Volatile private var lastPrewarmMs: Long = 0L
 
     fun player(context: Context): ExoPlayer {
         playerInstance?.let { return it }
         return synchronized(this) {
-            playerInstance ?: ExoPlayer.Builder(context.applicationContext).build().also { exo ->
+            playerInstance ?: run {
                 val app = context.applicationContext
-                val speed = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-                    .getFloat(SPEED_KEY, 1f)
-                    .coerceIn(0.25f, 4f)
-                exo.setPlaybackSpeed(speed)
-                installLongSessionGuardian(app, exo)
-                playerInstance = exo
+                val loadControl = DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(
+                        60_000,
+                        180_000,
+                        1_500,
+                        2_500,
+                    )
+                    .setPrioritizeTimeOverSizeThresholds(true)
+                    .build()
+                ExoPlayer.Builder(app)
+                    .setLoadControl(loadControl)
+                    .build()
+                    .also { exo ->
+                        val speed = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+                            .getFloat(SPEED_KEY, 1f)
+                            .coerceIn(0.25f, 4f)
+                        exo.setPlaybackSpeed(speed)
+                        installLongSessionGuardian(app, exo)
+                        playerInstance = exo
+                    }
             }
         }
     }
@@ -96,8 +113,8 @@ object PersistentNativePlayer {
         val exo = player(app)
         val key = warmKey(classId, sourceUrl, requestedHeight)
         val sameLogicalSession = matches(classId, sourceUrl)
-        val hadCurrentMedia = sameLogicalSession && exo.mediaItemCount > 0
-        val sameSession = !forceRefresh && hadCurrentMedia && activeHeight == requestedHeight
+        val sameSession = !forceRefresh && sameLogicalSession &&
+            activeHeight == requestedHeight && exo.mediaItemCount > 0
         if (sameSession) {
             withContext(Dispatchers.Main.immediate) {
                 if (autoPlay) exo.playWhenReady = true
@@ -110,25 +127,24 @@ object PersistentNativePlayer {
             recoveryJob?.cancel()
             recoveryJob = null
             bufferingSinceMs = 0L
+            lastPrewarmMs = 0L
         }
 
         val resumePosition = withContext(Dispatchers.Main.immediate) {
-            val current = if (hadCurrentMedia) exo.currentPosition.coerceAtLeast(0L) else 0L
+            val current = if (sameLogicalSession && exo.mediaItemCount > 0) {
+                exo.currentPosition.coerceAtLeast(0L)
+            } else 0L
             saveActivePosition(app, exo)
             current
         }
 
         if (forceRefresh) {
-            warmSources.remove(key)
             inFlightResolves.remove(key)?.cancel()
         }
 
         val now = System.currentTimeMillis()
-        val warmed = if (forceRefresh) {
-            null
-        } else {
-            warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
-        }
+        val warmTtl = if (forceRefresh) RECOVERY_WARM_TTL_MS else WARM_SOURCE_TTL_MS
+        val warmed = warmSources.remove(key)?.takeIf { now - it.createdAt <= warmTtl }
         val inFlight = if (forceRefresh) {
             null
         } else {
@@ -144,7 +160,7 @@ object PersistentNativePlayer {
         withContext(Dispatchers.Main.immediate) {
             val savedPosition = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .getLong("class:$classId", 0L)
-            val targetPosition = if (hadCurrentMedia) resumePosition else savedPosition.coerceAtLeast(0L)
+            val targetPosition = maxOf(resumePosition, savedPosition).coerceAtLeast(0L)
             exo.setMediaSource(mediaSource)
             exo.prepare()
             if (targetPosition > 0L) exo.seekTo(targetPosition)
@@ -159,6 +175,7 @@ object PersistentNativePlayer {
             activeHeight = requestedHeight
             bufferingSinceMs = 0L
             lastPositionSaveMs = SystemClock.elapsedRealtime()
+            if (lastPrewarmMs <= 0L) lastPrewarmMs = SystemClock.elapsedRealtime()
         }
         pruneWarmSources(now)
         exo
@@ -175,26 +192,14 @@ object PersistentNativePlayer {
         val key = warmKey(classId, sourceUrl, requestedHeight)
         val now = System.currentTimeMillis()
         warmSources[key]?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }?.let { return }
-        if (inFlightResolves[key]?.isActive == true) return
-        val deferred = scope.async(Dispatchers.IO) {
-            runCatching {
-                NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
-            }.getOrNull()
-        }
-        val existing = inFlightResolves.putIfAbsent(key, deferred)
-        if (existing != null) {
-            deferred.cancel()
-            return
-        }
-        scope.async {
-            val resolved = runCatching { deferred.await() }.getOrNull()
-            inFlightResolves.remove(key, deferred)
-            if (resolved != null) {
-                warmSources[key] = WarmSource(resolved, System.currentTimeMillis())
-                pruneWarmSources(System.currentTimeMillis())
-            }
-            Unit
-        }
+        startBackgroundResolve(
+            context = context.applicationContext,
+            classId = classId,
+            sourceUrl = sourceUrl,
+            requestedHeight = requestedHeight,
+            generation = null,
+            updatePrewarmClock = false,
+        )
     }
 
     fun play() { playerInstance?.play() }
@@ -211,6 +216,7 @@ object PersistentNativePlayer {
         recoveryJob?.cancel()
         recoveryJob = null
         bufferingSinceMs = 0L
+        lastPrewarmMs = 0L
         exo.stop()
         exo.clearMediaItems()
         activeClassId = ""
@@ -252,11 +258,28 @@ object PersistentNativePlayer {
         guardianJob = scope.launch {
             while (true) {
                 delay(GUARDIAN_TICK_MS)
-                if (activeClassId.isBlank() || activeSourceUrl.isBlank()) continue
+                val classId = activeClassId
+                val sourceUrl = activeSourceUrl
+                val height = activeHeight
+                if (classId.isBlank() || sourceUrl.isBlank() || height <= 0) continue
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastPositionSaveMs >= POSITION_SAVE_INTERVAL_MS) {
                     saveActivePosition(context, exo)
                     lastPositionSaveMs = now
+                }
+                if (
+                    exo.playWhenReady &&
+                    now - lastPrewarmMs >= PREWARM_INTERVAL_MS
+                ) {
+                    lastPrewarmMs = now
+                    startBackgroundResolve(
+                        context = context,
+                        classId = classId,
+                        sourceUrl = sourceUrl,
+                        requestedHeight = height,
+                        generation = sessionGeneration,
+                        updatePrewarmClock = true,
+                    )
                 }
                 if (exo.playWhenReady && exo.playbackState == Player.STATE_BUFFERING) {
                     if (bufferingSinceMs <= 0L) bufferingSinceMs = now
@@ -266,6 +289,43 @@ object PersistentNativePlayer {
                 } else if (exo.playbackState != Player.STATE_BUFFERING) {
                     bufferingSinceMs = 0L
                 }
+            }
+        }
+    }
+
+    private fun startBackgroundResolve(
+        context: Context,
+        classId: String,
+        sourceUrl: String,
+        requestedHeight: Int,
+        generation: Long?,
+        updatePrewarmClock: Boolean,
+    ) {
+        val key = warmKey(classId, sourceUrl, requestedHeight)
+        if (inFlightResolves[key]?.isActive == true) return
+        val deferred = scope.async(Dispatchers.IO) {
+            runCatching {
+                NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
+            }.getOrNull()
+        }
+        val existing = inFlightResolves.putIfAbsent(key, deferred)
+        if (existing != null) {
+            deferred.cancel()
+            return
+        }
+        scope.launch {
+            val resolved = runCatching { deferred.await() }.getOrNull()
+            inFlightResolves.remove(key, deferred)
+            val stillRelevant = generation == null || (
+                generation == sessionGeneration &&
+                    activeClassId == classId &&
+                    activeSourceUrl == sourceUrl &&
+                    activeHeight == requestedHeight
+                )
+            if (resolved != null && stillRelevant) {
+                warmSources[key] = WarmSource(resolved, System.currentTimeMillis())
+                pruneWarmSources(System.currentTimeMillis())
+                if (updatePrewarmClock) lastPrewarmMs = SystemClock.elapsedRealtime()
             }
         }
     }
@@ -301,6 +361,7 @@ object PersistentNativePlayer {
                 }.isSuccess
                 if (recovered) {
                     bufferingSinceMs = 0L
+                    lastPrewarmMs = SystemClock.elapsedRealtime()
                     return@launch
                 }
                 attempt += 1
@@ -314,12 +375,12 @@ object PersistentNativePlayer {
 
     private fun recoveryBackoffMs(attempt: Int): Long = when (attempt) {
         0 -> 0L
-        1 -> 1_000L
-        2 -> 2_000L
-        3 -> 5_000L
-        4 -> 10_000L
-        5 -> 15_000L
-        else -> 30_000L
+        1 -> 500L
+        2 -> 1_000L
+        3 -> 2_000L
+        4 -> 5_000L
+        5 -> 10_000L
+        else -> 20_000L
     }
 
     private fun isRecoverableOnlineError(error: PlaybackException): Boolean {
@@ -363,11 +424,11 @@ object PersistentNativePlayer {
         "$classId|$height|$sourceUrl"
 
     private fun pruneWarmSources(now: Long) {
-        warmSources.entries.removeIf { now - it.value.createdAt > WARM_SOURCE_TTL_MS }
-        if (warmSources.size <= 4) return
+        warmSources.entries.removeIf { now - it.value.createdAt > RECOVERY_WARM_TTL_MS }
+        if (warmSources.size <= 6) return
         warmSources.entries
             .sortedBy { it.value.createdAt }
-            .take(warmSources.size - 4)
+            .take(warmSources.size - 6)
             .forEach { warmSources.remove(it.key, it.value) }
     }
 }
