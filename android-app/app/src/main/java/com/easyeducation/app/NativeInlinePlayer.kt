@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -62,8 +63,17 @@ fun NativeInlinePlayer(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val rootView = LocalView.current
     val exoPlayer = remember { PersistentNativePlayer.player(context) }
     val hostRef = remember { AtomicReference<YoutubeWatchGestureHost?>() }
+
+    // Long classes can run for many hours. Keep the watch surface awake while this page owns it so
+    // Android screen timeout does not turn a healthy foreground class into an avoidable lifecycle stop.
+    DisposableEffect(rootView, classId) {
+        val previous = rootView.keepScreenOn
+        rootView.keepScreenOn = true
+        onDispose { rootView.keepScreenOn = previous }
+    }
 
     val preparedAtEntry = remember(classId, sourceUrl, requestedHeight) {
         PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) && exoPlayer.mediaItemCount > 0
