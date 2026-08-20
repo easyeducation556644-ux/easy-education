@@ -19,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,12 +70,11 @@ fun NativeInlinePlayer(
     }
     var handedToMini by remember(classId) { mutableStateOf(false) }
     var handedToFullscreen by remember(classId) { mutableStateOf(false) }
+    var resumeAfterLifecyclePause by remember(classId) { mutableStateOf(false) }
     var loading by remember(classId, sourceUrl, requestedHeight) {
         mutableStateOf(sourceUrl.isNotBlank() && online && !preparedAtEntry)
     }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
-    var refreshGeneration by remember(classId, sourceUrl, requestedHeight) { mutableIntStateOf(0) }
-    var autoRefreshUsed by remember(classId, sourceUrl, requestedHeight) { mutableStateOf(false) }
 
     fun configureInlineSurface(surface: YoutubeStylePlayerView, ctx: Context) {
         surface.setFullscreenPresentation(false)
@@ -142,17 +140,32 @@ fun NativeInlinePlayer(
         }
     }
 
-    DisposableEffect(lifecycleOwner, classId) {
+    DisposableEffect(lifecycleOwner, classId, online) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                PersistentNativePlayer.savePosition(context)
-                if (
-                    !handedToMini && !handedToFullscreen &&
-                    !NativeFullscreenOverlay.owns(exoPlayer) &&
-                    !NativeMiniPlayerOverlay.owns(exoPlayer)
-                ) {
-                    PersistentNativePlayer.pause()
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    PersistentNativePlayer.savePosition(context)
+                    if (
+                        !handedToMini && !handedToFullscreen &&
+                        !NativeFullscreenOverlay.owns(exoPlayer) &&
+                        !NativeMiniPlayerOverlay.owns(exoPlayer)
+                    ) {
+                        resumeAfterLifecyclePause = exoPlayer.playWhenReady
+                        PersistentNativePlayer.pause()
+                    }
                 }
+                Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> {
+                    if (
+                        resumeAfterLifecyclePause && online &&
+                        PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
+                        !NativeFullscreenOverlay.owns(exoPlayer) &&
+                        !NativeMiniPlayerOverlay.owns(exoPlayer)
+                    ) {
+                        exoPlayer.playWhenReady = true
+                        resumeAfterLifecyclePause = false
+                    }
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -174,28 +187,42 @@ fun NativeInlinePlayer(
     DisposableEffect(exoPlayer, classId, sourceUrl, online) {
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                if (!online || autoRefreshUsed || !needsFreshSignedSource(error)) return
-                autoRefreshUsed = true
-                loading = true
-                errorText = null
-                refreshGeneration += 1
+                if (online && isRecoverableOnlinePlaybackError(error)) {
+                    // PersistentNativePlayer owns the unlimited re-resolve loop. Keep the same
+                    // surface alive while it recovers instead of replacing it with an error view.
+                    loading = true
+                    errorText = null
+                } else {
+                    loading = false
+                    errorText = friendlyPlayerError(error.message)
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        loading = false
+                        errorText = null
+                    }
+                    Player.STATE_BUFFERING -> if (exoPlayer.playWhenReady && online) {
+                        loading = true
+                    }
+                }
             }
         }
         exoPlayer.addListener(listener)
         onDispose { exoPlayer.removeListener(listener) }
     }
 
-    LaunchedEffect(classId, sourceUrl, online, requestedHeight, refreshGeneration) {
+    LaunchedEffect(classId, sourceUrl, online, requestedHeight) {
         if (!online || sourceUrl.isBlank()) {
             loading = false
             errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
 
-        val forceRefresh = refreshGeneration > 0
-        val alreadyPrepared = !forceRefresh &&
-            PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
-            exoPlayer.mediaItemCount > 0
+        val alreadyPrepared =
+            PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) && exoPlayer.mediaItemCount > 0
         // During mini -> watch expansion the destination must lay out its inline host underneath the
         // still-live overlay. Removing the mini here caused the exact decoder-surface flash seen on
         // expansion; NativeMiniPlayerOverlay now restores into this host at animation completion.
@@ -204,7 +231,7 @@ fun NativeInlinePlayer(
         }
         handedToMini = false
         if (alreadyPrepared) {
-            loading = false
+            loading = exoPlayer.playbackState == Player.STATE_BUFFERING
             errorText = null
             exoPlayer.playWhenReady = true
             return@LaunchedEffect
@@ -219,21 +246,14 @@ fun NativeInlinePlayer(
                 sourceUrl = sourceUrl,
                 requestedHeight = requestedHeight,
                 autoPlay = true,
-                forceRefresh = forceRefresh,
+                forceRefresh = false,
             )
         }.onSuccess {
-            loading = false
+            loading = exoPlayer.playbackState != Player.STATE_READY
             errorText = null
         }.onFailure { error ->
-            if (!autoRefreshUsed && needsFreshSignedSource(error)) {
-                autoRefreshUsed = true
-                loading = true
-                errorText = null
-                refreshGeneration += 1
-            } else {
-                loading = false
-                errorText = friendlyPlayerError(error.message)
-            }
+            loading = false
+            errorText = friendlyPlayerError(error.message)
         }
     }
 
@@ -304,16 +324,20 @@ private fun Context.findActivity(): Activity? {
     return current as? Activity
 }
 
-private fun needsFreshSignedSource(error: Throwable): Boolean {
+private fun isRecoverableOnlinePlaybackError(error: PlaybackException): Boolean {
+    if (error.errorCode in 2000..2999) return true
     var current: Throwable? = error
     repeat(8) {
         val value = current?.message.orEmpty()
         if (
-            value.contains("403", true) ||
-            value.contains("HTTP 403", true) ||
-            value.contains("forbidden", true) ||
-            value.contains("access expired", true) ||
-            value.contains("authorization expired", true)
+            value.contains("401", true) || value.contains("403", true) ||
+            value.contains("404", true) || value.contains("410", true) ||
+            value.contains("416", true) || value.contains("429", true) ||
+            value.contains("500", true) || value.contains("502", true) ||
+            value.contains("503", true) || value.contains("504", true) ||
+            value.contains("forbidden", true) || value.contains("expired", true) ||
+            value.contains("timeout", true) || value.contains("connection", true) ||
+            value.contains("network", true) || value.contains("unable to resolve host", true)
         ) return true
         current = current?.cause
         if (current == null) return false
