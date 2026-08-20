@@ -1,3 +1,4 @@
-release requested at 2026-08-08T08:35:00Z
-source: a04c0999f3a39057c2a913f1cfe36eb514347a47
-version: 1.1.0
+release requested at 2026-08-20T12:01:00Z
+source: e3c0fe41faa619d9a7119408686b1f5a2919a4ac
+version: 2.10.3-native-rumble
+reason: native Rumble playback direct resolver verification
