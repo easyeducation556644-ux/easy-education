@@ -1,0 +1,298 @@
+name: Apply native course UI patch
+
+on:
+  push:
+    branches:
+      - agent/native-android-offline-v2
+    paths:
+      - .github/workflows/apply-native-course-ui-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-android-offline-v2
+      - name: Patch NativeAppUiV2 safely
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('android-app/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '''private fun String.inCourseRoutes(): Boolean =
+    startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
+        startsWith("past-classes")''',
+              '''private fun String.inCourseRoutes(): Boolean =
+    startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("archive/") ||
+        startsWith("archive-chapter/") || startsWith("class/") || startsWith("past-classes")''',
+              'course route selection',
+          )
+
+          replace_once(
+              '''        composable(
+            "class/{courseId}/{classId}",''',
+              '''        composable(
+            "archive/{courseId}",
+            listOf(navArgument("courseId") { type = NavType.StringType }),
+        ) { entry ->
+            NativeArchiveCourseScreen(
+                nav = nav,
+                state = state,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+            )
+        }
+        composable(
+            "archive-chapter/{courseId}/{subject}/{chapter}",
+            listOf(
+                navArgument("courseId") { type = NavType.StringType },
+                navArgument("subject") { type = NavType.StringType },
+                navArgument("chapter") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            NativeArchiveChapterScreen(
+                nav = nav,
+                state = state,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+                subject = Uri.decode(entry.arguments?.getString("subject").orEmpty()),
+                chapter = Uri.decode(entry.arguments?.getString("chapter").orEmpty()),
+            )
+        }
+        composable(
+            "class/{courseId}/{classId}",''',
+              'archive navigation routes',
+          )
+
+          replace_once(
+              '''    val cachedClasses = state.courseContent.values
+        .flatMap { it.classes }
+        .distinctBy { it.id }''',
+              '''    val cachedClasses = state.courseContent.values
+        .flatMap { it.classes }
+        .filterNot { it.isArchived }
+        .distinctBy { it.id }''',
+              'home active classes',
+          )
+
+          replace_once(
+              '''    val classes = content.classes.sortedWith(
+        compareByDescending<NativeClassItem> { it.publishedAt }''',
+              '''    val classes = content.classes.filterNot { it.isArchived }.sortedWith(
+        compareByDescending<NativeClassItem> { it.publishedAt }''',
+              'past classes archive exclusion',
+          )
+
+          old_course = '''@Composable
+private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, courseId: String) {
+    val context = LocalContext.current
+    LaunchedEffect(courseId) { viewModel.loadCourse(courseId) }
+    val content = state.courseContent[courseId]
+    if (content == null) { V2Loading("Loading course…"); return }
+    if (!(state.online || viewModel.hasOfflineLease(courseId))) { V2Locked(nav); return }
+    val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Course") }
+        course?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let { image ->
+            item { AsyncImage(image, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 7f).clip(RoundedCornerShape(14.dp))) }
+        }
+        when {
+            content.subjects.isNotEmpty() -> {
+                item { V2Section("Subjects") }
+                items(content.subjects, key = { it.id }) { subject ->
+                    V2LearningRow(subject.title, subject.imageUrl, Icons.Default.School) { nav.navigate("subject/$courseId/${Uri.encode(subject.title)}") }
+                }
+            }
+            content.chapters.isNotEmpty() -> {
+                item { V2Section("Chapters") }
+                items(content.chapters, key = { it.id }) { chapter ->
+                    V2LearningRow(chapter.title, chapter.imageUrl, Icons.Default.VideoLibrary) {
+                        nav.navigate("chapter/$courseId/${Uri.encode(chapter.subject)}/${Uri.encode(chapter.title)}")
+                    }
+                }
+            }
+            else -> {
+                item { V2Section("Classes") }
+                items(content.classes, key = { it.id }) { classItem ->
+                    V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+
+          new_course = '''@Composable
+private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, courseId: String) {
+    val context = LocalContext.current
+    LaunchedEffect(courseId) { viewModel.loadCourse(courseId) }
+    val content = state.courseContent[courseId]
+    if (content == null) { V2Loading("Loading course…"); return }
+    if (!(state.online || viewModel.hasOfflineLease(courseId))) { V2Locked(nav); return }
+    val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
+    val activeClasses = content.classes.filterNot { it.isArchived }
+    val hasArchive = content.classes.any { it.isArchived }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Course") }
+        course?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let { image ->
+            item { AsyncImage(image, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 7f).clip(RoundedCornerShape(14.dp))) }
+        }
+        course?.takeIf { it.telegramLink.isNotBlank() }?.let { telegramCourse ->
+            item { NativeTelegramJoinCard(course = telegramCourse, online = state.online) }
+        }
+        if (hasArchive) {
+            item { NativeArchiveEntryCard { nav.navigate("archive/$courseId") } }
+        }
+        when {
+            content.subjects.isNotEmpty() -> {
+                item { V2Section("Subjects") }
+                items(content.subjects, key = { it.id }) { subject ->
+                    V2LearningRow(subject.title, subject.imageUrl, Icons.Default.School) { nav.navigate("subject/$courseId/${Uri.encode(subject.title)}") }
+                }
+            }
+            content.chapters.isNotEmpty() -> {
+                item { V2Section("Chapters") }
+                items(content.chapters, key = { it.id }) { chapter ->
+                    V2LearningRow(chapter.title, chapter.imageUrl, Icons.Default.VideoLibrary) {
+                        nav.navigate("chapter/$courseId/${Uri.encode(chapter.subject)}/${Uri.encode(chapter.title)}")
+                    }
+                }
+            }
+            else -> {
+                item { V2Section("Classes") }
+                items(activeClasses, key = { it.id }) { classItem ->
+                    V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+          replace_once(old_course, new_course, 'course root UI')
+
+          old_subject = '''@Composable
+private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: String, subject: String) {
+    val context = LocalContext.current
+    val content = state.courseContent[courseId] ?: run { V2Loading("Loading subject…"); return }
+    val chapters = content.chapters.filter { it.subject.isBlank() || it.subject.equals(subject, true) }.distinctBy { it.title.lowercase() }
+    val classes = content.classes.filter { classItem -> classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) } }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, subject) }
+        if (chapters.isNotEmpty()) {
+            item { V2Section("Chapters") }
+            items(chapters, key = { it.id }) { chapter ->
+                V2LearningRow(chapter.title, chapter.imageUrl, Icons.Default.VideoLibrary) {
+                    nav.navigate("chapter/$courseId/${Uri.encode(subject)}/${Uri.encode(chapter.title)}")
+                }
+            }
+        } else {
+            item { V2Section("Classes") }
+            items(classes, key = { it.id }) { classItem ->
+                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+
+          new_subject = '''@Composable
+private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: String, subject: String) {
+    val context = LocalContext.current
+    val content = state.courseContent[courseId] ?: run { V2Loading("Loading subject…"); return }
+    val chapters = content.chapters.filter { it.subject.isBlank() || it.subject.equals(subject, true) }.distinctBy { it.title.lowercase() }
+    val classes = content.classes.filter { classItem ->
+        !classItem.isArchived && (classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) })
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, subject) }
+        if (chapters.isNotEmpty()) {
+            item { V2Section("Chapters") }
+            items(chapters, key = { it.id }) { chapter ->
+                V2LearningRow(chapter.title, chapter.imageUrl, Icons.Default.VideoLibrary) {
+                    nav.navigate("chapter/$courseId/${Uri.encode(subject)}/${Uri.encode(chapter.title)}")
+                }
+            }
+        } else {
+            item { V2Section("Classes") }
+            items(classes, key = { it.id }) { classItem ->
+                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+          replace_once(old_subject, new_subject, 'subject archive exclusion')
+
+          old_chapter = '''@Composable
+private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: String, subject: String, chapter: String) {
+    val context = LocalContext.current
+    val content = state.courseContent[courseId] ?: run { V2Loading("Loading chapter…"); return }
+    val classes = content.classes.filter { classItem ->
+        classItem.chapters.any { it.equals(chapter, true) } &&
+            (subject.isBlank() || classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) })
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, chapter) }
+        item { V2Section("Classes") }
+        if (classes.isEmpty()) item { V2Empty("No classes are available in this chapter yet.") }
+        else items(classes, key = { it.id }) { classItem ->
+            V2ClassRow(classItem) {
+                PersistentNativePlayer.prefetch(context, classItem.id, classItem.sourceUrl, 480)
+                openClass(context, nav, courseId, classItem.id)
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+
+          new_chapter = '''@Composable
+private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: String, subject: String, chapter: String) {
+    val context = LocalContext.current
+    val content = state.courseContent[courseId] ?: run { V2Loading("Loading chapter…"); return }
+    val classes = content.classes.filter { classItem ->
+        !classItem.isArchived &&
+            classItem.chapters.any { it.equals(chapter, true) } &&
+            (subject.isBlank() || classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) })
+    }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); V2Back(nav, chapter) }
+        item { V2Section("Classes") }
+        if (classes.isEmpty()) item { V2Empty("No classes are available in this chapter yet.") }
+        else items(classes, key = { it.id }) { classItem ->
+            V2ClassRow(classItem) {
+                PersistentNativePlayer.prefetch(context, classItem.id, classItem.sourceUrl, 480)
+                openClass(context, nav, courseId, classItem.id)
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}'''
+          replace_once(old_chapter, new_chapter, 'chapter archive exclusion')
+
+          path.write_text(text)
+          workflow = Path('.github/workflows/apply-native-course-ui-patch.yml')
+          workflow.unlink(missing_ok=True)
+          PY
+
+      - name: Commit native UI wiring
+        shell: bash
+        run: |
+          git config user.name "Easy Education CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add android-app/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt .github/workflows/apply-native-course-ui-patch.yml
+          git diff --cached --check
+          git commit -m "Wire native archive and Telegram course UI"
+          git push origin HEAD:agent/native-android-offline-v2
