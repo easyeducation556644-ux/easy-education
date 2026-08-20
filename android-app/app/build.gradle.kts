@@ -13,8 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2101000
-        versionName = "2.10.10"
+        versionCode = 2101100
+        versionName = "2.10.11"
     }
 
     buildFeatures {
@@ -83,15 +83,11 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-messaging")
-    // Source compatibility for a currently-unused diagnostic import in the PO-token provider.
-    // compileOnly never enters the APK/runtime graph.
     compileOnly("com.google.firebase:firebase-crashlytics")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
-    // NewPipe and its protobuf 4.x runtime are bundled in a shaded project artifact. The protobuf
-    // package is relocated inside that artifact so Firebase Firestore keeps its own 3.25.x runtime.
     implementation(project(path = ":youtube-extractor-shaded", configuration = "shadedExtractor"))
 
     val media3Version = "1.9.4"
