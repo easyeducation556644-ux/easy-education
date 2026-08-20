@@ -59,6 +59,11 @@ fun NativeInlinePlayer(
     onFullscreen: (() -> Unit)? = null,
     onSharedSessionClassChanged: ((String) -> Unit)? = null,
 ) {
+    if (isRumbleVideoUrl(sourceUrl)) {
+        RumbleEmbedPlayer(sourceUrl = sourceUrl, online = online, modifier = modifier)
+        return
+    }
+
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val exoPlayer = remember { PersistentNativePlayer.player(context) }
