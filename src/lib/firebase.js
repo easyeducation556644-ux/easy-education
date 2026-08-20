@@ -58,9 +58,43 @@ function clearCacheV2TrustMarkers() {
   }
 }
 
+function installAuthenticatedEnrollmentFetch() {
+  if (typeof window === "undefined" || window.__EASY_EDUCATION_AUTH_FETCH__) return
+
+  const browserFetch = window.fetch.bind(window)
+  window.fetch = async (input, init = {}) => {
+    let target
+    try {
+      const rawUrl = typeof input === "string" ? input : input?.url
+      target = new URL(rawUrl || "", window.location.origin)
+    } catch (_) {
+      return browserFetch(input, init)
+    }
+
+    if (target.origin !== window.location.origin || target.pathname !== "/api/process-enrollment") {
+      return browserFetch(input, init)
+    }
+
+    const inheritedHeaders = typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined
+    const headers = new Headers(init.headers || inheritedHeaders || {})
+    if (!headers.has("Authorization") && auth?.currentUser) {
+      try {
+        const token = await auth.currentUser.getIdToken()
+        if (token) headers.set("Authorization", `Bearer ${token}`)
+      } catch (error) {
+        console.warn(" Unable to attach Firebase authorization to enrollment request", error)
+      }
+    }
+
+    return browserFetch(input, { ...init, headers })
+  }
+  window.__EASY_EDUCATION_AUTH_FETCH__ = true
+}
+
 try {
   app = initializeApp(firebaseConfig)
   auth = getAuth(app)
+  installAuthenticatedEnrollmentFetch()
   clearLegacyCacheMarkers()
 
   // Cache V2 deliberately persists Firestore data on both web and Android. The
