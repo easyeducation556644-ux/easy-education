@@ -1,8 +1,21 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion } from "framer-motion"
-import { Search, Trash2, Ban, BookOpen, X, UserPlus, Check, Info, Clock, AlertTriangle, Wrench } from "lucide-react"
+import {
+  Search,
+  Trash2,
+  Ban,
+  BookOpen,
+  X,
+  UserPlus,
+  Check,
+  Info,
+  Clock,
+  AlertTriangle,
+  Wrench,
+  ShieldCheck,
+} from "lucide-react"
 import {
   addDoc,
   collection,
@@ -21,12 +34,18 @@ import {
   startAt,
   updateDoc,
   where,
-} from "firebase/firestore"
+} from "../../lib/cacheV2Firestore"
 import { db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
-import { getRoleLabel } from "../../lib/adminPermissions"
+import {
+  USER_ADMIN_ACTION_KEYS,
+  getRoleLabel,
+  getUsersCourseIds,
+  hasUserAdminAction,
+  isFullAdmin,
+} from "../../lib/adminPermissions"
 
 const USERS_PAGE_SIZE = 10
 
@@ -47,7 +66,6 @@ export default function ManageUsers() {
   const [showGrantAccessModal, setShowGrantAccessModal] = useState(false)
   const [showUserDetailsModal, setShowUserDetailsModal] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
-  const [selectedCourse, setSelectedCourse] = useState("")
   const [selectedCoursesForGrant, setSelectedCoursesForGrant] = useState([])
   const [grantingAccess, setGrantingAccess] = useState(false)
   const [userEnrollments, setUserEnrollments] = useState({})
@@ -58,16 +76,32 @@ export default function ManageUsers() {
   const [fixingAccounts, setFixingAccounts] = useState(false)
   const [courseSearchQuery, setCourseSearchQuery] = useState("")
 
-  useEffect(() => {
-    fetchCourses()
-  }, [])
+  const can = (action) => hasUserAdminAction(userProfile, action)
+  const allowedUsersCourseIds = getUsersCourseIds(userProfile)
+  const canViewDetails = can(USER_ADMIN_ACTION_KEYS.VIEW_DETAILS)
+  const canBan = can(USER_ADMIN_ACTION_KEYS.BAN)
+  const canGrant = can(USER_ADMIN_ACTION_KEYS.GRANT_COURSE_ACCESS)
+  const canManageCourses = can(USER_ADMIN_ACTION_KEYS.MANAGE_COURSE_ACCESS)
+  const canDelete = can(USER_ADMIN_ACTION_KEYS.DELETE)
+  const canPromote = can(USER_ADMIN_ACTION_KEYS.PROMOTE_ADMIN)
+  const canFixAccounts = can(USER_ADMIN_ACTION_KEYS.FIX_ACCOUNTS)
+  const canScanOrphans = can(USER_ADMIN_ACTION_KEYS.SCAN_ORPHANS)
 
   useEffect(() => {
-    if (users.length > 0) {
-      fetchUserEnrollments(users.map((user) => user.id))
-    } else {
-      setUserEnrollments({})
-    }
+    getDocs(collection(db, "courses"))
+      .then((snapshot) => setCourses(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))))
+      .catch((error) => console.error("Error fetching courses:", error))
+  }, [])
+
+  const scopedCourses = useMemo(() => {
+    if (allowedUsersCourseIds === null) return courses
+    const allowed = new Set(allowedUsersCourseIds)
+    return courses.filter((course) => allowed.has(course.id))
+  }, [courses, allowedUsersCourseIds])
+
+  useEffect(() => {
+    if (users.length > 0) fetchUserEnrollments(users.map((user) => user.id))
+    else setUserEnrollments({})
   }, [users])
 
   useEffect(() => {
@@ -87,20 +121,8 @@ export default function ManageUsers() {
     if (debouncedSearch) {
       const normalizedEmail = debouncedSearch.toLowerCase()
       const normalizedName = debouncedSearch.charAt(0).toUpperCase() + debouncedSearch.slice(1)
-      const nameQuery = query(
-        usersRef,
-        orderBy("name"),
-        startAt(normalizedName),
-        endAt(`${normalizedName}\uf8ff`),
-        limit(USERS_PAGE_SIZE),
-      )
-      const emailQuery = query(
-        usersRef,
-        orderBy("email"),
-        startAt(normalizedEmail),
-        endAt(`${normalizedEmail}\uf8ff`),
-        limit(USERS_PAGE_SIZE),
-      )
+      const nameQuery = query(usersRef, orderBy("name"), startAt(normalizedName), endAt(`${normalizedName}\uf8ff`), limit(USERS_PAGE_SIZE))
+      const emailQuery = query(usersRef, orderBy("email"), startAt(normalizedEmail), endAt(`${normalizedEmail}\uf8ff`), limit(USERS_PAGE_SIZE))
       const results = { name: [], email: [] }
       const applyResults = () => {
         const merged = new Map([...results.name, ...results.email].map((user) => [user.id, user]))
@@ -145,53 +167,25 @@ export default function ManageUsers() {
 
   const fetchUsers = () => setUsersRefresh((current) => current + 1)
 
-  const fetchCourses = async () => {
-    try {
-      const coursesSnapshot = await getDocs(collection(db, "courses"))
-      const coursesData = coursesSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
-      setCourses(coursesData)
-    } catch (error) {
-      console.error("Error fetching courses:", error)
-    }
-  }
-
   const fetchUserEnrollments = async (userIds = users.map((user) => user.id)) => {
     if (userIds.length === 0) {
       setUserEnrollments({})
       return
     }
     try {
-      const paymentsSnapshot = await getDocs(
-        query(
-          collection(db, "payments"),
-          where("userId", "in", userIds.slice(0, USERS_PAGE_SIZE)),
-        ),
-      )
-      
+      const paymentsSnapshot = await getDocs(query(collection(db, "payments"), where("userId", "in", userIds.slice(0, USERS_PAGE_SIZE))))
       const enrollments = {}
-      paymentsSnapshot.docs.forEach((doc) => {
-        const payment = doc.data()
+      paymentsSnapshot.docs.forEach((paymentDoc) => {
+        const payment = paymentDoc.data()
         if (payment.status !== "approved") return
-        const userId = payment.userId
-        
-        if (!enrollments[userId]) {
-          enrollments[userId] = []
-        }
-        
+        if (!enrollments[payment.userId]) enrollments[payment.userId] = []
         payment.courses?.forEach((course) => {
-          if (!enrollments[userId].find(c => c.id === course.id)) {
-            enrollments[userId].push({
-              ...course,
-              paymentId: doc.id,
-              enrolledAt: payment.submittedAt,
-            })
+          if (allowedUsersCourseIds !== null && !allowedUsersCourseIds.includes(course.id)) return
+          if (!enrollments[payment.userId].find((item) => item.id === course.id)) {
+            enrollments[payment.userId].push({ ...course, paymentId: paymentDoc.id, enrolledAt: payment.submittedAt })
           }
         })
       })
-      
       setUserEnrollments(enrollments)
     } catch (error) {
       console.error("Error fetching user enrollments:", error)
@@ -203,18 +197,18 @@ export default function ManageUsers() {
     setTimeout(() => setSuccessMessage(""), 3000)
   }
 
-  const handleBanUser = async (userId, currentBanStatus) => {
+  const handleBanUser = (userId, currentBanStatus) => {
+    if (!canBan) return
     setConfirmDialog({
       isOpen: true,
       title: currentBanStatus ? "Unban User" : "Ban User",
-      message: currentBanStatus 
-        ? "Are you sure you want to unban this user? This will clear all ban records and log them out to refresh their session."
-        : "Are you sure you want to ban this user? They will be unable to access the platform.",
+      message: currentBanStatus
+        ? "Unban this user and clear their active ban/device state?"
+        : "Ban this user for 30 minutes?",
       variant: currentBanStatus ? "default" : "destructive",
       onConfirm: async () => {
         try {
-          console.log(" Toggling ban status for user:", userId, "Current status:", currentBanStatus)
-          
+          const user = users.find((item) => item.id === userId)
           if (currentBanStatus) {
             await updateDoc(doc(db, "users", userId), {
               banned: false,
@@ -225,193 +219,112 @@ export default function ManageUsers() {
               devices: [],
               kickedDevices: [],
               forceLogoutAt: serverTimestamp(),
-              forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
-              forcedBy: userProfile?.id || 'unknown',
-              clearBanCacheAt: serverTimestamp()
+              forceLogoutReason: `Unbanned by ${userProfile?.name || "Admin"} - Please log in again`,
+              forcedBy: userProfile?.id || "unknown",
+              clearBanCacheAt: serverTimestamp(),
             })
-            setUsers(users.map((u) => (u.id === userId ? { ...u, banned: false, permanentBan: false, banCount: 0 } : u)))
           } else {
             const banExpires = new Date(Date.now() + 30 * 60 * 1000)
             await updateDoc(doc(db, "users", userId), {
               banned: true,
               banExpiresAt: banExpires,
-              banCount: (users.find(u => u.id === userId)?.banCount || 0) + 1,
+              banCount: (user?.banCount || 0) + 1,
               banHistory: [
-                ...(users.find(u => u.id === userId)?.banHistory || []),
+                ...(user?.banHistory || []),
                 {
                   timestamp: new Date().toISOString(),
-                  reason: `Manually banned by ${userProfile?.name || 'Admin'}`,
-                  bannedBy: userProfile?.name || 'Admin',
-                  bannedById: userProfile?.id || 'unknown'
-                }
+                  reason: `Manually banned by ${userProfile?.name || "Admin"}`,
+                  bannedBy: userProfile?.name || "Admin",
+                  bannedById: userProfile?.id || "unknown",
+                },
               ],
               devices: [],
               forceLogoutAt: serverTimestamp(),
-              forceLogoutReason: `Banned by ${userProfile?.name || 'Admin'}`,
-              forcedBy: userProfile?.id || 'unknown'
+              forceLogoutReason: `Banned by ${userProfile?.name || "Admin"}`,
+              forcedBy: userProfile?.id || "unknown",
             })
-            setUsers(users.map((u) => (u.id === userId ? { ...u, banned: true } : u)))
           }
-          
-          showSuccess(!currentBanStatus ? "User banned successfully!" : "User unbanned successfully!")
-          console.log(" Ban status updated successfully")
+          showSuccess(currentBanStatus ? "User unbanned successfully!" : "User banned successfully!")
+          fetchUsers()
         } catch (error) {
-          console.error(" Error banning user:", error)
-          toast({
-            variant: "error",
-            title: "Ban Status Update Failed",
-            description: error.message || "Failed to update ban status",
-          })
+          toast({ variant: "error", title: "Ban Update Failed", description: error.message || "Failed to update ban status." })
         }
-      }
+      },
     })
   }
 
-  const handleUnbanUser = async (userId) => {
-    try {
-      await updateDoc(doc(db, "users", userId), {
-        banned: false,
-        banExpiresAt: null,
-        permanentBan: false,
-        banCount: 0,
-        banHistory: [],
-        devices: [],
-        kickedDevices: [],
-        forceLogoutAt: serverTimestamp(),
-        forceLogoutReason: `Unbanned by ${userProfile?.name || 'Admin'} - Please log in again`,
-        forcedBy: userProfile?.id || 'unknown',
-        clearBanCacheAt: serverTimestamp()
-      })
-      
-      await fetchUsers()
-      setShowUserDetailsModal(false)
-      
-      showSuccess("User unbanned successfully!")
-      toast({
-        variant: "success",
-        title: "Success",
-        description: "User has been completely unbanned and logged out. They can now log in again.",
-      })
-    } catch (error) {
-      console.error("Error unbanning user:", error)
-      toast({
-        variant: "error",
-        title: "Unban Failed",
-        description: error.message || "Failed to unban user",
-      })
-    }
-  }
-
-  const formatTimeRemaining = (banExpiresAt) => {
-    if (!banExpiresAt) return null
-    
-    const now = new Date()
-    const banEnd = banExpiresAt.toDate()
-    const diff = banEnd - now
-
-    if (diff <= 0) return "Ban expired"
-
-    const minutes = Math.floor(diff / (1000 * 60))
-    const hours = Math.floor(minutes / 60)
-    const remainingMinutes = minutes % 60
-
-    if (hours > 0) {
-      return `${hours}h ${remainingMinutes}m remaining`
-    }
-    return `${remainingMinutes}m remaining`
-  }
-
-  const handleDeleteUser = async (userId) => {
+  const handleDeleteUser = (userId) => {
+    if (!canDelete) return
     setConfirmDialog({
       isOpen: true,
       title: "Delete User",
-      message: "Are you sure you want to delete this user? This action cannot be undone.",
+      message: "Delete this user profile permanently? This action cannot be undone.",
       variant: "destructive",
       onConfirm: async () => {
         try {
-          console.log(" Deleting user:", userId)
           await deleteDoc(doc(db, "users", userId))
-          setUsers(users.filter((u) => u.id !== userId))
+          setUsers((current) => current.filter((user) => user.id !== userId))
           showSuccess("User deleted successfully!")
-          console.log(" User deleted successfully")
         } catch (error) {
-          console.error(" Error deleting user:", error)
-          toast({
-            variant: "error",
-            title: "Deletion Failed",
-            description: error.message || "Failed to delete user",
-          })
+          toast({ variant: "error", title: "Deletion Failed", description: error.message || "Failed to delete user." })
         }
-      }
+      },
     })
   }
 
-  const handleGrantAccess = async () => {
-    if (!selectedUser || selectedCoursesForGrant.length === 0) {
-      toast({
-        variant: "warning",
-        title: "Selection Required",
-        description: "Please select both user and at least one course",
-      })
-      return
-    }
+  const handlePromoteAdmin = async (user) => {
+    if (!canPromote || isFullAdmin(user)) return
+    if (!window.confirm(`Make ${user.name || user.email} a Full Admin? This grants every admin-panel permission.`)) return
+    if (!window.confirm("Final confirmation: this user will be able to change roles, permissions and all website data. Continue?")) return
 
+    try {
+      await updateDoc(doc(db, "users", user.id), { role: "admin", adminAccess: deleteField() })
+      toast({ title: "Full Admin Granted", description: `${user.name || user.email} is now a Full Admin.` })
+      fetchUsers()
+    } catch (error) {
+      toast({ variant: "error", title: "Promotion Failed", description: error.message || "Failed to grant Full Admin." })
+    }
+  }
+
+  const handleGrantAccess = async () => {
+    if (!canGrant || !selectedUser || selectedCoursesForGrant.length === 0) return
     setGrantingAccess(true)
     try {
       const coursesToEnrollMap = new Map()
       const bundlesGranted = []
-      
+
       for (const courseId of selectedCoursesForGrant) {
-        const course = courses.find(c => c.id === courseId)
+        const course = scopedCourses.find((item) => item.id === courseId)
         if (!course) continue
-        
-        if (course.courseFormat === 'bundle' && course.bundledCourses && course.bundledCourses.length > 0) {
+        if (course.courseFormat === "bundle" && Array.isArray(course.bundledCourses) && course.bundledCourses.length > 0) {
           bundlesGranted.push({ id: course.id, title: course.title })
-          
-          for (const bundledCourseId of course.bundledCourses) {
-            const bundledCourse = courses.find(c => c.id === bundledCourseId)
-            if (bundledCourse) {
-              if (coursesToEnrollMap.has(bundledCourseId)) {
-                const existing = coursesToEnrollMap.get(bundledCourseId)
-                if (!existing.bundleIds) existing.bundleIds = []
-                if (!existing.bundleTitles) existing.bundleTitles = []
-                if (!existing.bundleIds.includes(course.id)) {
-                  existing.bundleIds.push(course.id)
-                  existing.bundleTitles.push(course.title)
-                }
-              } else {
-                coursesToEnrollMap.set(bundledCourseId, {
-                  id: bundledCourse.id,
-                  title: bundledCourse.title,
-                  price: 0,
-                  bundleId: course.id,
-                  bundleTitle: course.title,
-                  bundleIds: [course.id],
-                  bundleTitles: [course.title]
-                })
-              }
-            }
-          }
-        } else {
-          if (!coursesToEnrollMap.has(courseId)) {
-            coursesToEnrollMap.set(courseId, {
-              id: course.id,
-              title: course.title,
-              price: course.price || 0
+          for (const rawBundledCourse of course.bundledCourses) {
+            const bundledCourseId = typeof rawBundledCourse === "string" ? rawBundledCourse : rawBundledCourse?.id
+            const bundledCourse = scopedCourses.find((item) => item.id === bundledCourseId)
+            if (!bundledCourse) continue
+            coursesToEnrollMap.set(bundledCourseId, {
+              id: bundledCourse.id,
+              title: bundledCourse.title,
+              price: 0,
+              bundleId: course.id,
+              bundleTitle: course.title,
+              bundleIds: [course.id],
+              bundleTitles: [course.title],
             })
           }
+        } else {
+          coursesToEnrollMap.set(courseId, { id: course.id, title: course.title, price: course.price || 0 })
         }
       }
-      
-      const coursesToEnroll = Array.from(coursesToEnrollMap.values())
 
+      const coursesToEnroll = [...coursesToEnrollMap.values()]
+      if (coursesToEnroll.length === 0) throw new Error("No allowed course was selected")
       const transactionId = `MANUAL_${Date.now()}_${selectedUser.id}`
-      
-      const response = await fetch('/api/process-enrollment', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+      const token = await userProfile?.authUser?.getIdToken?.().catch(() => null)
+
+      const response = await fetch("/api/process-enrollment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           transaction_id: transactionId,
           userId: selectedUser.id,
@@ -421,586 +334,315 @@ export default function ManageUsers() {
           finalAmount: 0,
           subtotal: 0,
           discount: 0,
-          couponCode: 'MANUAL_ADMIN_GRANT',
-          paymentMethod: 'Manual Grant by Admin',
-          courses: coursesToEnroll
-        })
-      })
-
-      const result = await response.json()
-
-      if (result.success) {
-        const totalCourses = coursesToEnroll.length
-        let message = `${userProfile?.name || 'Admin'} granted ${selectedUser.name} access to ${totalCourses} course(s)`
-        
-        if (bundlesGranted.length > 0) {
-          const bundleNames = bundlesGranted.map(b => b.title).join(', ')
-          message += ` via bundle${bundlesGranted.length > 1 ? 's' : ''}: ${bundleNames}`
-        }
-        
-        await addDoc(collection(db, "notifications"), {
-          type: 'admin_course_grant',
-          title: 'Admin Granted Course Access',
-          message: message,
-          userId: selectedUser.id,
-          userName: selectedUser.name,
-          userEmail: selectedUser.email,
-          adminId: userProfile?.id || 'unknown',
-          adminName: userProfile?.name || 'Admin',
-          adminEmail: userProfile?.email || 'admin@gmail.com',
+          couponCode: "MANUAL_ADMIN_GRANT",
+          paymentMethod: "Manual Grant by Admin",
           courses: coursesToEnroll,
-          bundles: bundlesGranted,
-          transactionId: transactionId,
-          isRead: false,
-          createdAt: serverTimestamp(),
-          link: '/admin/payments'
-        })
-
-        let toastMessage = `Successfully granted access to ${totalCourses} course(s)`
-        if (bundlesGranted.length > 0) {
-          toastMessage += ` from ${bundlesGranted.length} bundle${bundlesGranted.length > 1 ? 's' : ''}!`
-        } else {
-          toastMessage += '!'
-        }
-
-        toast({
-          title: "Success",
-          description: toastMessage,
-        })
-        
-        await fetchUserEnrollments()
-        await fetchUsers()
-        setShowGrantAccessModal(false)
-        setSelectedUser(null)
-        setSelectedCoursesForGrant([])
-      } else {
-        throw new Error(result.error || 'Failed to grant access')
-      }
-    } catch (error) {
-      console.error("Error granting course access:", error)
-      toast({
-        variant: "error",
-        title: "Grant Access Failed",
-        description: error.message || "Failed to grant course access",
+        }),
       })
+      const result = await response.json()
+      if (!result.success) throw new Error(result.error || "Failed to grant access")
+
+      await addDoc(collection(db, "notifications"), {
+        type: "admin_course_grant",
+        title: "Admin Granted Course Access",
+        message: `${userProfile?.name || "Admin"} granted ${selectedUser.name} access to ${coursesToEnroll.length} course(s)`,
+        userId: selectedUser.id,
+        userName: selectedUser.name,
+        userEmail: selectedUser.email,
+        adminId: userProfile?.id || "unknown",
+        adminName: userProfile?.name || "Admin",
+        adminEmail: userProfile?.email || "",
+        courses: coursesToEnroll,
+        bundles: bundlesGranted,
+        transactionId,
+        isRead: false,
+        createdAt: serverTimestamp(),
+        link: "/admin/payments",
+      })
+
+      toast({ title: "Success", description: `Granted access to ${coursesToEnroll.length} course(s).` })
+      await fetchUserEnrollments()
+      setShowGrantAccessModal(false)
+      setSelectedUser(null)
+      setSelectedCoursesForGrant([])
+      setCourseSearchQuery("")
+    } catch (error) {
+      toast({ variant: "error", title: "Grant Access Failed", description: error.message || "Failed to grant course access." })
     } finally {
       setGrantingAccess(false)
     }
   }
 
-  const handleRemoveFromCourse = async (courseId) => {
-    if (!selectedUser || !courseId) {
-      toast({
-        variant: "warning",
-        title: "Selection Required",
-        description: "Please select both user and course",
-      })
-      return
-    }
+  const handleRemoveFromCourse = (courseId) => {
+    if (!canManageCourses || !selectedUser || !courseId) return
+    if (allowedUsersCourseIds !== null && !allowedUsersCourseIds.includes(courseId)) return
 
     setConfirmDialog({
       isOpen: true,
       title: "Remove from Course",
-      message: `Are you sure you want to remove ${selectedUser.name} from this course?`,
+      message: `Remove ${selectedUser.name} from this course?`,
       variant: "destructive",
       onConfirm: async () => {
         try {
-          console.log(" Removing user from course:", selectedUser.id, courseId)
+          const course = scopedCourses.find((item) => item.id === courseId)
+          const bundledIds = course?.courseFormat === "bundle" && Array.isArray(course.bundledCourses)
+            ? course.bundledCourses.map((item) => typeof item === "string" ? item : item?.id).filter(Boolean)
+            : []
+          const coursesToRemove = [courseId, ...bundledIds].filter((id) => allowedUsersCourseIds === null || allowedUsersCourseIds.includes(id))
 
-          const course = courses.find(c => c.id === courseId)
-          let coursesToRemove = [courseId]
-          
-          if (course && course.courseFormat === 'bundle' && course.bundledCourses && course.bundledCourses.length > 0) {
-            console.log(` Course ${courseId} is a bundle, also removing bundled courses:`, course.bundledCourses)
-            coursesToRemove = [courseId, ...course.bundledCourses]
-          }
-
-          const paymentsQuery = query(
-            collection(db, "payments"),
-            where("userId", "==", selectedUser.id),
-            where("status", "==", "approved"),
-          )
-          const paymentsSnapshot = await getDocs(paymentsQuery)
-
+          const paymentsSnapshot = await getDocs(query(collection(db, "payments"), where("userId", "==", selectedUser.id), where("status", "==", "approved")))
           for (const paymentDoc of paymentsSnapshot.docs) {
             const payment = paymentDoc.data()
-            const updatedCourses = payment.courses?.filter((c) => c.id !== courseId) || []
-
-            await updateDoc(doc(db, "payments", paymentDoc.id), {
-              courses: updatedCourses,
-            })
-          }
-
-          for (const cId of coursesToRemove) {
-            const userCourseDocId = `${selectedUser.id}_${cId}`
-            const userCourseRef = doc(db, "userCourses", userCourseDocId)
-            
-            try {
-              await deleteDoc(userCourseRef)
-              console.log(` Successfully removed userCourses document: ${userCourseDocId}`)
-            } catch (error) {
-              console.warn(` userCourses document may not exist: ${userCourseDocId}`, error)
+            const updatedCourses = (payment.courses || []).filter((item) => !coursesToRemove.includes(item.id))
+            if (updatedCourses.length !== (payment.courses || []).length) {
+              await updateDoc(doc(db, "payments", paymentDoc.id), { courses: updatedCourses })
             }
           }
 
-          showSuccess(`Student removed from course successfully! ${coursesToRemove.length > 1 ? `(${coursesToRemove.length} courses removed including bundle)` : ''}`)
-          await fetchUserEnrollments()
-          
-          if (!userEnrollments[selectedUser.id] || userEnrollments[selectedUser.id].length <= 1) {
-            setShowRemoveModal(false)
-            setSelectedUser(null)
+          for (const id of coursesToRemove) {
+            await deleteDoc(doc(db, "userCourses", `${selectedUser.id}_${id}`)).catch(() => {})
           }
-        } catch (error) {
-          console.error(" Error removing student from course:", error)
-          toast({
-            variant: "error",
-            title: "Removal Failed",
-            description: error.message || "Failed to remove student from course",
-          })
-        }
-      }
-    })
-  }
 
-  const toggleCourseSelection = (courseId) => {
-    setSelectedCoursesForGrant(prev => {
-      if (prev.includes(courseId)) {
-        return prev.filter(id => id !== courseId)
-      } else {
-        return [...prev, courseId]
-      }
+          showSuccess("Student course access removed successfully!")
+          await fetchUserEnrollments()
+        } catch (error) {
+          toast({ variant: "error", title: "Removal Failed", description: error.message || "Failed to remove course access." })
+        }
+      },
     })
   }
 
   const getAvailableCoursesForUser = (userId) => {
-    const enrolledCourseIds = userEnrollments[userId]?.map(e => e.id) || []
-    return courses.filter(c => !enrolledCourseIds.includes(c.id))
+    const enrolled = new Set((userEnrollments[userId] || []).map((item) => item.id))
+    return scopedCourses.filter((course) => !enrolled.has(course.id))
+  }
+
+  const toggleCourseSelection = (courseId) => {
+    setSelectedCoursesForGrant((current) => current.includes(courseId)
+      ? current.filter((id) => id !== courseId)
+      : [...current, courseId])
   }
 
   const scanForOrphanedRecords = async () => {
+    if (!canScanOrphans) return
     setCleaningOrphans(true)
     try {
-      console.log(" Scanning for orphaned userCourses records")
-      
       const userCoursesSnapshot = await getDocs(collection(db, "userCourses"))
-      const paymentsSnapshot = await getDocs(
-        query(collection(db, "payments"), where("status", "==", "approved"))
-      )
-      
-      const userPaymentsMap = new Map()
+      const paymentsSnapshot = await getDocs(query(collection(db, "payments"), where("status", "==", "approved")))
+      const paymentsByUser = new Map()
       paymentsSnapshot.docs.forEach((paymentDoc) => {
         const payment = paymentDoc.data()
-        if (!userPaymentsMap.has(payment.userId)) {
-          userPaymentsMap.set(payment.userId, [])
-        }
-        userPaymentsMap.get(payment.userId).push(payment)
+        if (!paymentsByUser.has(payment.userId)) paymentsByUser.set(payment.userId, [])
+        paymentsByUser.get(payment.userId).push(payment)
       })
-      
-      const suspiciousRecords = []
-      
-      for (const userCourseDoc of userCoursesSnapshot.docs) {
-        const userCourse = userCourseDoc.data()
-        const userPayments = userPaymentsMap.get(userCourse.userId) || []
-        
-        let hasPayment = false
-        let paymentDetails = null
-        
-        for (const payment of userPayments) {
-          const hasCourseInPayment = payment.courses?.some(c => c.id === userCourse.courseId)
-          if (hasCourseInPayment) {
-            hasPayment = true
-            paymentDetails = payment
-            break
-          }
-        }
-        
-        if (!hasPayment && userPayments.length === 0) {
-          const user = users.find(u => u.id === userCourse.userId)
-          const course = courses.find(c => c.id === userCourse.courseId)
-          
-          suspiciousRecords.push({
-            id: userCourseDoc.id,
-            userCourse,
-            userName: user?.name || 'Unknown User',
-            userEmail: user?.email || 'Unknown',
-            courseName: course?.title || 'Unknown Course',
-            bundleId: userCourse.bundleId || null,
-            hasAnyPayment: false,
-            confidence: 'high'
-          })
-        } else if (!hasPayment && userPayments.length > 0) {
-          const user = users.find(u => u.id === userCourse.userId)
-          const course = courses.find(c => c.id === userCourse.courseId)
-          
-          suspiciousRecords.push({
-            id: userCourseDoc.id,
-            userCourse,
-            userName: user?.name || 'Unknown User',
-            userEmail: user?.email || 'Unknown',
-            courseName: course?.title || 'Unknown Course',
-            bundleId: userCourse.bundleId || null,
-            hasAnyPayment: true,
-            confidence: userCourse.bundleId ? 'low' : 'medium'
-          })
-        }
+
+      const suspicious = []
+      for (const enrollmentDoc of userCoursesSnapshot.docs) {
+        const enrollment = enrollmentDoc.data()
+        if (allowedUsersCourseIds !== null && !allowedUsersCourseIds.includes(enrollment.courseId)) continue
+        const userPayments = paymentsByUser.get(enrollment.userId) || []
+        const hasPayment = userPayments.some((payment) => payment.courses?.some((course) => course.id === enrollment.courseId))
+        if (hasPayment) continue
+        const user = users.find((item) => item.id === enrollment.userId)
+        const course = courses.find((item) => item.id === enrollment.courseId)
+        suspicious.push({
+          id: enrollmentDoc.id,
+          userCourse: enrollment,
+          userName: user?.name || "Unknown User",
+          userEmail: user?.email || "Unknown",
+          courseName: course?.title || "Unknown Course",
+          bundleId: enrollment.bundleId || null,
+          confidence: userPayments.length === 0 ? "high" : enrollment.bundleId ? "low" : "medium",
+        })
       }
-      
-      setOrphanedRecords(suspiciousRecords)
+      setOrphanedRecords(suspicious)
       setShowOrphanedRecordsModal(true)
-      
-      toast({
-        title: "Scan Complete",
-        description: `Found ${suspiciousRecords.length} potentially orphaned record(s)`,
-      })
-      
-      console.log(` Scan complete. Found ${suspiciousRecords.length} suspicious records`)
+      toast({ title: "Scan Complete", description: `Found ${suspicious.length} potentially orphaned record(s).` })
     } catch (error) {
-      console.error(" Error scanning for orphaned records:", error)
-      toast({
-        variant: "error",
-        title: "Scan Failed",
-        description: error.message || "Failed to scan for orphaned records",
-      })
+      toast({ variant: "error", title: "Scan Failed", description: error.message || "Failed to scan orphaned records." })
     } finally {
       setCleaningOrphans(false)
     }
   }
-  
+
   const deleteOrphanedRecord = async (recordId) => {
+    if (!canScanOrphans) return
+    const record = orphanedRecords.find((item) => item.id === recordId)
+    if (!record) return
+    if (allowedUsersCourseIds !== null && !allowedUsersCourseIds.includes(record.userCourse.courseId)) return
     try {
       await deleteDoc(doc(db, "userCourses", recordId))
-      setOrphanedRecords(prev => prev.filter(r => r.id !== recordId))
-      toast({
-        title: "Record Deleted",
-        description: "Orphaned record deleted successfully",
-      })
-      await fetchUserEnrollments()
+      setOrphanedRecords((current) => current.filter((item) => item.id !== recordId))
+      toast({ title: "Record Deleted", description: "Orphaned record deleted successfully." })
     } catch (error) {
-      console.error("Error deleting orphaned record:", error)
-      toast({
-        variant: "error",
-        title: "Delete Failed",
-        description: error.message || "Failed to delete record",
-      })
+      toast({ variant: "error", title: "Delete Failed", description: error.message || "Failed to delete record." })
     }
   }
 
   const fixOrphanedAccounts = async () => {
+    if (!canFixAccounts) return
     setFixingAccounts(true)
     try {
       const usersSnapshot = await getDocs(collection(db, "users"))
       let fixedCount = 0
-      let totalUsers = 0
-
       for (const userDoc of usersSnapshot.docs) {
         const userData = userDoc.data()
-        const userId = userDoc.id
-        totalUsers++
         const updateData = {}
-
-        if (userData.kickedDevices && Array.isArray(userData.kickedDevices)) {
-          updateData.kickedDevices = deleteField()
-        }
-
+        if (Array.isArray(userData.kickedDevices)) updateData.kickedDevices = deleteField()
         if (userData.forceLogoutAt) {
-          const forceLogoutTimestamp = userData.forceLogoutAt.toMillis
-            ? userData.forceLogoutAt.toMillis()
-            : new Date(userData.forceLogoutAt).getTime()
-          const timeSinceForceLogout = Date.now() - forceLogoutTimestamp
-          if (timeSinceForceLogout > 5 * 60 * 1000) {
+          const timestamp = userData.forceLogoutAt.toMillis ? userData.forceLogoutAt.toMillis() : new Date(userData.forceLogoutAt).getTime()
+          if (Date.now() - timestamp > 5 * 60 * 1000) {
             updateData.forceLogoutAt = deleteField()
             if (userData.forceLogoutReason) updateData.forceLogoutReason = deleteField()
             if (userData.forcedBy) updateData.forcedBy = deleteField()
           }
         }
-
-        if (userData.clearBanCacheAt) {
-          updateData.clearBanCacheAt = deleteField()
-        }
-
+        if (userData.clearBanCacheAt) updateData.clearBanCacheAt = deleteField()
         if (userData.banExpiresAt) {
-          const banEndTime = userData.banExpiresAt.toDate
-            ? userData.banExpiresAt.toDate()
-            : new Date(userData.banExpiresAt)
-          if (banEndTime <= new Date()) {
+          const end = userData.banExpiresAt.toDate ? userData.banExpiresAt.toDate() : new Date(userData.banExpiresAt)
+          if (end <= new Date()) {
             updateData.banned = false
             updateData.banExpiresAt = deleteField()
           }
         }
-
-        if (userData.devices && Array.isArray(userData.devices)) {
-          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-          const validDevices = userData.devices.filter(d => {
-            if (!d.fingerprint) return false
-            const lastActive = d.lastSeen || d.timestamp
+        if (Array.isArray(userData.devices)) {
+          const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          const validDevices = userData.devices.filter((device) => {
+            if (!device.fingerprint) return false
+            const lastActive = device.lastSeen || device.timestamp
             if (!lastActive) return true
-            try {
-              const activeDate = new Date(lastActive)
-              return !isNaN(activeDate.getTime()) && activeDate >= thirtyDaysAgo
-            } catch {
-              return false
-            }
+            const date = new Date(lastActive)
+            return !Number.isNaN(date.getTime()) && date >= cutoff
           })
-          if (validDevices.length !== userData.devices.length) {
-            updateData.devices = validDevices.length > 0 ? validDevices : []
-          }
+          if (validDevices.length !== userData.devices.length) updateData.devices = validDevices
         }
-
         if (Object.keys(updateData).length > 0) {
-          await updateDoc(doc(db, "users", userId), updateData)
-          fixedCount++
+          await updateDoc(doc(db, "users", userDoc.id), updateData)
+          fixedCount += 1
         }
       }
-
-      toast({
-        title: "Accounts Fixed",
-        description: `Cleaned up ${fixedCount} out of ${totalUsers} user accounts`,
-      })
-      await fetchUsers()
+      toast({ title: "Accounts Fixed", description: `Cleaned up ${fixedCount} user account(s).` })
+      fetchUsers()
     } catch (error) {
-      console.error("Error fixing accounts:", error)
-      toast({
-        variant: "error",
-        title: "Fix Failed",
-        description: error.message || "Failed to fix orphaned accounts",
-      })
+      toast({ variant: "error", title: "Fix Failed", description: error.message || "Failed to fix accounts." })
     } finally {
       setFixingAccounts(false)
     }
   }
 
+  const formatTimeRemaining = (banExpiresAt) => {
+    if (!banExpiresAt) return null
+    const end = banExpiresAt.toDate ? banExpiresAt.toDate() : new Date(banExpiresAt)
+    const minutes = Math.floor((end - new Date()) / 60000)
+    if (minutes <= 0) return "Ban expired"
+    const hours = Math.floor(minutes / 60)
+    return hours > 0 ? `${hours}h ${minutes % 60}m remaining` : `${minutes}m remaining`
+  }
+
+  const actionButton = (action, expanded) => {
+    const Icon = action.icon
+    return (
+      <button
+        key={action.id}
+        onClick={action.onClick}
+        className={`${expanded ? "px-3 py-2 text-sm" : "px-2.5 py-1.5 text-xs"} hover:bg-muted rounded-lg transition-colors font-medium border flex items-center gap-1.5 ${action.className}`}
+        title={action.label}
+      >
+        <Icon className={expanded ? "w-4 h-4" : "w-3.5 h-3.5"} />
+        <span className={expanded ? "inline" : "hidden xl:inline"}>{action.label}</span>
+        {action.badge != null && <span className="ml-1 px-1.5 py-0.5 bg-blue-500 text-white text-[10px] rounded-full font-bold">{action.badge}</span>}
+      </button>
+    )
+  }
+
   return (
     <div>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h1 className="text-3xl font-bold mb-2">Manage Users</h1>
-            <p className="text-muted-foreground">View and manage all platform users</p>
+            <p className="text-muted-foreground">Only actions assigned to your role are shown.</p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                setConfirmDialog({
-                  isOpen: true,
-                  title: "Fix Orphaned Accounts",
-                  message: "This will clean up all user accounts by removing stale device entries (30+ days old), expired bans, old force-logout flags, and leftover kicked-device data. This is safe and won't affect active users. Continue?",
-                  onConfirm: () => {
-                    setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} })
-                    fixOrphanedAccounts()
-                  }
-                })
-              }}
-              disabled={fixingAccounts}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Wrench className="w-4 h-4" />
-              {fixingAccounts ? "Fixing..." : "Fix Accounts"}
-            </button>
-            <button
-              onClick={scanForOrphanedRecords}
-              disabled={cleaningOrphans}
-              className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <AlertTriangle className="w-4 h-4" />
-              {cleaningOrphans ? "Scanning..." : "Scan for Orphaned Courses"}
-            </button>
+          <div className="flex flex-wrap gap-2">
+            {canFixAccounts && (
+              <button onClick={() => setConfirmDialog({ isOpen: true, title: "Fix Stale Accounts", message: "Clean stale devices, expired bans and old force-logout flags?", onConfirm: fixOrphanedAccounts })} disabled={fixingAccounts} className="flex items-center gap-2 px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 rounded-lg disabled:opacity-50">
+                <Wrench className="w-4 h-4" />{fixingAccounts ? "Fixing..." : "Fix Accounts"}
+              </button>
+            )}
+            {canScanOrphans && (
+              <button onClick={scanForOrphanedRecords} disabled={cleaningOrphans} className="flex items-center gap-2 px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 text-orange-500 rounded-lg disabled:opacity-50">
+                <AlertTriangle className="w-4 h-4" />{cleaningOrphans ? "Scanning..." : "Scan Orphaned Courses"}
+              </button>
+            )}
           </div>
         </div>
       </motion.div>
 
-      {successMessage && (
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          className="mb-6 p-4 bg-green-500/10 border border-green-500/20 rounded-lg text-green-500 text-sm"
-        >
-          {successMessage}
-        </motion.div>
-      )}
+      {successMessage && <div className="mb-6 p-4 bg-green-500/10 border border-green-500/20 rounded-lg text-green-500 text-sm">{successMessage}</div>}
 
       <div className="bg-card border border-border rounded-xl p-4 mb-6">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name or email..."
-            className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-          />
+          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search by name or email..." className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary" />
         </div>
       </div>
 
       {loading ? (
-        <div className="bg-card border border-border rounded-xl p-6">
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div key={i} className="h-16 bg-muted rounded animate-pulse"></div>
-            ))}
-          </div>
-        </div>
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">{[...Array(5)].map((_, index) => <div key={index} className="h-16 bg-muted rounded animate-pulse" />)}</div>
       ) : (
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px]">
+            <table className="w-full min-w-[760px]">
               <thead className="bg-muted">
                 <tr>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    User
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    Email
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    Role
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    Status
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-left text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    Devices
-                  </th>
-                  <th className="px-3 sm:px-6 py-3 text-right text-xs sm:text-sm font-semibold whitespace-nowrap">
-                    Actions
-                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold">User</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold">Email</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold">Role</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold">Status</th>
+                  <th className="px-4 py-3 text-right text-sm font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {users.map((user) => (
-                  <tr key={user.id} className="hover:bg-muted/50">
-                    <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <div className="flex items-center gap-2 sm:gap-3">
-                        <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
-                          {user.photoURL ? (
-                            <img
-                              src={user.photoURL || "/placeholder.svg"}
-                              alt={user.name}
-                              className="w-full h-full rounded-full object-cover"
-                            />
-                          ) : (
-                            <span className="text-primary font-semibold text-xs sm:text-sm">
-                              {user.name?.[0] || "U"}
-                            </span>
-                          )}
+                {users.map((user) => {
+                  const scopedEnrollments = userEnrollments[user.id] || []
+                  const actions = []
+                  if (canViewDetails) actions.push({ id: "info", label: "User info", icon: Info, className: "text-blue-500 border-blue-500/20", onClick: () => { setSelectedUser(user); setShowUserDetailsModal(true) } })
+                  if (canBan) actions.push({ id: "ban", label: user.banned ? "Unban user" : "Ban user", icon: Ban, className: user.banned ? "text-green-500 border-green-500/20" : "text-yellow-500 border-yellow-500/20", onClick: () => handleBanUser(user.id, user.banned) })
+                  if (canGrant) actions.push({ id: "grant", label: "Grant course", icon: UserPlus, className: "text-green-500 border-green-500/20", onClick: () => { setSelectedUser(user); setSelectedCoursesForGrant([]); setCourseSearchQuery(""); setShowGrantAccessModal(true) } })
+                  if (canManageCourses && scopedEnrollments.length > 0) actions.push({ id: "courses", label: "Manage courses", icon: BookOpen, className: "text-blue-500 border-blue-500/20", badge: scopedEnrollments.length, onClick: () => { setSelectedUser(user); setShowRemoveModal(true) } })
+                  if (canPromote && !isFullAdmin(user)) actions.push({ id: "promote", label: "Make Full Admin", icon: ShieldCheck, className: "text-purple-500 border-purple-500/20", onClick: () => handlePromoteAdmin(user) })
+                  if (canDelete) actions.push({ id: "delete", label: "Delete user", icon: Trash2, className: "text-red-500 border-red-500/20", onClick: () => handleDeleteUser(user.id) })
+                  const expanded = actions.length <= 2
+
+                  return (
+                    <tr key={user.id} className="hover:bg-muted/50">
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
+                            {user.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" /> : <span className="text-primary font-semibold">{user.name?.[0] || "U"}</span>}
+                          </div>
+                          <span className="font-medium text-sm">{user.name || "Unnamed user"}</span>
                         </div>
-                        <span className="font-medium text-xs sm:text-sm truncate max-w-[120px] sm:max-w-none">
-                          {user.name}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-3 sm:px-6 py-3 sm:py-4 text-xs sm:text-sm text-muted-foreground">
-                      <span className="truncate block max-w-[150px] sm:max-w-none">{user.email}</span>
-                    </td>
-                    <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <span
-                        className={`px-2 sm:px-3 py-1 rounded-full text-[10px] sm:text-xs font-medium whitespace-nowrap ${
-                          user.role && user.role !== "user"
-                            ? "bg-primary/10 text-primary"
-                            : "bg-muted-foreground/10 text-muted-foreground"
-                        }`}
-                      >
-                        {getRoleLabel(user.role, user.adminAccess)}
-                      </span>
-                    </td>
-                    <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <span
-                        className={`px-2 sm:px-3 py-1 rounded-full text-[10px] sm:text-xs font-medium whitespace-nowrap ${
-                          user.banned
-                            ? "bg-red-500/10 text-red-500"
-                            : user.online
-                              ? "bg-green-500/10 text-green-500"
-                              : "bg-muted-foreground/10 text-muted-foreground"
-                        }`}
-                      >
-                        {user.banned ? "Banned" : user.online ? "Online" : "Offline"}
-                      </span>
-                    </td>
-                    <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <span className="text-xs sm:text-sm font-medium">
-                        {user.devices?.length || 0}
-                      </span>
-                    </td>
-                    <td className="px-3 sm:px-6 py-3 sm:py-4">
-                      <div className="flex items-center justify-end gap-1 sm:gap-2 flex-wrap">
-                        <button
-                          onClick={() => {
-                            setSelectedUser(user)
-                            setShowUserDetailsModal(true)
-                          }}
-                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-blue-500 border border-blue-500/20 flex items-center gap-1"
-                        >
-                          <Info className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Info</span>
-                        </button>
-                        <button
-                          onClick={() => handleBanUser(user.id, user.banned)}
-                          className={`px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium border flex items-center gap-1 ${
-                            user.banned 
-                              ? "text-green-500 border-green-500/20" 
-                              : "text-yellow-500 border-yellow-500/20"
-                          }`}
-                        >
-                          <Ban className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">{user.banned ? "Unban" : "Ban"}</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            setSelectedUser(user)
-                            setSelectedCoursesForGrant([])
-                            setShowGrantAccessModal(true)
-                          }}
-                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-green-500 border border-green-500/20 flex items-center gap-1"
-                        >
-                          <UserPlus className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Grant Access</span>
-                        </button>
-                        {userEnrollments[user.id] && userEnrollments[user.id].length > 0 && (
-                          <button
-                            onClick={() => {
-                              setSelectedUser(user)
-                              setShowRemoveModal(true)
-                            }}
-                            className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-blue-500 border border-blue-500/20 flex items-center gap-1 relative"
-                          >
-                            <BookOpen className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Manage Courses</span>
-                            <span className="ml-1 px-1.5 py-0.5 bg-blue-500 text-white text-[10px] rounded-full font-bold">
-                              {userEnrollments[user.id].length}
-                            </span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeleteUser(user.id)}
-                          className="px-3 py-1.5 hover:bg-muted rounded-lg transition-colors text-xs font-medium text-red-500 border border-red-500/20 flex items-center gap-1"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Delete</span>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-4 py-4 text-sm text-muted-foreground">{user.email}</td>
+                      <td className="px-4 py-4"><span className="px-2.5 py-1 rounded-full text-xs bg-primary/10 text-primary">{getRoleLabel(user.role, user.adminAccess)}</span></td>
+                      <td className="px-4 py-4"><span className={`px-2.5 py-1 rounded-full text-xs ${user.banned ? "bg-red-500/10 text-red-500" : "bg-green-500/10 text-green-500"}`}>{user.banned ? "Banned" : "Active"}</span></td>
+                      <td className="px-4 py-4">
+                        <div className={`flex items-center justify-end flex-wrap ${expanded ? "gap-2" : "gap-1"}`}>
+                          {actions.length > 0 ? actions.map((action) => actionButton(action, expanded)) : <span className="text-xs text-muted-foreground">No assigned actions</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
 
-          {users.length === 0 && (
-            <div className="text-center py-12 text-muted-foreground">
-              <p>No users found</p>
-            </div>
-          )}
-
           {!debouncedSearch && (
             <div className="flex items-center justify-between p-4 border-t border-border">
-              <button
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                disabled={page === 1}
-                className="px-4 py-2 bg-muted rounded-lg disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <span className="text-sm text-muted-foreground">Page {page} · {USERS_PAGE_SIZE} per page</span>
+              <button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1} className="px-4 py-2 bg-muted rounded-lg disabled:opacity-40">Previous</button>
+              <span className="text-sm text-muted-foreground">Page {page}</span>
               <button
                 onClick={() => {
                   if (!hasNextPage || !lastVisible) return
@@ -1009,521 +651,122 @@ export default function ManageUsers() {
                 }}
                 disabled={!hasNextPage}
                 className="px-4 py-2 bg-muted rounded-lg disabled:opacity-40"
-              >
-                Next
-              </button>
+              >Next</button>
             </div>
           )}
         </div>
       )}
 
       {showGrantAccessModal && selectedUser && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Grant Course Access</h2>
-              <button
-                onClick={() => {
-                  setShowGrantAccessModal(false)
-                  setSelectedUser(null)
-                  setSelectedCoursesForGrant([])
-                  setCourseSearchQuery("")
-                }}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mb-6 p-4 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                {selectedUser.photoURL ? (
-                  <img
-                    src={selectedUser.photoURL}
-                    alt={selectedUser.name}
-                    className="w-12 h-12 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
-                    <span className="text-primary font-semibold text-lg">
-                      {selectedUser.name?.[0] || "U"}
-                    </span>
-                  </div>
-                )}
-                <div>
-                  <p className="font-semibold text-lg">{selectedUser.name}</p>
-                  <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
-                </div>
-              </div>
-            </div>
-
-            {getAvailableCoursesForUser(selectedUser.id).length > 0 ? (
+        <Modal title={`Grant Course Access · ${selectedUser.name || selectedUser.email}`} onClose={() => { setShowGrantAccessModal(false); setSelectedUser(null); setSelectedCoursesForGrant([]); setCourseSearchQuery("") }}>
+          {(() => {
+            const available = getAvailableCoursesForUser(selectedUser.id).filter((course) => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase()))
+            return (
               <>
-                <div className="space-y-3 mb-6">
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Select courses to grant access ({getAvailableCoursesForUser(selectedUser.id).length} available)
-                  </p>
-                  <div className="relative mb-3">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <input
-                      type="text"
-                      placeholder="Search courses..."
-                      value={courseSearchQuery}
-                      onChange={(e) => setCourseSearchQuery(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    />
-                  </div>
-                  <div className="max-h-[400px] overflow-y-auto space-y-2">
-                    {getAvailableCoursesForUser(selectedUser.id).filter(course => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase())).map((course) => (
-                      <div
-                        key={course.id}
-                        onClick={() => toggleCourseSelection(course.id)}
-                        className={`flex items-center justify-between p-4 border rounded-lg cursor-pointer transition-all ${
-                          selectedCoursesForGrant.includes(course.id)
-                            ? 'bg-primary/10 border-primary'
-                            : 'bg-background border-border hover:border-primary/50'
-                        }`}
-                      >
-                        <div className="flex-1">
-                          <h3 className="font-semibold mb-1">{course.title}</h3>
-                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                            <span>Price: ৳{course.price || 0}</span>
-                            {course.instructor && <span>Instructor: {course.instructor}</span>}
-                          </div>
-                        </div>
-                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
-                          selectedCoursesForGrant.includes(course.id)
-                            ? 'bg-primary border-primary'
-                            : 'border-muted-foreground/30'
-                        }`}>
-                          {selectedCoursesForGrant.includes(course.id) && (
-                            <Check className="w-4 h-4 text-white" />
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                <div className="relative mb-4">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input value={courseSearchQuery} onChange={(event) => setCourseSearchQuery(event.target.value)} placeholder="Search allowed courses..." className="w-full pl-9 pr-3 py-2 bg-background border border-border rounded-lg" />
                 </div>
-
+                <div className="max-h-80 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
+                  {available.map((course) => (
+                    <button key={course.id} type="button" onClick={() => toggleCourseSelection(course.id)} className={`text-left p-3 border rounded-lg flex items-center justify-between gap-3 ${selectedCoursesForGrant.includes(course.id) ? "border-primary bg-primary/5" : "border-border"}`}>
+                      <span className="text-sm font-medium">{course.title}</span>
+                      <span className={`w-5 h-5 border rounded flex items-center justify-center ${selectedCoursesForGrant.includes(course.id) ? "bg-primary border-primary" : "border-muted-foreground/30"}`}>{selectedCoursesForGrant.includes(course.id) && <Check className="w-4 h-4 text-white" />}</span>
+                    </button>
+                  ))}
+                  {available.length === 0 && <p className="col-span-full text-center text-muted-foreground py-8">No allowed course available to grant.</p>}
+                </div>
                 <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setShowGrantAccessModal(false)
-                      setSelectedUser(null)
-                      setSelectedCoursesForGrant([])
-                      setCourseSearchQuery("")
-                    }}
-                    className="flex-1 py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleGrantAccess}
-                    disabled={selectedCoursesForGrant.length === 0 || grantingAccess}
-                    className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    {grantingAccess ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Granting...
-                      </>
-                    ) : (
-                      <>
-                        <UserPlus className="w-4 h-4" />
-                        Grant Access ({selectedCoursesForGrant.length})
-                      </>
-                    )}
-                  </button>
+                  <button onClick={() => { setShowGrantAccessModal(false); setSelectedUser(null) }} className="flex-1 py-2 bg-muted rounded-lg">Cancel</button>
+                  <button onClick={handleGrantAccess} disabled={selectedCoursesForGrant.length === 0 || grantingAccess} className="flex-1 py-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50">{grantingAccess ? "Granting..." : `Grant Access (${selectedCoursesForGrant.length})`}</button>
                 </div>
               </>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>No available courses to grant access</p>
-                <p className="text-sm mt-2">This user is already enrolled in all courses</p>
-              </div>
-            )}
-          </motion.div>
-        </div>
+            )
+          })()}
+        </Modal>
       )}
 
       {showRemoveModal && selectedUser && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Manage Course Enrollments</h2>
-              <button
-                onClick={() => {
-                  setShowRemoveModal(false)
-                  setSelectedUser(null)
-                }}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mb-6 p-4 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                {selectedUser.photoURL ? (
-                  <img
-                    src={selectedUser.photoURL}
-                    alt={selectedUser.name}
-                    className="w-12 h-12 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center">
-                    <span className="text-primary font-semibold text-lg">
-                      {selectedUser.name?.[0] || "U"}
-                    </span>
-                  </div>
-                )}
+        <Modal title={`Manage Course Access · ${selectedUser.name || selectedUser.email}`} onClose={() => { setShowRemoveModal(false); setSelectedUser(null) }}>
+          <div className="space-y-3">
+            {(userEnrollments[selectedUser.id] || []).map((enrollment) => (
+              <div key={enrollment.id} className="flex items-center justify-between gap-3 p-4 border border-border rounded-lg">
                 <div>
-                  <p className="font-semibold text-lg">{selectedUser.name}</p>
-                  <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+                  <p className="font-semibold">{enrollment.title}</p>
+                  {enrollment.enrolledAt && <p className="text-xs text-muted-foreground">Enrolled: {new Date(enrollment.enrolledAt.seconds * 1000).toLocaleDateString()}</p>}
                 </div>
+                <button onClick={() => handleRemoveFromCourse(enrollment.id)} className="px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm flex items-center gap-2"><Trash2 className="w-4 h-4" />Remove</button>
               </div>
-            </div>
-
-            {userEnrollments[selectedUser.id] && userEnrollments[selectedUser.id].length > 0 ? (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground mb-3">
-                  Enrolled in {userEnrollments[selectedUser.id].length} course(s)
-                </p>
-                {userEnrollments[selectedUser.id].map((enrollment) => (
-                  <div
-                    key={enrollment.id}
-                    className="flex items-center justify-between p-4 bg-background border border-border rounded-lg hover:border-primary/50 transition-colors"
-                  >
-                    <div className="flex-1">
-                      <h3 className="font-semibold mb-1">{enrollment.title}</h3>
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span>Price: ৳{enrollment.price || 0}</span>
-                        {enrollment.enrolledAt && (
-                          <span>
-                            Enrolled: {new Date(enrollment.enrolledAt.seconds * 1000).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleRemoveFromCourse(enrollment.id)}
-                      className="ml-4 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p>This user is not enrolled in any courses</p>
-              </div>
-            )}
-
-            <div className="mt-6 pt-4 border-t border-border">
-              <button
-                onClick={() => {
-                  setShowRemoveModal(false)
-                  setSelectedUser(null)
-                }}
-                className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
-          </motion.div>
-        </div>
+            ))}
+            {(userEnrollments[selectedUser.id] || []).length === 0 && <p className="text-center text-muted-foreground py-8">No manageable course enrollment.</p>}
+          </div>
+        </Modal>
       )}
 
       {showUserDetailsModal && selectedUser && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">User Details</h2>
-              <button
-                onClick={() => {
-                  setShowUserDetailsModal(false)
-                  setSelectedUser(null)
-                }}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mb-6 p-4 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                {selectedUser.photoURL ? (
-                  <img
-                    src={selectedUser.photoURL}
-                    alt={selectedUser.name}
-                    className="w-16 h-16 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center">
-                    <span className="text-primary font-semibold text-2xl">
-                      {selectedUser.name?.[0] || "U"}
-                    </span>
-                  </div>
-                )}
-                <div>
-                  <p className="font-semibold text-xl">{selectedUser.name}</p>
-                  <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
-                  <p className="text-sm text-muted-foreground">
-                    Role: <span className="font-medium">{selectedUser.role || 'user'}</span>
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {(selectedUser.banned || selectedUser.permanentBan || selectedUser.banCount > 0) && (
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5 text-yellow-500" />
-                  Ban Information
-                </h3>
-                <div className="space-y-3">
-                  <div className="p-4 bg-muted rounded-lg">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Status</p>
-                        <p className="font-semibold">
-                          {selectedUser.permanentBan ? (
-                            <span className="text-red-500">Permanently Banned</span>
-                          ) : selectedUser.banned ? (
-                            <span className="text-yellow-500">Temporarily Banned</span>
-                          ) : (
-                            <span className="text-green-500">Active</span>
-                          )}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Ban Count</p>
-                        <p className="font-semibold">{selectedUser.banCount || 0}</p>
-                      </div>
-                      {selectedUser.banExpiresAt && !selectedUser.permanentBan && (
-                        <div className="col-span-2">
-                          <p className="text-sm text-muted-foreground flex items-center gap-2">
-                            <Clock className="w-4 h-4" />
-                            Time Remaining
-                          </p>
-                          <p className="font-semibold text-yellow-600">
-                            {formatTimeRemaining(selectedUser.banExpiresAt)}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {selectedUser.banHistory && selectedUser.banHistory.length > 0 && (
-                    <details className="p-4 bg-muted rounded-lg">
-                      <summary className="cursor-pointer font-medium">Ban History ({selectedUser.banHistory.length})</summary>
-                      <div className="mt-3 space-y-2">
-                        {selectedUser.banHistory.map((ban, idx) => (
-                          <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
-                            <p className="font-medium">Ban #{idx + 1}</p>
-                            <p className="text-muted-foreground">Reason: {ban.reason}</p>
-                            {ban.ipAddress && (
-                              <p className="text-muted-foreground">
-                                <span className="font-semibold text-blue-500">IP Address:</span> {ban.ipAddress}
-                              </p>
-                            )}
-                            <p className="text-muted-foreground">
-                              Date: {new Date(ban.timestamp).toLocaleString()}
-                            </p>
-                            {ban.bannedUntil && (
-                              <p className="text-muted-foreground">
-                                Until: {new Date(ban.bannedUntil).toLocaleString()}
-                              </p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-
-                  {selectedUser.devices && selectedUser.devices.length > 0 && (
-                    <details className="p-4 bg-muted rounded-lg">
-                      <summary className="cursor-pointer font-medium">Devices ({selectedUser.devices.length})</summary>
-                      <div className="mt-3 space-y-2">
-                        {selectedUser.devices.map((device, idx) => (
-                          <div key={idx} className="text-sm border-b border-border pb-2 last:border-0">
-                            <p className="font-medium">Device {idx + 1}</p>
-                            {device.ipAddress && (
-                              <p className="text-muted-foreground">
-                                <span className="font-semibold text-blue-500">IP Address:</span> {device.ipAddress}
-                              </p>
-                            )}
-                            <p className="text-muted-foreground">Platform: {device.platform}</p>
-                            <p className="text-muted-foreground">Resolution: {device.screenResolution}</p>
-                            <p className="text-muted-foreground">
-                              Last Seen: {new Date(device.timestamp || device.lastSeen).toLocaleString()}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-
-                  {(selectedUser.banned || selectedUser.permanentBan) && (
-                    <button
-                      onClick={() => handleUnbanUser(selectedUser.id)}
-                      className="w-full py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-                    >
-                      <Ban className="w-5 h-5" />
-                      Unban User & Clear Devices
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="mt-6 pt-4 border-t border-border">
-              <button
-                onClick={() => {
-                  setShowUserDetailsModal(false)
-                  setSelectedUser(null)
-                }}
-                className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
-          </motion.div>
-        </div>
+        <Modal title="User Details" onClose={() => { setShowUserDetailsModal(false); setSelectedUser(null) }}>
+          <div className="p-4 bg-muted/50 rounded-lg mb-4">
+            <p className="font-semibold text-lg">{selectedUser.name || "Unnamed user"}</p>
+            <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
+            <p className="text-sm mt-1">Role: {getRoleLabel(selectedUser.role, selectedUser.adminAccess)}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="p-3 border border-border rounded-lg"><p className="text-xs text-muted-foreground">Devices</p><p className="font-semibold">{selectedUser.devices?.length || 0}</p></div>
+            <div className="p-3 border border-border rounded-lg"><p className="text-xs text-muted-foreground">Ban count</p><p className="font-semibold">{selectedUser.banCount || 0}</p></div>
+          </div>
+          {selectedUser.banExpiresAt && <p className="text-sm flex items-center gap-2 mb-3"><Clock className="w-4 h-4" />{formatTimeRemaining(selectedUser.banExpiresAt)}</p>}
+          {Array.isArray(selectedUser.banHistory) && selectedUser.banHistory.length > 0 && (
+            <details className="p-4 border border-border rounded-lg mb-3">
+              <summary className="cursor-pointer font-medium">Ban history ({selectedUser.banHistory.length})</summary>
+              <div className="mt-3 space-y-2">{selectedUser.banHistory.map((banItem, index) => <div key={index} className="text-sm border-b border-border pb-2 last:border-0"><p>{banItem.reason}</p><p className="text-xs text-muted-foreground">{banItem.timestamp ? new Date(banItem.timestamp).toLocaleString() : "Unknown time"}</p></div>)}</div>
+            </details>
+          )}
+          {Array.isArray(selectedUser.devices) && selectedUser.devices.length > 0 && (
+            <details className="p-4 border border-border rounded-lg"><summary className="cursor-pointer font-medium">Devices ({selectedUser.devices.length})</summary><div className="mt-3 space-y-2">{selectedUser.devices.map((device, index) => <div key={index} className="text-sm border-b border-border pb-2 last:border-0"><p className="font-medium">Device {index + 1}</p><p className="text-muted-foreground">{device.platform || device.userAgent || "Unknown platform"}</p></div>)}</div></details>
+          )}
+        </Modal>
       )}
 
       {showOrphanedRecordsModal && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold">Orphaned Course Records</h2>
-              <button
-                onClick={() => {
-                  setShowOrphanedRecordsModal(false)
-                  setOrphanedRecords([])
-                }}
-                className="p-2 hover:bg-muted rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg text-blue-500 text-sm">
-              <p className="font-semibold mb-2">Manual Review Required</p>
-              <p>These records may be orphaned due to the old bug. Review each one carefully before deleting:</p>
-              <ul className="mt-2 ml-4 space-y-1">
-                <li><strong>High confidence:</strong> User has NO payments at all</li>
-                <li><strong>Medium confidence:</strong> User has payments but this specific course isn't in any of them</li>
-                <li><strong>Low confidence:</strong> Record has bundleId - may be from a bundle purchase (verify carefully)</li>
-              </ul>
-            </div>
-
-            {orphanedRecords.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground">
-                <Check className="w-16 h-16 mx-auto mb-4 text-green-500" />
-                <h3 className="text-lg font-semibold mb-2">No Orphaned Records Found!</h3>
-                <p>All userCourses records appear to have valid payment records.</p>
+        <Modal title="Orphaned Course Records" onClose={() => { setShowOrphanedRecordsModal(false); setOrphanedRecords([]) }} wide>
+          <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm">
+            Only records inside your allowed course scope are shown. Review before deleting.
+          </div>
+          <div className="space-y-3">
+            {orphanedRecords.map((record) => (
+              <div key={record.id} className="p-4 border border-border rounded-lg flex items-start justify-between gap-3">
+                <div><p className="font-semibold">{record.courseName}</p><p className="text-sm text-muted-foreground">{record.userName} · {record.userEmail}</p><p className="text-xs mt-1 uppercase">{record.confidence} confidence{record.bundleId ? " · bundle" : ""}</p></div>
+                <button onClick={() => deleteOrphanedRecord(record.id)} className="px-3 py-2 text-sm text-red-500 border border-red-500/20 rounded-lg">Delete record</button>
               </div>
-            ) : (
-              <div className="space-y-3">
-                {orphanedRecords.map((record) => (
-                  <div
-                    key={record.id}
-                    className={`p-4 border rounded-lg ${
-                      record.confidence === 'high'
-                        ? 'bg-red-500/5 border-red-500/20'
-                        : record.confidence === 'medium'
-                        ? 'bg-yellow-500/5 border-yellow-500/20'
-                        : 'bg-blue-500/5 border-blue-500/20'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span
-                            className={`px-2 py-1 rounded text-xs font-semibold ${
-                              record.confidence === 'high'
-                                ? 'bg-red-500 text-white'
-                                : record.confidence === 'medium'
-                                ? 'bg-yellow-500 text-white'
-                                : 'bg-blue-500 text-white'
-                            }`}
-                          >
-                            {record.confidence.toUpperCase()} CONFIDENCE
-                          </span>
-                          {record.bundleId && (
-                            <span className="px-2 py-1 rounded text-xs font-semibold bg-purple-500 text-white">
-                              FROM BUNDLE
-                            </span>
-                          )}
-                        </div>
-                        <p className="font-semibold text-lg">{record.courseName}</p>
-                        <p className="text-sm text-muted-foreground">User: {record.userName} ({record.userEmail})</p>
-                        {record.bundleId && (
-                          <p className="text-sm text-muted-foreground">Bundle ID: {record.bundleId}</p>
-                        )}
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {record.hasAnyPayment
-                            ? '⚠️ User has other payments but this course is not in any of them'
-                            : '🚨 User has NO payment records at all'}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => deleteOrphanedRecord(record.id)}
-                        className="ml-4 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-6 pt-4 border-t border-border">
-              <button
-                onClick={() => {
-                  setShowOrphanedRecordsModal(false)
-                  setOrphanedRecords([])
-                }}
-                className="w-full py-2 bg-muted hover:bg-muted/80 rounded-lg transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
-          </motion.div>
-        </div>
+            ))}
+            {orphanedRecords.length === 0 && <div className="text-center py-10 text-muted-foreground"><Check className="w-10 h-10 mx-auto mb-2 text-green-500" /><p>No orphaned records found.</p></div>}
+          </div>
+        </Modal>
       )}
 
       <ConfirmDialog
         isOpen={confirmDialog.isOpen}
-        onClose={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
-        onConfirm={confirmDialog.onConfirm}
         title={confirmDialog.title}
         message={confirmDialog.message}
         variant={confirmDialog.variant}
+        onConfirm={async () => {
+          const callback = confirmDialog.onConfirm
+          setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} })
+          await callback?.()
+        }}
+        onCancel={() => setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} })}
       />
+    </div>
+  )
+}
+
+function Modal({ title, onClose, children, wide = false }) {
+  return (
+    <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} className={`bg-card border border-border rounded-xl p-6 w-full max-h-[90vh] overflow-y-auto ${wide ? "max-w-4xl" : "max-w-2xl"}`}>
+        <div className="flex items-center justify-between gap-4 mb-5"><h2 className="text-xl font-bold">{title}</h2><button onClick={onClose} className="p-2 hover:bg-muted rounded-lg"><X className="w-5 h-5" /></button></div>
+        {children}
+      </motion.div>
     </div>
   )
 }
