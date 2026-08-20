@@ -1,54 +1,85 @@
 "use client"
-import { toast } from "../../hooks/use-toast"
 
-import { useState, useEffect } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion } from "framer-motion"
-import { Plus, X } from "lucide-react"
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, where } from "firebase/firestore"
+import { Plus, X, Wrench, Archive } from "lucide-react"
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "../../lib/cacheV2Firestore"
 import { db } from "../../lib/firebase"
 import { uploadImageToImgBB } from "../../lib/imgbb"
 import { useExam } from "../../contexts/ExamContext"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
-import { ADMIN_PERMISSION_KEYS, getAllowedCourseIds } from "../../lib/adminPermissions"
+import { toast } from "../../hooks/use-toast"
+import {
+  ADMIN_PERMISSION_KEYS,
+  getAllowedCourseIds,
+  hasAdminPermission,
+  isFullAdmin,
+} from "../../lib/adminPermissions"
+
+const emptyForm = {
+  title: "",
+  topic: "",
+  chapter: [],
+  subject: [],
+  order: 0,
+  duration: "",
+  youtubeLink: "",
+  hlsLink: "",
+  driveLink: "",
+  dailymotionLink: "",
+  rumbleLink: "",
+  teacherName: [],
+  imageType: "upload",
+  imageLink: "",
+  teacherImageType: "upload",
+  teacherImageLink: "",
+  resourceLinks: [],
+}
+
+const isArchivedClass = (item) => {
+  if (item?.isArchived === true) return true
+  const subjects = Array.isArray(item?.subject) ? item.subject : [item?.subject]
+  const chapters = Array.isArray(item?.chapter) ? item.chapter : [item?.chapter]
+  return subjects.includes("archive") || chapters.includes("archive")
+}
+
+const arrayValue = (value) => Array.isArray(value) ? value : value ? [value] : []
 
 export default function ManageClasses() {
   const { userProfile } = useAuth()
+  const { getExamsByCourse, copyExamQuestions } = useExam()
   const [courses, setCourses] = useState([])
   const [classes, setClasses] = useState([])
   const [subjects, setSubjects] = useState([])
   const [chapters, setChapters] = useState([])
+  const [teachers, setTeachers] = useState([])
   const [selectedCourse, setSelectedCourse] = useState("")
   const [classSubjectFilter, setClassSubjectFilter] = useState("")
   const [classChapterFilter, setClassChapterFilter] = useState("")
+  const [courseSearchQuery, setCourseSearchQuery] = useState("")
   const [loading, setLoading] = useState(true)
+  const [showArchivedClasses, setShowArchivedClasses] = useState(false)
+
   const [showModal, setShowModal] = useState(false)
-  const [showArchiveModal, setShowArchiveModal] = useState(false)
   const [editingClass, setEditingClass] = useState(null)
   const [videoType, setVideoType] = useState("youtube")
-  const [courseSearchQuery, setCourseSearchQuery] = useState("")
-  const [formData, setFormData] = useState({
-    title: "",
-    topic: "",
-    chapter: "",
-    subject: "",
-    order: 0,
-    duration: "",
-    youtubeLink: "",
-    hlsLink: "",
-    driveLink: "",
-    dailymotionLink: "",
-    rumbleLink: "",
-    teacherName: "",
-    imageType: "upload",
-    imageLink: "",
-    teacherImageType: "upload",
-    teacherImageLink: "",
-    resourceLinks: [],
-  })
+  const [formData, setFormData] = useState(emptyForm)
   const [imageFile, setImageFile] = useState(null)
   const [teacherImageFile, setTeacherImageFile] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+
+  const [showArchiveModal, setShowArchiveModal] = useState(false)
   const [archiveSourceCourse, setArchiveSourceCourse] = useState("")
   const [archiveClasses, setArchiveClasses] = useState([])
   const [selectedArchiveClasses, setSelectedArchiveClasses] = useState([])
@@ -58,23 +89,24 @@ export default function ManageClasses() {
   const [archiveChapter, setArchiveChapter] = useState("")
   const [archiveCourseSearchQuery, setArchiveCourseSearchQuery] = useState("")
   const [archiveSubmitting, setArchiveSubmitting] = useState(false)
-  const [teachers, setTeachers] = useState([])
-  const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: "", message: "", onConfirm: () => {} })
-  const [showArchivedClasses, setShowArchivedClasses] = useState(false)
 
-  const { getExamsByCourse, copyExamQuestions } = useExam()
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  })
 
-  useEffect(() => {
-    fetchCourses()
-    fetchSubjects()
-    fetchChapters()
-    fetchTeachers()
-  }, [])
+  const fullAdmin = isFullAdmin(userProfile)
+  const canArchiveExams = fullAdmin || hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.EXAMS)
 
   useEffect(() => {
-    if (selectedCourse) {
-      fetchClasses()
-    }
+    Promise.all([fetchCourses(), fetchSubjects(), fetchChapters(), fetchTeachers()]).finally(() => setLoading(false))
+  }, [userProfile])
+
+  useEffect(() => {
+    if (selectedCourse) fetchClasses()
+    else setClasses([])
   }, [selectedCourse, showArchivedClasses])
 
   useEffect(() => {
@@ -83,46 +115,31 @@ export default function ManageClasses() {
   }, [selectedCourse, showArchivedClasses])
 
   useEffect(() => {
-    if (archiveSourceCourse) {
-      fetchArchiveClasses(archiveSourceCourse)
-      fetchArchiveExams(archiveSourceCourse)
-    }
-  }, [archiveSourceCourse])
-
-  const fetchArchiveExams = async (courseId) => {
-    if (!courseId) return
-    try {
-      const examsData = await getExamsByCourse(courseId)
-      // Filter out already archived exams
-      const nonArchivedExams = examsData.filter((exam) => !exam.isArchived)
-      setArchiveExams(nonArchivedExams)
-    } catch (error) {
-      console.error("Error fetching archive exams:", error)
+    if (!archiveSourceCourse) {
+      setArchiveClasses([])
       setArchiveExams([])
+      return
     }
-  }
+    fetchArchiveClasses(archiveSourceCourse)
+    if (canArchiveExams) fetchArchiveExams(archiveSourceCourse)
+  }, [archiveSourceCourse, canArchiveExams])
 
   const fetchCourses = async () => {
     try {
-      const coursesSnapshot = await getDocs(collection(db, "courses"))
-      const coursesData = coursesSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }))
-      const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.CLASS_PDF)
-      setCourses(allowedCourseIds === null ? coursesData : coursesData.filter((course) => allowedCourseIds.includes(course.id)))
+      const snapshot = await getDocs(collection(db, "courses"))
+      const data = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+      const allowedCourseIds = getAllowedCourseIds(userProfile, ADMIN_PERMISSION_KEYS.CLASSES)
+      setCourses(allowedCourseIds === null ? data : data.filter((course) => allowedCourseIds.includes(course.id)))
     } catch (error) {
       console.error("Error fetching courses:", error)
-    } finally {
-      setLoading(false)
+      toast({ variant: "error", title: "Error", description: "Failed to load allowed courses." })
     }
   }
 
   const fetchSubjects = async () => {
     try {
       const snapshot = await getDocs(collection(db, "subjects"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-      setSubjects(data)
+      setSubjects(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))
     } catch (error) {
       console.error("Error fetching subjects:", error)
     }
@@ -131,76 +148,68 @@ export default function ManageClasses() {
   const fetchChapters = async () => {
     try {
       const snapshot = await getDocs(collection(db, "chapters"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-      setChapters(data)
+      setChapters(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))
     } catch (error) {
       console.error("Error fetching chapters:", error)
-    }
-  }
-
-  const fetchClasses = async () => {
-    try {
-      const classesQuery = query(collection(db, "classes"), where("courseId", "==", selectedCourse))
-      const classesSnapshot = await getDocs(classesQuery)
-      const classesData = classesSnapshot.docs
-        .map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }))
-        .filter((cls) => {
-          const isArchived = cls.isArchived === true
-          const subjectIsArchive = Array.isArray(cls.subject)
-            ? cls.subject.includes("archive")
-            : cls.subject === "archive"
-          const chapterIsArchive = Array.isArray(cls.chapter)
-            ? cls.chapter.includes("archive")
-            : cls.chapter === "archive"
-          const classIsArchived = isArchived || subjectIsArchive || chapterIsArchive
-          
-          // Show archived classes only when showArchivedClasses is true
-          // Show active classes only when showArchivedClasses is false
-          return showArchivedClasses ? classIsArchived : !classIsArchived
-        })
-        .sort((a, b) => a.order - b.order)
-      setClasses(classesData)
-    } catch (error) {
-      console.error("Error fetching classes:", error)
     }
   }
 
   const fetchTeachers = async () => {
     try {
       const snapshot = await getDocs(collection(db, "teachers"))
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-      setTeachers(data)
-      console.log(" Teachers loaded:", data)
+      setTeachers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })))
     } catch (error) {
       console.error("Error fetching teachers:", error)
     }
   }
 
+  const fetchClasses = async () => {
+    try {
+      const snapshot = await getDocs(query(collection(db, "classes"), where("courseId", "==", selectedCourse)))
+      setClasses(
+        snapshot.docs
+          .map((item) => ({ id: item.id, ...item.data() }))
+          .filter((item) => showArchivedClasses ? isArchivedClass(item) : !isArchivedClass(item))
+          .sort((a, b) => Number(a.order || 0) - Number(b.order || 0)),
+      )
+    } catch (error) {
+      console.error("Error fetching classes:", error)
+      toast({ variant: "error", title: "Error", description: "Failed to load classes." })
+    }
+  }
+
+  const fetchArchiveClasses = async (courseId) => {
+    try {
+      const snapshot = await getDocs(query(collection(db, "classes"), where("courseId", "==", courseId)))
+      setArchiveClasses(
+        snapshot.docs
+          .map((item) => ({ id: item.id, ...item.data() }))
+          .filter((item) => !isArchivedClass(item))
+          .sort((a, b) => Number(a.order || 0) - Number(b.order || 0)),
+      )
+    } catch (error) {
+      console.error("Error fetching archive classes:", error)
+      setArchiveClasses([])
+    }
+  }
+
+  const fetchArchiveExams = async (courseId) => {
+    try {
+      const data = await getExamsByCourse(courseId)
+      setArchiveExams(data.filter((exam) => !exam.isArchived))
+    } catch (error) {
+      console.error("Error fetching archive exams:", error)
+      setArchiveExams([])
+    }
+  }
+
   const getNextActiveClassOrder = async () => {
     try {
-      const classesQuery = query(collection(db, "classes"), where("courseId", "==", selectedCourse))
-      const classesSnapshot = await getDocs(classesQuery)
-      const activeClasses = classesSnapshot.docs
-        .map((doc) => doc.data())
-        .filter((cls) => {
-          const isArchived = cls.isArchived === true
-          const subjectIsArchive = Array.isArray(cls.subject)
-            ? cls.subject.includes("archive")
-            : cls.subject === "archive"
-          const chapterIsArchive = Array.isArray(cls.chapter)
-            ? cls.chapter.includes("archive")
-            : cls.chapter === "archive"
-          return !isArchived && !subjectIsArchive && !chapterIsArchive
-        })
-      
-      if (activeClasses.length === 0) return 0
-      const maxOrder = Math.max(...activeClasses.map(c => c.order || 0))
-      return maxOrder + 1
-    } catch (error) {
-      console.error("Error calculating next order:", error)
+      const snapshot = await getDocs(query(collection(db, "classes"), where("courseId", "==", selectedCourse)))
+      const active = snapshot.docs.map((item) => item.data()).filter((item) => !isArchivedClass(item))
+      if (active.length === 0) return 0
+      return Math.max(...active.map((item) => Number(item.order || 0))) + 1
+    } catch {
       return 0
     }
   }
@@ -209,10 +218,11 @@ export default function ManageClasses() {
     if (classItem) {
       setEditingClass(classItem)
       setFormData({
+        ...emptyForm,
         title: classItem.title || "",
         topic: classItem.topic || "",
-        chapter: Array.isArray(classItem.chapter) ? classItem.chapter : classItem.chapter ? [classItem.chapter] : [],
-        subject: Array.isArray(classItem.subject) ? classItem.subject : classItem.subject ? [classItem.subject] : [],
+        chapter: arrayValue(classItem.chapter),
+        subject: arrayValue(classItem.subject),
         order: classItem.order || 0,
         duration: classItem.duration || "",
         youtubeLink: classItem.youtubeLink || "",
@@ -220,40 +230,23 @@ export default function ManageClasses() {
         driveLink: classItem.driveLink || "",
         dailymotionLink: classItem.dailymotionLink || "",
         rumbleLink: classItem.rumbleLink || "",
-        teacherName: Array.isArray(classItem.teacherName)
-          ? classItem.teacherName
-          : classItem.teacherName
-            ? [classItem.teacherName]
-            : [],
+        teacherName: arrayValue(classItem.teacherName),
         imageType: classItem.imageURL?.startsWith("http") ? "link" : "upload",
         imageLink: classItem.imageURL || "",
         teacherImageType: classItem.teacherImageURL?.startsWith("http") ? "link" : "upload",
         teacherImageLink: classItem.teacherImageURL || "",
         resourceLinks: Array.isArray(classItem.resourceLinks) ? classItem.resourceLinks : [],
       })
-      setVideoType(classItem.youtubeLink ? "youtube" : classItem.driveLink ? "drive" : classItem.dailymotionLink ? "dailymotion" : classItem.rumbleLink ? "rumble" : "hls")
+      setVideoType(
+        classItem.youtubeLink ? "youtube"
+          : classItem.driveLink ? "drive"
+            : classItem.dailymotionLink ? "dailymotion"
+              : classItem.rumbleLink ? "rumble"
+                : "hls",
+      )
     } else {
       setEditingClass(null)
-      const nextOrder = await getNextActiveClassOrder()
-      setFormData({
-        title: "",
-        topic: "",
-        chapter: [],
-        subject: [],
-        order: nextOrder,
-        duration: "",
-        youtubeLink: "",
-        hlsLink: "",
-        driveLink: "",
-        dailymotionLink: "",
-        rumbleLink: "",
-        teacherName: [],
-        imageType: "upload",
-        imageLink: "",
-        teacherImageType: "upload",
-        teacherImageLink: "",
-        resourceLinks: [],
-      })
+      setFormData({ ...emptyForm, order: await getNextActiveClassOrder() })
       setVideoType("youtube")
     }
     setImageFile(null)
@@ -261,93 +254,80 @@ export default function ManageClasses() {
     setShowModal(true)
   }
 
-  const handleCloseModal = () => {
+  const closeEditor = () => {
     setShowModal(false)
     setEditingClass(null)
     setImageFile(null)
     setTeacherImageFile(null)
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
+  const selectedVideoUrl = () => {
+    if (videoType === "youtube") return formData.youtubeLink
+    if (videoType === "drive") return formData.driveLink
+    if (videoType === "dailymotion") return formData.dailymotionLink
+    if (videoType === "rumble") return formData.rumbleLink
+    if (videoType === "hls") return formData.hlsLink
+    return ""
+  }
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    if (!selectedCourse) return
     setSubmitting(true)
 
     try {
       let imageURL = editingClass?.imageURL || ""
       let teacherImageURL = editingClass?.teacherImageURL || ""
-
-      if (imageFile) {
-        imageURL = await uploadImageToImgBB(imageFile)
-      } else if (formData.imageType === "link") {
-        imageURL = formData.imageLink
-      }
-
-      if (teacherImageFile) {
-        teacherImageURL = await uploadImageToImgBB(teacherImageFile)
-      } else if (formData.teacherImageType === "link") {
-        teacherImageURL = formData.teacherImageLink
-      }
-
-      const getVideoURL = () => {
-        switch (videoType) {
-          case "youtube": return formData.youtubeLink
-          case "drive": return formData.driveLink
-          case "dailymotion": return formData.dailymotionLink
-          case "rumble": return formData.rumbleLink
-          case "hls": return formData.hlsLink
-          default: return ""
-        }
-      }
+      if (imageFile) imageURL = await uploadImageToImgBB(imageFile)
+      else if (formData.imageType === "link") imageURL = formData.imageLink
+      if (teacherImageFile) teacherImageURL = await uploadImageToImgBB(teacherImageFile)
+      else if (formData.teacherImageType === "link") teacherImageURL = formData.teacherImageLink
 
       const classData = {
         courseId: selectedCourse,
-        title: formData.title,
-        topic: formData.topic,
-        chapter: Array.isArray(formData.chapter) ? formData.chapter : formData.chapter ? [formData.chapter] : [],
-        subject: Array.isArray(formData.subject) ? formData.subject : formData.subject ? [formData.subject] : [],
-        order: Number.parseInt(formData.order),
+        title: formData.title.trim(),
+        topic: formData.topic.trim(),
+        chapter: arrayValue(formData.chapter),
+        subject: arrayValue(formData.subject),
+        order: Number.parseInt(formData.order, 10) || 0,
         duration: formData.duration,
-        youtubeLink: videoType === "youtube" ? formData.youtubeLink : "",
-        hlsLink: videoType === "hls" ? formData.hlsLink : "",
-        driveLink: videoType === "drive" ? formData.driveLink : "",
-        dailymotionLink: videoType === "dailymotion" ? formData.dailymotionLink : "",
-        rumbleLink: videoType === "rumble" ? formData.rumbleLink : "",
-        videoURL: getVideoURL(),
+        youtubeLink: videoType === "youtube" ? formData.youtubeLink.trim() : "",
+        hlsLink: videoType === "hls" ? formData.hlsLink.trim() : "",
+        driveLink: videoType === "drive" ? formData.driveLink.trim() : "",
+        dailymotionLink: videoType === "dailymotion" ? formData.dailymotionLink.trim() : "",
+        rumbleLink: videoType === "rumble" ? formData.rumbleLink.trim() : "",
+        videoURL: selectedVideoUrl().trim(),
         imageURL,
-        teacherName: Array.isArray(formData.teacherName)
-          ? formData.teacherName
-          : formData.teacherName
-            ? [formData.teacherName]
-            : [],
+        teacherName: arrayValue(formData.teacherName),
         teacherImageURL,
-        resourceLinks: Array.isArray(formData.resourceLinks) ? formData.resourceLinks : [],
+        resourceLinks: Array.isArray(formData.resourceLinks)
+          ? formData.resourceLinks.filter((item) => item?.label?.trim() && item?.url?.trim())
+          : [],
+        updatedAt: serverTimestamp(),
       }
 
       if (editingClass) {
+        // Keep the original upload time intact. Old classes without createdAt remain legacy records.
         await updateDoc(doc(db, "classes", editingClass.id), classData)
       } else {
-        await addDoc(collection(db, "classes"), classData)
+        // Server time is authoritative, so uploader clock/timezone cannot corrupt the upload date.
+        await addDoc(collection(db, "classes"), { ...classData, createdAt: serverTimestamp() })
       }
 
+      // cacheV2Firestore emits a targeted mutation hint. Other students keep their persistent
+      // cache and fetch only this changed class document from the server.
       await fetchClasses()
-      handleCloseModal()
-      toast({
-        title: "Success",
-        description: editingClass ? "Class updated successfully!" : "Class created successfully!",
-      })
+      closeEditor()
+      toast({ title: "Success", description: editingClass ? "Class updated successfully!" : "Class created successfully!" })
     } catch (error) {
       console.error("Error saving class:", error)
-      toast({
-        variant: "error",
-        title: "Error",
-        description: "Failed to save class. " + (error.message || "Please try again."),
-      })
+      toast({ variant: "error", title: "Error", description: `Failed to save class. ${error.message || "Please try again."}` })
     } finally {
       setSubmitting(false)
     }
   }
 
-  const handleDelete = async (classId) => {
+  const handleDelete = (classId) => {
     setConfirmDialog({
       isOpen: true,
       title: "Delete Class",
@@ -358,49 +338,42 @@ export default function ManageClasses() {
         try {
           await deleteDoc(doc(db, "classes", classId))
           await fetchClasses()
-          toast({
-            title: "Success",
-            description: "Class deleted successfully",
-          })
+          toast({ title: "Success", description: "Class deleted successfully" })
         } catch (error) {
-          console.error("Error deleting class:", error)
-          toast({
-            variant: "error",
-            title: "Error",
-            description: "Failed to delete class",
-          })
+          toast({ variant: "error", title: "Error", description: error.message || "Failed to delete class" })
         }
       },
     })
   }
 
-  const fetchArchiveClasses = async (courseId) => {
-    if (!courseId) return
-    try {
-      const isClassArchived = (cls) => {
-        if (cls.isArchived === true) return true
-        const subjectIsArchive = Array.isArray(cls.subject)
-          ? cls.subject.includes("archive")
-          : cls.subject === "archive"
-        const chapterIsArchive = Array.isArray(cls.chapter)
-          ? cls.chapter.includes("archive")
-          : cls.chapter === "archive"
-        return subjectIsArchive || chapterIsArchive
-      }
-
-      const classesQuery = query(collection(db, "classes"), where("courseId", "==", courseId))
-      const classesSnapshot = await getDocs(classesQuery)
-      const classesData = classesSnapshot.docs
-        .map((doc) => ({ id: doc.id, ...doc.data() }))
-        .filter((cls) => !isClassArchived(cls))
-        .sort((a, b) => a.order - b.order)
-      setArchiveClasses(classesData)
-    } catch (error) {
-      console.error("Error fetching archive classes:", error)
-    }
+  const fixAllVideoURLs = () => {
+    if (!selectedCourse) return
+    setConfirmDialog({
+      isOpen: true,
+      title: "Fix Video URLs",
+      message: "Add videoURL to classes in this course that are missing it?",
+      confirmText: "Fix URLs",
+      onConfirm: async () => {
+        setSubmitting(true)
+        try {
+          let updatedCount = 0
+          for (const item of classes) {
+            if (!item.videoURL && (item.youtubeLink || item.hlsLink || item.driveLink || item.dailymotionLink || item.rumbleLink)) {
+              const videoURL = item.youtubeLink || item.driveLink || item.dailymotionLink || item.rumbleLink || item.hlsLink
+              await updateDoc(doc(db, "classes", item.id), { videoURL, updatedAt: serverTimestamp() })
+              updatedCount += 1
+            }
+          }
+          await fetchClasses()
+          toast({ title: "Success", description: `Updated ${updatedCount} class(es).` })
+        } finally {
+          setSubmitting(false)
+        }
+      },
+    })
   }
 
-  const handleOpenArchiveModal = () => {
+  const openArchiveModal = () => {
     setShowArchiveModal(true)
     setArchiveSourceCourse("")
     setArchiveClasses([])
@@ -412,1175 +385,243 @@ export default function ManageClasses() {
     setArchiveCourseSearchQuery("")
   }
 
-  const toggleArchiveExam = (examId) => {
-    setSelectedArchiveExams((prev) => (prev.includes(examId) ? prev.filter((id) => id !== examId) : [...prev, examId]))
-  }
+  const archiveSourceCourseData = courses.find((course) => course.id === archiveSourceCourse)
+  const selectedCourseData = courses.find((course) => course.id === selectedCourse)
 
-  const toggleAllArchiveExams = () => {
-    if (selectedArchiveExams.length === archiveExams.length && archiveExams.length > 0) {
-      setSelectedArchiveExams([])
-    } else {
-      setSelectedArchiveExams(archiveExams.map((e) => e.id))
-    }
-  }
+  const archiveFilteredClasses = useMemo(() => archiveClasses.filter((item) => {
+    const matchesSubject = !archiveSubject || arrayValue(item.subject).includes(archiveSubject)
+    const matchesChapter = !archiveChapter || arrayValue(item.chapter).includes(archiveChapter)
+    return matchesSubject && matchesChapter
+  }), [archiveClasses, archiveSubject, archiveChapter])
 
   const handleArchiveSubmit = async () => {
     if (selectedArchiveClasses.length === 0 && selectedArchiveExams.length === 0) {
-      toast({
-        variant: "error",
-        title: "Selection Required",
-        description: "Please select at least one class or exam to archive",
-      })
+      toast({ variant: "error", title: "Selection Required", description: "Select at least one class or exam." })
       return
     }
-
-    const destinationCourseType = selectedCourseData?.type || "subject"
-    const sourceCourseType = archiveSourceCourseData?.type || "subject"
-    const supportedArchiveTypes = ["batch", "subject"]
-
-    if (!supportedArchiveTypes.includes(destinationCourseType)) {
-      toast({
-        variant: "error",
-        title: "Invalid Course Type",
-        description: "Archive feature is only available for batch and subject type courses!",
-      })
-      return
-    }
-
-    if (sourceCourseType !== destinationCourseType) {
-      toast({
-        variant: "error",
-        title: "Course Type Mismatch",
-        description: "Archive source and destination courses must have the same course type.",
-      })
+    if (!archiveSourceCourseData || archiveSourceCourseData.type !== selectedCourseData?.type) {
+      toast({ variant: "error", title: "Course Type Mismatch", description: "Archive source and destination courses must have the same type." })
       return
     }
 
     setArchiveSubmitting(true)
     try {
-      let archivedCount = 0
-
-      // Archive classes
-      if (selectedArchiveClasses.length > 0) {
-        const currentMaxOrder = classes.length > 0 ? Math.max(...classes.map((c) => c.order)) : -1
-
-        for (let i = 0; i < selectedArchiveClasses.length; i++) {
-          const sourceClass = archiveClasses.find((c) => c.id === selectedArchiveClasses[i])
-          if (!sourceClass) continue
-
-          const newClass = {
-            ...sourceClass,
-            courseId: selectedCourse,
-            isArchived: true,
-            archivedAt: new Date().toISOString(),
-            archivedFrom: archiveSourceCourse,
-            order: currentMaxOrder + i + 1,
-          }
-          delete newClass.id
-          await addDoc(collection(db, "classes"), newClass)
-          archivedCount++
-        }
+      let count = 0
+      let nextOrder = classes.length > 0 ? Math.max(...classes.map((item) => Number(item.order || 0))) + 1 : 0
+      for (const classId of selectedArchiveClasses) {
+        const source = archiveClasses.find((item) => item.id === classId)
+        if (!source) continue
+        const { id, ...copy } = source
+        await addDoc(collection(db, "classes"), {
+          ...copy,
+          courseId: selectedCourse,
+          isArchived: true,
+          archivedAt: new Date().toISOString(),
+          archivedFrom: archiveSourceCourse,
+          order: nextOrder,
+          createdAt: source.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+        nextOrder += 1
+        count += 1
       }
 
-      if (selectedArchiveExams.length > 0) {
+      if (canArchiveExams) {
         for (const examId of selectedArchiveExams) {
-          const sourceExam = archiveExams.find((e) => e.id === examId)
-          if (!sourceExam) continue
-
-          const newExam = {
-            ...sourceExam,
+          const source = archiveExams.find((item) => item.id === examId)
+          if (!source) continue
+          const { id, ...copy } = source
+          const ref = await addDoc(collection(db, "exams"), {
+            ...copy,
             courseId: selectedCourse,
             isArchived: true,
             archivedAt: new Date().toISOString(),
             archivedFrom: archiveSourceCourse,
-          }
-          delete newExam.id
-
-          // Create the new exam first
-          const newExamRef = await addDoc(collection(db, "exams"), newExam)
-          console.log(" Created archived exam:", newExamRef.id)
-
-          // Then copy all questions from the source exam to the new exam
+          })
           try {
-            const questionsCopied = await copyExamQuestions(examId, newExamRef.id)
-            console.log(" Copied", questionsCopied, "questions for exam", newExamRef.id)
-          } catch (questionError) {
-            console.error(" Error copying questions for exam:", questionError)
-            toast({
-              variant: "error",
-              title: "Warning",
-              description: `Exam archived but failed to copy questions: ${questionError.message}`,
-            })
+            await copyExamQuestions(examId, ref.id)
+          } catch (error) {
+            console.error("Archived exam created but question copy failed:", error)
           }
-
-          archivedCount++
+          count += 1
         }
       }
 
       await fetchClasses()
       setShowArchiveModal(false)
-      setSelectedArchiveClasses([])
-      setSelectedArchiveExams([])
-      toast({
-        title: "Success",
-        description: `Successfully archived ${archivedCount} item(s)!`,
-      })
+      toast({ title: "Success", description: `Archived ${count} item(s).` })
     } catch (error) {
-      console.error(" Error archiving:", error)
-      toast({
-        variant: "error",
-        title: "Error",
-        description: "Failed to archive. Please try again.",
-      })
+      toast({ variant: "error", title: "Archive Failed", description: error.message || "Failed to archive." })
     } finally {
       setArchiveSubmitting(false)
     }
   }
 
-  const getFilteredArchiveClasses = () => {
-    let filtered = archiveClasses
-    if (archiveSubject) {
-      filtered = filtered.filter((c) =>
-        Array.isArray(c.subject) ? c.subject.includes(archiveSubject) : c.subject === archiveSubject,
-      )
-    }
-    if (archiveChapter) {
-      filtered = filtered.filter((c) =>
-        Array.isArray(c.chapter) ? c.chapter.includes(archiveChapter) : c.chapter === archiveChapter,
-      )
-    }
-    return filtered
-  }
+  const availableClassSubjects = useMemo(() => [...new Set(
+    classes.flatMap((item) => arrayValue(item.subject)).filter((value) => value && value !== "archive"),
+  )].sort(), [classes])
 
-  const toggleArchiveClass = (classId) => {
-    setSelectedArchiveClasses((prev) =>
-      prev.includes(classId) ? prev.filter((id) => id !== classId) : [...prev, classId],
-    )
-  }
+  const availableClassChapters = useMemo(() => [...new Set(
+    classes
+      .filter((item) => selectedCourseData?.type !== "batch" || !classSubjectFilter || arrayValue(item.subject).includes(classSubjectFilter))
+      .flatMap((item) => arrayValue(item.chapter))
+      .filter((value) => value && value !== "archive"),
+  )].sort(), [classes, selectedCourseData?.type, classSubjectFilter])
 
-  const toggleAllArchiveClasses = () => {
-    const filtered = getFilteredArchiveClasses()
-    if (selectedArchiveClasses.length === filtered.length && filtered.length > 0) {
-      setSelectedArchiveClasses([])
-    } else {
-      setSelectedArchiveClasses(filtered.map((c) => c.id))
-    }
-  }
+  const filteredClasses = useMemo(() => classes.filter((item) => {
+    const subjectMatches = selectedCourseData?.type !== "batch" || !classSubjectFilter || arrayValue(item.subject).includes(classSubjectFilter)
+    const chapterMatches = !classChapterFilter || arrayValue(item.chapter).includes(classChapterFilter)
+    return subjectMatches && chapterMatches
+  }), [classes, selectedCourseData?.type, classSubjectFilter, classChapterFilter])
 
-  const fixAllVideoURLs = async () => {
-    if (!selectedCourse) {
-      toast({
-        variant: "error",
-        title: "Course Required",
-        description: "Please select a course first!",
-      })
-      return
-    }
+  const courseSubjects = subjects.filter((item) => !item.courseId || item.courseId === selectedCourse)
+  const courseChapters = chapters.filter((item) => !item.courseId || item.courseId === selectedCourse)
 
-    setConfirmDialog({
-      isOpen: true,
-      title: "Fix Video URLs",
-      message: "This will add videoURL field to all classes in this course that are missing it. Continue?",
-      confirmText: "Fix URLs",
-      onConfirm: async () => {
-        await performFixVideoURLs()
-      },
-    })
-  }
-
-  const performFixVideoURLs = async () => {
-    try {
-      setSubmitting(true)
-      let updatedCount = 0
-
-      for (const classItem of classes) {
-        if (!classItem.videoURL && (classItem.youtubeLink || classItem.hlsLink || classItem.driveLink || classItem.dailymotionLink || classItem.rumbleLink)) {
-          const videoURL = classItem.youtubeLink || classItem.driveLink || classItem.dailymotionLink || classItem.rumbleLink || classItem.hlsLink
-          await updateDoc(doc(db, "classes", classItem.id), { videoURL })
-          updatedCount++
-        }
-      }
-
-      await fetchClasses()
-      toast({
-        title: "Success",
-        description: `Successfully updated ${updatedCount} class(es) with videoURL field!`,
-      })
-    } catch (error) {
-      console.error("Error fixing video URLs:", error)
-      toast({
-        variant: "error",
-        title: "Error",
-        description: "Failed to fix video URLs. Please try again.",
-      })
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const selectedCourseData = courses.find((c) => c.id === selectedCourse)
-  const classHasValue = (value, selectedValue) =>
-    Array.isArray(value) ? value.includes(selectedValue) : value === selectedValue
-  const availableClassSubjects = [
-    ...new Set(
-      classes
-        .flatMap((classItem) => (Array.isArray(classItem.subject) ? classItem.subject : [classItem.subject]))
-        .filter((subject) => subject && subject !== "archive"),
-    ),
-  ].sort()
-  const availableClassChapters = [
-    ...new Set(
-      classes
-        .filter(
-          (classItem) =>
-            selectedCourseData?.type !== "batch" ||
-            !classSubjectFilter ||
-            classHasValue(classItem.subject, classSubjectFilter),
-        )
-        .flatMap((classItem) => (Array.isArray(classItem.chapter) ? classItem.chapter : [classItem.chapter]))
-        .filter((chapter) => chapter && chapter !== "archive"),
-    ),
-  ].sort()
-  const filteredClasses = classes.filter((classItem) => {
-    const matchesSubject =
-      selectedCourseData?.type !== "batch" ||
-      !classSubjectFilter ||
-      classHasValue(classItem.subject, classSubjectFilter)
-    const matchesChapter = !classChapterFilter || classHasValue(classItem.chapter, classChapterFilter)
-    return matchesSubject && matchesChapter
-  })
-  const batchCourses = courses.filter((c) => c.type === "batch")
-  const archiveSourceCourseData = courses.find((c) => c.id === archiveSourceCourse)
-  const uniqueArchiveSubjects = [
-    ...new Set(archiveClasses.flatMap((c) => (Array.isArray(c.subject) ? c.subject : [c.subject])).filter(Boolean)),
-  ].sort()
-  const uniqueArchiveChapters = [
-    ...new Set(archiveClasses.flatMap((c) => (Array.isArray(c.chapter) ? c.chapter : [c.chapter])).filter(Boolean)),
-  ].sort()
+  if (loading) return <div className="p-8 text-center text-muted-foreground">Loading classes...</div>
 
   return (
     <div>
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
             <h1 className="text-3xl font-bold mb-2">Manage Classes</h1>
-            <p className="text-muted-foreground">Create and manage course classes</p>
+            <p className="text-muted-foreground">Create and manage course classes. Changes sync to students without clearing their persistent cache.</p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleOpenArchiveModal}
-              disabled={!selectedCourse}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary hover:bg-secondary/90 text-secondary-foreground rounded text-sm transition-colors disabled:opacity-50"
-            >
-              <Plus className="w-4 h-4" />
-              Archive Classes
-            </button>
-            <button
-              onClick={() => handleOpenModal()}
-              disabled={!selectedCourse}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-sm transition-colors disabled:opacity-50"
-            >
-              <Plus className="w-4 h-4" />
-              Add Class
-            </button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={fixAllVideoURLs} disabled={!selectedCourse || submitting} className="flex items-center gap-1.5 px-3 py-2 bg-muted hover:bg-muted/80 rounded-lg text-sm disabled:opacity-50"><Wrench className="w-4 h-4" />Fix Video URLs</button>
+            <button onClick={openArchiveModal} disabled={!selectedCourse} className="flex items-center gap-1.5 px-3 py-2 bg-secondary text-secondary-foreground rounded-lg text-sm disabled:opacity-50"><Archive className="w-4 h-4" />Archive</button>
+            <button onClick={() => handleOpenModal()} disabled={!selectedCourse} className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground rounded-lg text-sm disabled:opacity-50"><Plus className="w-4 h-4" />Add Class</button>
           </div>
         </div>
       </motion.div>
 
-      {/* Course Selection */}
       <div className="mb-6">
         <label className="block text-xs font-medium mb-1.5">Select Course</label>
-        <input
-          type="text"
-          placeholder="Search courses..."
-          value={courseSearchQuery}
-          onChange={(e) => setCourseSearchQuery(e.target.value)}
-          className="w-full px-3 py-1.5 text-sm bg-card border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary mb-1.5"
-        />
-        <select
-          value={selectedCourse}
-          onChange={(e) => setSelectedCourse(e.target.value)}
-          className="w-full px-3 py-1.5 text-sm bg-card border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-        >
+        <input value={courseSearchQuery} onChange={(event) => setCourseSearchQuery(event.target.value)} placeholder="Search allowed courses..." className="w-full px-3 py-2 text-sm bg-card border border-border rounded-lg mb-2" />
+        <select value={selectedCourse} onChange={(event) => setSelectedCourse(event.target.value)} className="w-full px-3 py-2 text-sm bg-card border border-border rounded-lg">
           <option value="">Choose a course...</option>
-          {courses
-            .filter((course) => !courseSearchQuery || course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase()))
-            .map((course) => (
-              <option key={course.id} value={course.id}>
-                {course.title} ({course.type})
-              </option>
-            ))}
+          {courses.filter((course) => course.title?.toLowerCase().includes(courseSearchQuery.toLowerCase())).map((course) => <option key={course.id} value={course.id}>{course.title} ({course.type})</option>)}
         </select>
       </div>
 
-      {/* Classes Table */}
       {selectedCourse && (
-        <div>
-          {/* Tab Toggle for Active/Archived */}
+        <>
           <div className="mb-4 flex gap-2 border-b border-border">
-            <button
-              onClick={() => setShowArchivedClasses(false)}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
-                !showArchivedClasses
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Active Classes
-            </button>
-            <button
-              onClick={() => setShowArchivedClasses(true)}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
-                showArchivedClasses
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Archived Classes
-            </button>
+            <button onClick={() => setShowArchivedClasses(false)} className={`px-4 py-2 text-sm font-medium border-b-2 ${!showArchivedClasses ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>Active Classes</button>
+            <button onClick={() => setShowArchivedClasses(true)} className={`px-4 py-2 text-sm font-medium border-b-2 ${showArchivedClasses ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>Archived Classes</button>
           </div>
 
           <div className={`mb-4 grid gap-3 ${selectedCourseData?.type === "batch" ? "sm:grid-cols-2" : "sm:grid-cols-1"}`}>
             {selectedCourseData?.type === "batch" && (
-              <div>
-                <label className="mb-1.5 block text-xs font-medium">Filter by Subject</label>
-                <select
-                  value={classSubjectFilter}
-                  onChange={(e) => {
-                    setClassSubjectFilter(e.target.value)
-                    setClassChapterFilter("")
-                  }}
-                  className="w-full rounded border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                >
-                  <option value="">All Subjects</option>
-                  {availableClassSubjects.map((subject) => (
-                    <option key={subject} value={subject}>
-                      {subject}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <FilterSelect label="Filter by Subject" value={classSubjectFilter} onChange={(value) => { setClassSubjectFilter(value); setClassChapterFilter("") }} options={availableClassSubjects} />
             )}
-
-            <div>
-              <label className="mb-1.5 block text-xs font-medium">Filter by Chapter</label>
-              <select
-                value={classChapterFilter}
-                onChange={(e) => setClassChapterFilter(e.target.value)}
-                className="w-full rounded border border-border bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-              >
-                <option value="">All Chapters</option>
-                {availableClassChapters.map((chapter) => (
-                  <option key={chapter} value={chapter}>
-                    {chapter}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <FilterSelect label="Filter by Chapter" value={classChapterFilter} onChange={setClassChapterFilter} options={availableClassChapters} />
           </div>
 
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px]">
-                <thead className="bg-muted">
-                  <tr>
-                    <th className="text-left p-2 font-medium text-xs">Title</th>
-                    {selectedCourseData?.type === "batch" && (
-                      <th className="text-left p-2 font-medium text-xs">Subject</th>
-                    )}
-                    <th className="text-left p-2 font-medium text-xs">Chapter</th>
-                    <th className="text-left p-2 font-medium text-xs">Teacher</th>
-                    <th className="text-left p-2 font-medium text-xs">Order</th>
-                    <th className="text-right p-2 font-medium text-xs">Actions</th>
-                  </tr>
-                </thead>
+                <thead className="bg-muted"><tr><th className="text-left p-3 text-xs">Title</th>{selectedCourseData?.type === "batch" && <th className="text-left p-3 text-xs">Subject</th>}<th className="text-left p-3 text-xs">Chapter</th><th className="text-left p-3 text-xs">Teacher</th><th className="text-left p-3 text-xs">Order</th><th className="text-right p-3 text-xs">Actions</th></tr></thead>
                 <tbody className="divide-y divide-border">
-                  {filteredClasses.map((classItem) => (
-                    <tr key={classItem.id} className="hover:bg-muted/50">
-                      <td className="p-2 text-xs">
-                        <div className="flex items-center gap-2">
-                          {classItem.title}
-                          {showArchivedClasses && (
-                            <span className="px-2 py-0.5 bg-orange-500/10 text-orange-500 rounded text-xs font-medium">
-                              Archived
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                    {selectedCourseData?.type === "batch" && (
-                      <td className="p-2 text-xs text-muted-foreground">
-                        {Array.isArray(classItem.subject) ? classItem.subject.join(", ") : classItem.subject || "N/A"}
-                      </td>
-                    )}
-                    <td className="p-2 text-xs text-muted-foreground">
-                      {Array.isArray(classItem.chapter) ? classItem.chapter.join(", ") : classItem.chapter || "N/A"}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {classItem.teacherImageURL && (
-                        <img
-                          src={classItem.teacherImageURL || "/placeholder.svg"}
-                          alt={classItem.teacherName}
-                          className="w-6 h-6 rounded-full object-cover inline-block mr-1"
-                        />
-                      )}
-                      <span className="text-xs">{classItem.teacherName || "N/A"}</span>
-                    </td>
-                    <td className="p-2 text-xs">{classItem.order}</td>
-                    <td className="p-2 text-right">
-                      <div className="flex gap-1 justify-end">
-                        <button
-                          onClick={() => handleOpenModal(classItem)}
-                          className="px-2 py-0.5 bg-primary/10 hover:bg-primary/20 text-primary rounded transition-colors text-xs"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(classItem.id)}
-                          className="px-2 py-0.5 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded transition-colors text-xs"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {classes.length === 0 && (
-            <div className="text-center py-12 text-muted-foreground">
-              <p>No classes yet. Add your first class!</p>
-            </div>
-          )}
-          </div>
-        </div>
-      )}
-
-      {/* Add/Edit Class Modal */}
-      {showModal && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-4 max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">{editingClass ? "Edit Class" : "Add New Class"}</h2>
-              <button onClick={() => setShowModal(false)} className="p-1 hover:bg-muted rounded transition-colors">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium mb-1">Title</label>
-                <input
-                  type="text"
-                  value={formData.title}
-                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  required
-                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Topic</label>
-                <input
-                  type="text"
-                  value={formData.topic}
-                  onChange={(e) => setFormData({ ...formData, topic: e.target.value })}
-                  placeholder="Enter class topic"
-                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Teacher Name</label>
-                <div className="space-y-1.5">
-                  <div className="flex flex-wrap gap-1.5 p-2 bg-background border border-border rounded min-h-[60px]">
-                    {Array.isArray(formData.teacherName) &&
-                      formData.teacherName.map((name, idx) => (
-                        <div
-                          key={idx}
-                          className="px-3 py-1 bg-primary/10 text-primary rounded-full text-sm flex items-center gap-2"
-                        >
-                          {name}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updated = formData.teacherName.filter((_, i) => i !== idx)
-                              setFormData({ ...formData, teacherName: updated })
-                            }}
-                            className="text-primary hover:text-primary/70"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                  </div>
-                  <select
-                    onChange={(e) => {
-                      const value = e.target.value
-                      if (value) {
-                        const current = Array.isArray(formData.teacherName) ? formData.teacherName : []
-                        if (!current.includes(value)) {
-                          setFormData({ ...formData, teacherName: [...current, value] })
-                        }
-                        e.target.value = ""
-                      }
-                    }}
-                    className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                  >
-                    <option value="">Add teacher...</option>
-                    {teachers.map((teacher) => (
-                      <option key={teacher.id} value={teacher.name}>
-                        {teacher.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">Click to add multiple teachers</p>
-              </div>
-
-              {selectedCourseData?.type === "batch" && (
-                <div>
-                  <label className="block text-xs font-medium mb-1">Subject</label>
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap gap-1.5 p-2 bg-background border border-border rounded min-h-[60px]">
-                      {Array.isArray(formData.subject) &&
-                        formData.subject.map((name, idx) => (
-                          <div
-                            key={idx}
-                            className="px-2 py-0.5 bg-primary/10 text-primary rounded-full text-xs flex items-center gap-1"
-                          >
-                            {name}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const updated = formData.subject.filter((_, i) => i !== idx)
-                                setFormData({ ...formData, subject: updated })
-                              }}
-                              className="text-primary hover:text-primary/70"
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                    <select
-                      onChange={(e) => {
-                        const value = e.target.value
-                        if (value) {
-                          const current = Array.isArray(formData.subject) ? formData.subject : []
-                          if (!current.includes(value)) {
-                            setFormData({ ...formData, subject: [...current, value] })
-                          }
-                          e.target.value = ""
-                        }
-                      }}
-                      className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                    >
-                      <option value="">Add subject...</option>
-                      {subjects
-                        .filter((subject) => {
-                          // Support both old courseId and new courseIds array
-                          if (subject.courseIds && Array.isArray(subject.courseIds)) {
-                            return subject.courseIds.includes(selectedCourse)
-                          }
-                          return subject.courseId === selectedCourse
-                        })
-                        .map((subject) => (
-                          <option key={subject.id} value={subject.title}>
-                            {subject.title}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">Click to add multiple subjects</p>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-medium mb-1">Chapter</label>
-                <div className="space-y-1.5">
-                  <div className="flex flex-wrap gap-1.5 p-2 bg-background border border-border rounded min-h-[60px]">
-                    {Array.isArray(formData.chapter) &&
-                      formData.chapter.map((name, idx) => (
-                        <div
-                          key={idx}
-                          className="px-3 py-1 bg-primary/10 text-primary rounded-full text-sm flex items-center gap-2"
-                        >
-                          {name}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updated = formData.chapter.filter((_, i) => i !== idx)
-                              setFormData({ ...formData, chapter: updated })
-                            }}
-                            className="text-primary hover:text-primary/70"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                  </div>
-                  <select
-                    onChange={(e) => {
-                      const value = e.target.value
-                      if (value) {
-                        const current = Array.isArray(formData.chapter) ? formData.chapter : []
-                        if (!current.includes(value)) {
-                          setFormData({ ...formData, chapter: [...current, value] })
-                        }
-                        e.target.value = ""
-                      }
-                    }}
-                    className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
-                  >
-                    <option value="">Add chapter...</option>
-                    {chapters
-                      .filter((chapter) => {
-                        // For batch courses, filter chapters by selected subjects
-                        if (selectedCourseData?.type === "batch" && formData.subject.length > 0) {
-                          const selectedSubjectIds = subjects
-                            .filter(s => formData.subject.includes(s.title))
-                            .map(s => s.id)
-                          return selectedSubjectIds.includes(chapter.subjectId)
-                        }
-                        // For non-batch courses, filter by selected course
-                        return chapter.courseId === selectedCourse
-                      })
-                      .map((chapter) => (
-                        <option key={chapter.id} value={chapter.title}>
-                          {chapter.title}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">Click to add multiple chapters</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium mb-1">Order</label>
-                  <input
-                    type="number"
-                    value={formData.order}
-                    onChange={(e) => setFormData({ ...formData, order: e.target.value })}
-                    required
-                    className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium mb-1">Duration</label>
-                  <input
-                    type="text"
-                    value={formData.duration}
-                    onChange={(e) => setFormData({ ...formData, duration: e.target.value })}
-                    placeholder="e.g., 45 min"
-                    className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium mb-1.5">Video Source</label>
-                <div className="flex gap-2 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setVideoType("youtube")}
-                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
-                      videoType === "youtube"
-                        ? "border-primary bg-primary/10 text-primary font-medium"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    YouTube
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoType("drive")}
-                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
-                      videoType === "drive"
-                        ? "border-primary bg-primary/10 text-primary font-medium"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    Google Drive
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoType("dailymotion")}
-                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
-                      videoType === "dailymotion"
-                        ? "border-primary bg-primary/10 text-primary font-medium"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    Dailymotion
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVideoType("rumble")}
-                    className={`flex-1 py-1 px-3 text-sm rounded border-2 transition-colors ${
-                      videoType === "rumble"
-                        ? "border-primary bg-primary/10 text-primary font-medium"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    Rumble
-                  </button>
-                </div>
-
-                {videoType === "youtube" && (
-                  <div>
-                    <input
-                      type="url"
-                      value={formData.youtubeLink}
-                      onChange={(e) => setFormData({ ...formData, youtubeLink: e.target.value })}
-                      placeholder="https://www.youtube.com/watch?v=..."
-                      required={videoType === "youtube"}
-                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Paste a YouTube video URL (supports youtube.com and youtu.be links)
-                    </p>
-                  </div>
-                )}
-
-                {videoType === "drive" && (
-                  <div>
-                    <input
-                      type="url"
-                      value={formData.driveLink}
-                      onChange={(e) => setFormData({ ...formData, driveLink: e.target.value })}
-                      placeholder="https://drive.google.com/file/d/FILE_ID/view"
-                      required={videoType === "drive"}
-                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Paste a Google Drive video share link
-                    </p>
-                  </div>
-                )}
-
-                {videoType === "dailymotion" && (
-                  <div>
-                    <input
-                      type="url"
-                      value={formData.dailymotionLink}
-                      onChange={(e) => setFormData({ ...formData, dailymotionLink: e.target.value })}
-                      placeholder="https://www.dailymotion.com/video/... or https://dai.ly/..."
-                      required={videoType === "dailymotion"}
-                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Paste a Dailymotion video URL (supports dailymotion.com and dai.ly links)
-                    </p>
-                  </div>
-                )}
-
-                {videoType === "rumble" && (
-                  <div>
-                    <input
-                      type="url"
-                      value={formData.rumbleLink}
-                      onChange={(e) => setFormData({ ...formData, rumbleLink: e.target.value })}
-                      placeholder="https://rumble.com/v...-video-title.html or https://rumble.com/embed/v.../"
-                      required={videoType === "rumble"}
-                      className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Paste a Rumble video URL (supports rumble.com watch and embed links)
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Class Image Upload/Link */}
-              <div>
-                <label className="block text-xs font-medium mb-2">Class Image</label>
-                <div className="flex gap-2 mb-2">
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, imageType: "upload" })}
-                    className={`flex-1 py-1.5 px-3 text-xs rounded transition-colors font-medium ${
-                      formData.imageType === "upload"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted hover:bg-muted/80"
-                    }`}
-                  >
-                    Upload Image
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ ...formData, imageType: "link" })}
-                    className={`flex-1 py-1.5 px-3 text-xs rounded transition-colors font-medium ${
-                      formData.imageType === "link"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted hover:bg-muted/80"
-                    }`}
-                  >
-                    Image Link
-                  </button>
-                </div>
-
-                {formData.imageType === "upload" ? (
-                  <div>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setImageFile(e.target.files[0])}
-                      className="w-full px-3 py-1.5 text-xs bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Upload image to ImgBB (JPG, PNG, GIF)</p>
-                  </div>
-                ) : (
-                  <div>
-                    <input
-                      type="url"
-                      value={formData.imageLink}
-                      onChange={(e) => setFormData({ ...formData, imageLink: e.target.value })}
-                      placeholder="https://example.com/image.jpg"
-                      className="w-full px-3 py-1.5 text-xs bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">Paste direct image URL</p>
-                  </div>
-                )}
-
-                {/* Image Preview */}
-                {(editingClass?.imageURL || formData.imageLink) && formData.imageType === "link" && (
-                  <div className="mt-2">
-                    <img
-                      src={formData.imageLink || editingClass?.imageURL}
-                      alt="Class preview"
-                      className="w-32 h-32 object-cover rounded border border-border"
-                      onError={(e) => {
-                        e.target.style.display = "none"
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-medium">Resource Links</label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFormData({
-                        ...formData,
-                        resourceLinks: [...formData.resourceLinks, { label: "", url: "" }]
-                      })
-                    }}
-                    className="flex items-center gap-1 px-2 py-1 text-xs bg-primary/10 hover:bg-primary/20 text-primary rounded transition-colors"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Add Link
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {formData.resourceLinks.map((link, index) => (
-                    <div key={index} className="flex gap-2 items-start p-2 bg-muted/30 rounded border border-border">
-                      <div className="flex-1 space-y-2">
-                        <input
-                          type="text"
-                          value={link.label}
-                          onChange={(e) => {
-                            const updated = [...formData.resourceLinks]
-                            updated[index].label = e.target.value
-                            setFormData({ ...formData, resourceLinks: updated })
-                          }}
-                          placeholder="Button label (e.g., Notes, PDF, Assignment)"
-                          className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                        />
-                        <input
-                          type="url"
-                          value={link.url}
-                          onChange={(e) => {
-                            const updated = [...formData.resourceLinks]
-                            updated[index].url = e.target.value
-                            setFormData({ ...formData, resourceLinks: updated })
-                          }}
-                          placeholder="Link (PDF, Google Drive, image, etc.)"
-                          className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = formData.resourceLinks.filter((_, i) => i !== index)
-                          setFormData({ ...formData, resourceLinks: updated })
-                        }}
-                        className="p-1 text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
+                  {filteredClasses.map((item) => (
+                    <tr key={item.id} className="hover:bg-muted/50">
+                      <td className="p-3 text-sm"><span className="font-medium">{item.title}</span>{showArchivedClasses && <span className="ml-2 px-2 py-0.5 bg-orange-500/10 text-orange-500 rounded text-[11px]">Archived</span>}</td>
+                      {selectedCourseData?.type === "batch" && <td className="p-3 text-xs text-muted-foreground">{arrayValue(item.subject).join(", ") || "N/A"}</td>}
+                      <td className="p-3 text-xs text-muted-foreground">{arrayValue(item.chapter).join(", ") || "N/A"}</td>
+                      <td className="p-3 text-xs">{arrayValue(item.teacherName).join(", ") || "N/A"}</td>
+                      <td className="p-3 text-xs">{item.order ?? 0}</td>
+                      <td className="p-3"><div className="flex justify-end gap-2"><button onClick={() => handleOpenModal(item)} className="px-3 py-1.5 text-xs bg-primary/10 text-primary rounded-lg">Edit</button><button onClick={() => handleDelete(item.id)} className="px-3 py-1.5 text-xs bg-red-500/10 text-red-500 rounded-lg">Delete</button></div></td>
+                    </tr>
                   ))}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Add custom resource links that will appear as buttons below the class
-                </p>
-              </div>
-
-              <div className="flex gap-2 pt-3">
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="flex-1 py-2 text-sm bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors disabled:opacity-50"
-                >
-                  {submitting ? "Saving..." : editingClass ? "Update Class" : "Create Class"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCloseModal}
-                  className="px-4 py-2 text-sm bg-muted hover:bg-muted/80 rounded transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
+                  {filteredClasses.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No matching classes.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
 
-      {/* Archive/Transfer Modal */}
-      {showArchiveModal && (
-        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-card border border-border rounded-xl p-4 max-w-4xl w-full max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">Archive Classes to Current Course</h2>
-              <button
-                onClick={() => setShowArchiveModal(false)}
-                className="p-1 hover:bg-muted rounded transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-xl w-full max-w-4xl max-h-[92vh] overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-5"><h2 className="text-xl font-bold">{editingClass ? "Edit Class" : "Add Class"}</h2><button onClick={closeEditor} className="p-2 hover:bg-muted rounded-lg"><X className="w-5 h-5" /></button></div>
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid md:grid-cols-2 gap-4">
+                <TextField label="Class title" required value={formData.title} onChange={(value) => setFormData((data) => ({ ...data, title: value }))} />
+                <TextField label="Topic" value={formData.topic} onChange={(value) => setFormData((data) => ({ ...data, topic: value }))} />
+                <TextField label="Duration" value={formData.duration} onChange={(value) => setFormData((data) => ({ ...data, duration: value }))} placeholder="e.g. 1:26:18" />
+                <TextField label="Order" type="number" value={formData.order} onChange={(value) => setFormData((data) => ({ ...data, order: value }))} />
+              </div>
 
-            <div className="space-y-3">
+              <div className="grid md:grid-cols-2 gap-4">
+                <MultiSelect label="Subjects" options={courseSubjects.map((item) => item.title || item.name).filter(Boolean)} selected={formData.subject} onToggle={(value) => setFormData((data) => ({ ...data, subject: data.subject.includes(value) ? data.subject.filter((item) => item !== value) : [...data.subject, value] }))} />
+                <MultiSelect label="Chapters" options={courseChapters.map((item) => item.title || item.name).filter(Boolean)} selected={formData.chapter} onToggle={(value) => setFormData((data) => ({ ...data, chapter: data.chapter.includes(value) ? data.chapter.filter((item) => item !== value) : [...data.chapter, value] }))} />
+              </div>
+
+              <MultiSelect label="Teachers" options={teachers.map((item) => item.name || item.title).filter(Boolean)} selected={formData.teacherName} onToggle={(value) => setFormData((data) => ({ ...data, teacherName: data.teacherName.includes(value) ? data.teacherName.filter((item) => item !== value) : [...data.teacherName, value] }))} />
+
               <div>
-                <label className="block text-xs font-medium mb-1.5">Source Course (Archive)</label>
-                <input
-                  type="text"
-                  placeholder="Search source courses..."
-                  value={archiveCourseSearchQuery}
-                  onChange={(e) => setArchiveCourseSearchQuery(e.target.value)}
-                  className="w-full px-3 py-1.5 mb-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-                <select
-                  value={archiveSourceCourse}
-                  onChange={(e) => {
-                    setArchiveSourceCourse(e.target.value)
-                    setSelectedArchiveClasses([])
-                    setArchiveSubject("")
-                    setArchiveChapter("")
-                  }}
-                  className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                >
-                  <option value="">Select source course...</option>
-                  {courses
-                    .filter(
-                      (c) =>
-                        c.id !== selectedCourse &&
-                        (c.type || "subject") === (selectedCourseData?.type || "subject") &&
-                        (!archiveCourseSearchQuery ||
-                          c.title?.toLowerCase().includes(archiveCourseSearchQuery.toLowerCase())),
-                    )
-                    .map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.title} ({course.type || "subject"})
-                      </option>
-                    ))}
-                </select>
+                <label className="block text-sm font-medium mb-2">Video source</label>
+                <div className="flex flex-wrap gap-2 mb-3">{["youtube", "drive", "dailymotion", "rumble", "hls"].map((type) => <button key={type} type="button" onClick={() => setVideoType(type)} className={`px-3 py-1.5 rounded-lg text-sm capitalize ${videoType === type ? "bg-primary text-primary-foreground" : "bg-muted"}`}>{type}</button>)}</div>
+                <TextField label={`${videoType} URL`} required value={formData[`${videoType}Link`] || ""} onChange={(value) => setFormData((data) => ({ ...data, [`${videoType}Link`]: value }))} placeholder="https://..." />
               </div>
 
-              {archiveSourceCourse && archiveClasses.length > 0 && (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium mb-1.5">Filter by Subject</label>
-                      <select
-                        value={archiveSubject}
-                        onChange={(e) => setArchiveSubject(e.target.value)}
-                        className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                      >
-                        <option value="">All Subjects</option>
-                        {uniqueArchiveSubjects.map((subject) => (
-                          <option key={subject} value={subject}>
-                            {subject}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+              <ImageField label="Class image" type={formData.imageType} link={formData.imageLink} onType={(value) => setFormData((data) => ({ ...data, imageType: value }))} onLink={(value) => setFormData((data) => ({ ...data, imageLink: value }))} onFile={setImageFile} />
+              <ImageField label="Teacher image" type={formData.teacherImageType} link={formData.teacherImageLink} onType={(value) => setFormData((data) => ({ ...data, teacherImageType: value }))} onLink={(value) => setFormData((data) => ({ ...data, teacherImageLink: value }))} onFile={setTeacherImageFile} />
 
-                    <div>
-                      <label className="block text-xs font-medium mb-1.5">Filter by Chapter</label>
-                      <select
-                        value={archiveChapter}
-                        onChange={(e) => setArchiveChapter(e.target.value)}
-                        className="w-full px-3 py-1.5 text-sm bg-background border border-border rounded focus:outline-none focus:ring-2 focus:ring-primary"
-                      >
-                        <option value="">All Chapters</option>
-                        {uniqueArchiveChapters.map((chapter) => (
-                          <option key={chapter} value={chapter}>
-                            {chapter}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
+              <div>
+                <div className="flex items-center justify-between mb-2"><label className="text-sm font-medium">Resource links</label><button type="button" onClick={() => setFormData((data) => ({ ...data, resourceLinks: [...data.resourceLinks, { label: "", url: "" }] }))} className="text-sm text-primary">+ Add resource</button></div>
+                <div className="space-y-2">{formData.resourceLinks.map((resource, index) => <div key={index} className="grid grid-cols-[1fr_2fr_auto] gap-2"><input value={resource.label || ""} onChange={(event) => setFormData((data) => ({ ...data, resourceLinks: data.resourceLinks.map((item, i) => i === index ? { ...item, label: event.target.value } : item) }))} placeholder="Label" className="px-3 py-2 bg-background border border-border rounded-lg text-sm" /><input value={resource.url || ""} onChange={(event) => setFormData((data) => ({ ...data, resourceLinks: data.resourceLinks.map((item, i) => i === index ? { ...item, url: event.target.value } : item) }))} placeholder="https://..." className="px-3 py-2 bg-background border border-border rounded-lg text-sm" /><button type="button" onClick={() => setFormData((data) => ({ ...data, resourceLinks: data.resourceLinks.filter((_, i) => i !== index) }))} className="p-2 text-red-500"><X className="w-4 h-4" /></button></div>)}</div>
+              </div>
 
-                  <div className="border border-border rounded p-2">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs font-medium">
-                        Select Classes to Transfer ({selectedArchiveClasses.length} selected)
-                      </label>
-                      <button
-                        type="button"
-                        onClick={toggleAllArchiveClasses}
-                        className="px-2 py-1 text-xs bg-muted hover:bg-muted/80 rounded transition-colors"
-                      >
-                        {selectedArchiveClasses.length === getFilteredArchiveClasses().length &&
-                        getFilteredArchiveClasses().length > 0
-                          ? "Deselect All"
-                          : "Select All"}
-                      </button>
-                    </div>
-
-                    <div className="max-h-64 overflow-y-auto space-y-1">
-                      {getFilteredArchiveClasses().map((classItem) => (
-                        <label
-                          key={classItem.id}
-                          className="flex items-center gap-2 p-2 hover:bg-muted/50 rounded cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedArchiveClasses.includes(classItem.id)}
-                            onChange={() => toggleArchiveClass(classItem.id)}
-                            className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
-                          />
-                          <div className="flex-1 text-xs">
-                            <div className="font-medium">{classItem.title}</div>
-                            <div className="text-muted-foreground">
-                              {archiveSourceCourseData?.type === "batch" && classItem.subject && (
-                                <span className="mr-2">
-                                  Subject:{" "}
-                                  {Array.isArray(classItem.subject) ? classItem.subject.join(", ") : classItem.subject}
-                                </span>
-                              )}
-                              {classItem.chapter && (
-                                <span>
-                                  Chapter:{" "}
-                                  {Array.isArray(classItem.chapter) ? classItem.chapter.join(", ") : classItem.chapter}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="border border-border rounded p-2 mt-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-xs font-medium">
-                        Select Exams to Archive ({selectedArchiveExams.length} selected)
-                      </label>
-                      {archiveExams.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={toggleAllArchiveExams}
-                          className="px-2 py-1 text-xs bg-muted hover:bg-muted/80 rounded transition-colors"
-                        >
-                          {selectedArchiveExams.length === archiveExams.length && archiveExams.length > 0
-                            ? "Deselect All"
-                            : "Select All"}
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="max-h-64 overflow-y-auto space-y-1">
-                      {archiveExams.length > 0 ? (
-                        archiveExams.map((exam) => (
-                          <label
-                            key={exam.id}
-                            className="flex items-center gap-2 p-2 hover:bg-muted/50 rounded cursor-pointer"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedArchiveExams.includes(exam.id)}
-                              onChange={() => toggleArchiveExam(exam.id)}
-                              className="w-4 h-4 rounded border-border text-primary focus:ring-2 focus:ring-primary"
-                            />
-                            <div className="flex-1 text-xs">
-                              <div className="font-medium">{exam.title}</div>
-                              <div className="text-muted-foreground">
-                                Duration: {exam.duration} min • Passing: {exam.passingScore}%
-                              </div>
-                            </div>
-                          </label>
-                        ))
-                      ) : (
-                        <div className="text-center py-4 text-muted-foreground text-xs">
-                          No exams found in this course
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={handleArchiveSubmit}
-                      disabled={
-                        archiveSubmitting || (selectedArchiveClasses.length === 0 && selectedArchiveExams.length === 0)
-                      }
-                      className="flex-1 py-2 text-sm bg-primary hover:bg-primary/90 text-primary-foreground rounded transition-colors disabled:opacity-50"
-                    >
-                      {archiveSubmitting
-                        ? "Transferring..."
-                        : `Transfer ${selectedArchiveClasses.length + selectedArchiveExams.length} Item(s)`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowArchiveModal(false)}
-                      className="px-4 py-2 text-sm bg-muted hover:bg-muted/80 rounded transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {archiveSourceCourse && archiveClasses.length === 0 && (
-                <div className="text-center py-8 text-muted-foreground text-sm">
-                  No classes found in the selected course.
-                </div>
-              )}
-            </div>
-          </motion.div>
+              <div className="flex gap-3 pt-3 border-t border-border"><button type="button" onClick={closeEditor} className="flex-1 py-2 bg-muted rounded-lg">Cancel</button><button type="submit" disabled={submitting} className="flex-1 py-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50">{submitting ? "Saving..." : editingClass ? "Update Class" : "Create Class"}</button></div>
+            </form>
+          </div>
         </div>
       )}
 
-      <ConfirmDialog
-        isOpen={confirmDialog.isOpen}
-        onClose={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
-        onConfirm={confirmDialog.onConfirm}
-        title={confirmDialog.title}
-        message={confirmDialog.message}
-        confirmText={confirmDialog.confirmText || "Confirm"}
-        cancelText={confirmDialog.cancelText || "Cancel"}
-        variant={confirmDialog.variant || "default"}
-      />
+      {showArchiveModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-xl w-full max-w-4xl max-h-[92vh] overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-5"><h2 className="text-xl font-bold">Archive from another course</h2><button onClick={() => setShowArchiveModal(false)} className="p-2 hover:bg-muted rounded-lg"><X className="w-5 h-5" /></button></div>
+            <input value={archiveCourseSearchQuery} onChange={(event) => setArchiveCourseSearchQuery(event.target.value)} placeholder="Search source course..." className="w-full px-3 py-2 bg-background border border-border rounded-lg mb-2" />
+            <select value={archiveSourceCourse} onChange={(event) => { setArchiveSourceCourse(event.target.value); setSelectedArchiveClasses([]); setSelectedArchiveExams([]) }} className="w-full px-3 py-2 bg-background border border-border rounded-lg mb-4"><option value="">Choose source course...</option>{courses.filter((course) => course.id !== selectedCourse && course.type === selectedCourseData?.type && course.title?.toLowerCase().includes(archiveCourseSearchQuery.toLowerCase())).map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}</select>
+
+            {archiveSourceCourse && (
+              <>
+                <div className="grid md:grid-cols-2 gap-3 mb-4">
+                  <FilterSelect label="Archive subject" value={archiveSubject} onChange={setArchiveSubject} options={[...new Set(archiveClasses.flatMap((item) => arrayValue(item.subject)).filter(Boolean))].sort()} />
+                  <FilterSelect label="Archive chapter" value={archiveChapter} onChange={setArchiveChapter} options={[...new Set(archiveClasses.flatMap((item) => arrayValue(item.chapter)).filter(Boolean))].sort()} />
+                </div>
+                <h3 className="font-semibold mb-2">Classes</h3>
+                <div className="max-h-56 overflow-y-auto space-y-2 mb-5">{archiveFilteredClasses.map((item) => <label key={item.id} className="flex items-center gap-3 p-3 border border-border rounded-lg"><input type="checkbox" checked={selectedArchiveClasses.includes(item.id)} onChange={() => setSelectedArchiveClasses((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} /><span className="text-sm">{item.title}</span></label>)}{archiveFilteredClasses.length === 0 && <p className="text-sm text-muted-foreground">No classes found.</p>}</div>
+
+                {canArchiveExams && <><h3 className="font-semibold mb-2">Exams</h3><div className="max-h-44 overflow-y-auto space-y-2 mb-5">{archiveExams.map((exam) => <label key={exam.id} className="flex items-center gap-3 p-3 border border-border rounded-lg"><input type="checkbox" checked={selectedArchiveExams.includes(exam.id)} onChange={() => setSelectedArchiveExams((current) => current.includes(exam.id) ? current.filter((id) => id !== exam.id) : [...current, exam.id])} /><span className="text-sm">{exam.title}</span></label>)}{archiveExams.length === 0 && <p className="text-sm text-muted-foreground">No exams found.</p>}</div></>}
+              </>
+            )}
+
+            <div className="flex gap-3 pt-3 border-t border-border"><button onClick={() => setShowArchiveModal(false)} className="flex-1 py-2 bg-muted rounded-lg">Cancel</button><button onClick={handleArchiveSubmit} disabled={archiveSubmitting || (!selectedArchiveClasses.length && !selectedArchiveExams.length)} className="flex-1 py-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50">{archiveSubmitting ? "Archiving..." : "Archive selected"}</button></div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog isOpen={confirmDialog.isOpen} title={confirmDialog.title} message={confirmDialog.message} variant={confirmDialog.variant} confirmText={confirmDialog.confirmText} onConfirm={async () => { const callback = confirmDialog.onConfirm; setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} }); await callback?.() }} onCancel={() => setConfirmDialog({ isOpen: false, title: "", message: "", onConfirm: () => {} })} />
     </div>
   )
+}
+
+function TextField({ label, value, onChange, required = false, type = "text", placeholder = "" }) {
+  return <label className="block"><span className="block text-sm font-medium mb-1.5">{label}</span><input type={type} required={required} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full px-3 py-2 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary" /></label>
+}
+
+function FilterSelect({ label, value, onChange, options }) {
+  return <label className="block"><span className="block text-xs font-medium mb-1.5">{label}</span><select value={value} onChange={(event) => onChange(event.target.value)} className="w-full px-3 py-2 bg-card border border-border rounded-lg text-sm"><option value="">All</option>{options.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+}
+
+function MultiSelect({ label, options, selected, onToggle }) {
+  return <div><p className="text-sm font-medium mb-2">{label}</p><div className="max-h-40 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-2 p-2 bg-muted/20 rounded-lg">{options.map((option) => <label key={option} className="flex items-center gap-2 p-2 bg-card border border-border rounded-lg text-sm"><input type="checkbox" checked={selected.includes(option)} onChange={() => onToggle(option)} />{option}</label>)}{options.length === 0 && <span className="text-xs text-muted-foreground p-2">No options found.</span>}</div></div>
+}
+
+function ImageField({ label, type, link, onType, onLink, onFile }) {
+  return <div><p className="text-sm font-medium mb-2">{label}</p><div className="flex gap-2 mb-2"><button type="button" onClick={() => onType("upload")} className={`px-3 py-1.5 text-sm rounded-lg ${type === "upload" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>Upload</button><button type="button" onClick={() => onType("link")} className={`px-3 py-1.5 text-sm rounded-lg ${type === "link" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>Link</button></div>{type === "upload" ? <input type="file" accept="image/*" onChange={(event) => onFile(event.target.files?.[0] || null)} className="w-full text-sm" /> : <input value={link} onChange={(event) => onLink(event.target.value)} placeholder="https://..." className="w-full px-3 py-2 bg-background border border-border rounded-lg" />}</div>
 }
