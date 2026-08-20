@@ -12,9 +12,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Compatibility wrapper around the mature YouTube extraction engine.
  *
- * The rest of Easy Education still consumes Result/Variant/Format, but the URLs now come from an
- * extractor that handles YouTube player JS, signatureCipher and n-parameter deobfuscation instead
- * of our previous hand-written client-profile guesses.
+ * The rest of Easy Education still consumes Result/Variant/Format, but the URLs normally come from
+ * NewPipe, which handles YouTube player JS, signatureCipher and n-parameter deobfuscation. A narrow
+ * iOS/Android player fallback is used only when NewPipe specifically rejects a VISIONOS response.
  */
 class YoutubeDeviceResolver(
     private val context: Context = FirebaseApp.getInstance().applicationContext,
@@ -86,7 +86,20 @@ class YoutubeDeviceResolver(
     fun resolve(videoUrl: String): Result {
         val videoId = extractVideoId(videoUrl)
             ?: throw IllegalArgumentException("Invalid YouTube video URL")
-        val info = YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
+        val info = try {
+            YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
+        } catch (error: Throwable) {
+            if (!isVisionOsInvalidResponse(error)) throw error
+            return try {
+                YoutubeVisionFallbackResolver(http).resolve(videoId)
+            } catch (fallbackError: Throwable) {
+                throw IllegalStateException(
+                    "YouTube rejected the VISIONOS player response and the safe iOS/Android fallback also failed. " +
+                        (fallbackError.message ?: "Try again later."),
+                    error,
+                )
+            }
+        }
 
         val progressive = info.videoStreams
             .asSequence()
@@ -276,6 +289,21 @@ class YoutubeDeviceResolver(
             "ANDROID" -> ANDROID_USER_AGENT
             else -> DOWNLOAD_USER_AGENT
         }
+    }
+
+    private fun isVisionOsInvalidResponse(error: Throwable): Boolean {
+        var current: Throwable? = error
+        repeat(8) {
+            val message = current?.message.orEmpty()
+            if (
+                message.contains("VISIONOS", ignoreCase = true) &&
+                (message.contains("response is not valid", ignoreCase = true) ||
+                    message.contains("player response", ignoreCase = true))
+            ) return true
+            current = current?.cause
+            if (current == null) return false
+        }
+        return false
     }
 
     private fun parseHeight(value: String?): Int = value.orEmpty()
