@@ -193,6 +193,21 @@ object NativePlaybackSourceResolver {
                 ?: items.filter { heightOf(it) <= requestedHeight }.maxByOrNull(heightOf)
                 ?: items.minByOrNull(heightOf)
 
+        // Rumble's direct HLS CDN URLs can reject Android clients with HTTP 403 even when the
+        // metadata request itself succeeded. Prefer the authenticated Easy Education MP4 range
+        // proxy so playback uses the server-side Rumble request context that already resolved the
+        // video successfully. Keep direct HLS only as a last fallback for videos without MP4.
+        choose(mp4) { it.height }?.let { selectedMp4 ->
+            val downloadToken = payload.optString("downloadToken")
+            require(downloadToken.isNotBlank()) { "Playback authorization expired. Reopen the class." }
+            return NativeOnlinePlaybackSource.RumbleProxy(
+                classId = classId,
+                height = selectedMp4.height,
+                totalBytes = selectedMp4.bytes,
+                downloadToken = downloadToken,
+            )
+        }
+
         choose(hls) { it.height }?.let { selected ->
             return NativeOnlinePlaybackSource.Direct(
                 url = selected.url,
@@ -205,16 +220,7 @@ object NativePlaybackSourceResolver {
             )
         }
 
-        val selectedMp4 = choose(mp4) { it.height }
-            ?: error("No native Rumble stream is available")
-        val downloadToken = payload.optString("downloadToken")
-        require(downloadToken.isNotBlank()) { "Playback authorization expired. Reopen the class." }
-        return NativeOnlinePlaybackSource.RumbleProxy(
-            classId = classId,
-            height = selectedMp4.height,
-            totalBytes = selectedMp4.bytes,
-            downloadToken = downloadToken,
-        )
+        error("No native Rumble stream is available")
     }
 
     private fun isRumblePage(value: String): Boolean = runCatching {
