@@ -22,6 +22,9 @@ class EasyEducationApplication : Application(), Application.ActivityLifecycleCal
                 cookies.setAcceptCookie(true)
                 cookies.setAcceptThirdPartyCookies(view, true)
                 view.settings.mediaPlaybackRequiresUserGesture = false
+                if (view.webViewClient !is RumbleFixingWebViewClient) {
+                    view.webViewClient = RumbleFixingWebViewClient(view.webViewClient)
+                }
             }
             is ViewGroup -> {
                 for (index in 0 until view.childCount) {
