@@ -96,8 +96,8 @@ object PersistentNativePlayer {
         val exo = player(app)
         val key = warmKey(classId, sourceUrl, requestedHeight)
         val sameLogicalSession = matches(classId, sourceUrl)
-        val sameSession = !forceRefresh && sameLogicalSession &&
-            activeHeight == requestedHeight && exo.mediaItemCount > 0
+        val hadCurrentMedia = sameLogicalSession && exo.mediaItemCount > 0
+        val sameSession = !forceRefresh && hadCurrentMedia && activeHeight == requestedHeight
         if (sameSession) {
             withContext(Dispatchers.Main.immediate) {
                 if (autoPlay) exo.playWhenReady = true
@@ -113,9 +113,7 @@ object PersistentNativePlayer {
         }
 
         val resumePosition = withContext(Dispatchers.Main.immediate) {
-            val current = if (sameLogicalSession && exo.mediaItemCount > 0) {
-                exo.currentPosition.coerceAtLeast(0L)
-            } else 0L
+            val current = if (hadCurrentMedia) exo.currentPosition.coerceAtLeast(0L) else 0L
             saveActivePosition(app, exo)
             current
         }
@@ -146,7 +144,7 @@ object PersistentNativePlayer {
         withContext(Dispatchers.Main.immediate) {
             val savedPosition = app.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
                 .getLong("class:$classId", 0L)
-            val targetPosition = maxOf(resumePosition, savedPosition).coerceAtLeast(0L)
+            val targetPosition = if (hadCurrentMedia) resumePosition else savedPosition.coerceAtLeast(0L)
             exo.setMediaSource(mediaSource)
             exo.prepare()
             if (targetPosition > 0L) exo.seekTo(targetPosition)
