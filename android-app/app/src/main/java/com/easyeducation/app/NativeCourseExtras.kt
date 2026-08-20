@@ -391,7 +391,35 @@ private fun archiveGroups(classes: List<NativeClassItem>): List<NativeArchiveGro
 }
 
 private fun openTelegram(context: Context, url: String) {
-    runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    val original = url.trim()
+    val telegramUri = telegramDeepLink(original)
+    val telegramIntent = Intent(Intent.ACTION_VIEW, telegramUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val canOpenTelegram = telegramIntent.resolveActivity(context.packageManager) != null
+    if (canOpenTelegram) {
+        runCatching { context.startActivity(telegramIntent) }
+        return
+    }
+
+    // Never fall back to the browser. If Telegram is not installed, keep the HTTPS group page
+    // inside Easy Education's own resource viewer instead.
+    if (original.startsWith("http://", true) || original.startsWith("https://", true)) {
+        NativeResourceViewerActivity.open(context, "Telegram group", original)
+    }
+}
+
+private fun telegramDeepLink(value: String): Uri {
+    val raw = value.trim()
+    if (raw.startsWith("tg://", ignoreCase = true)) return Uri.parse(raw)
+    val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return Uri.parse(raw)
+    val host = uri.host?.lowercase().orEmpty().removePrefix("www.")
+    if (host != "t.me" && host != "telegram.me") return uri
+
+    val segments = uri.pathSegments.filter { it.isNotBlank() }
+    if (segments.isEmpty()) return Uri.parse("tg://resolve")
+    val first = segments.first()
+    return when {
+        first.startsWith("+") -> Uri.parse("tg://join?invite=${Uri.encode(first.removePrefix("+"))}")
+        first.equals("joinchat", true) && segments.size > 1 -> Uri.parse("tg://join?invite=${Uri.encode(segments[1])}")
+        else -> Uri.parse("tg://resolve?domain=${Uri.encode(first)}")
     }
 }
