@@ -90,10 +90,18 @@ object PersistentNativePlayer {
         }
 
         val now = System.currentTimeMillis()
-        val warmed = if (forceRefresh) null
-        else warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
-        val resolved = warmed?.source
-            ?: if (forceRefresh) null else inFlightResolves[key]?.await()?.also { inFlightResolves.remove(key) }
+        val warmed = if (forceRefresh) {
+            null
+        } else {
+            warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
+        }
+        val inFlight = if (forceRefresh) {
+            null
+        } else {
+            inFlightResolves[key]?.await()?.also { inFlightResolves.remove(key) }
+        }
+        val resolved: NativeOnlinePlaybackSource = warmed?.source
+            ?: inFlight
             ?: withContext(Dispatchers.IO) {
                 NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
             }
