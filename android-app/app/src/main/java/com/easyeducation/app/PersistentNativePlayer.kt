@@ -69,10 +69,12 @@ object PersistentNativePlayer {
         sourceUrl: String,
         requestedHeight: Int,
         autoPlay: Boolean,
+        forceRefresh: Boolean = false,
     ): ExoPlayer = mutex.withLock {
         val app = context.applicationContext
         val exo = player(app)
-        val sameSession = matches(classId, sourceUrl, requestedHeight) && exo.mediaItemCount > 0
+        val key = warmKey(classId, sourceUrl, requestedHeight)
+        val sameSession = !forceRefresh && matches(classId, sourceUrl, requestedHeight) && exo.mediaItemCount > 0
         if (sameSession) {
             withContext(Dispatchers.Main.immediate) {
                 if (autoPlay) exo.playWhenReady = true
@@ -82,11 +84,16 @@ object PersistentNativePlayer {
 
         withContext(Dispatchers.Main.immediate) { saveActivePosition(app, exo) }
 
-        val key = warmKey(classId, sourceUrl, requestedHeight)
+        if (forceRefresh) {
+            warmSources.remove(key)
+            inFlightResolves.remove(key)?.cancel()
+        }
+
         val now = System.currentTimeMillis()
-        val warmed = warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
+        val warmed = if (forceRefresh) null
+        else warmSources.remove(key)?.takeIf { now - it.createdAt <= WARM_SOURCE_TTL_MS }
         val resolved = warmed?.source
-            ?: inFlightResolves[key]?.await()?.also { inFlightResolves.remove(key) }
+            ?: if (forceRefresh) null else inFlightResolves[key]?.await()?.also { inFlightResolves.remove(key) }
             ?: withContext(Dispatchers.IO) {
                 NativePlaybackSourceResolver.resolveOnline(classId, sourceUrl, requestedHeight)
             }
