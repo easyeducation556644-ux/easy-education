@@ -25,7 +25,13 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == userId;
-      allow update: if isOwner(userId) || isAdmin();
+      allow update: if isAdmin() ||
+                       (isOwner(userId) &&
+                        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                          'allowScreenCapture',
+                          'screenCaptureAccessUpdatedAt',
+                          'screenCaptureAccessUpdatedBy'
+                        ]));
       allow delete: if isAdmin();
     }
 
