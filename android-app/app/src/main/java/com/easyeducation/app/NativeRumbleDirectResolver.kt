@@ -215,7 +215,15 @@ internal class NativeRumbleDirectResolver(
             )
         }
         return variants.ifEmpty {
-            listOf(Stream(candidate.url, candidate.height, hls = true, candidate.contentLength, candidate.bitrate))
+            listOf(
+                Stream(
+                    url = candidate.url,
+                    height = candidate.height,
+                    hls = true,
+                    contentLength = candidate.contentLength,
+                    bitrate = candidate.bitrate,
+                ),
+            )
         }
     }
 
@@ -251,8 +259,8 @@ internal class NativeRumbleDirectResolver(
     private fun probeLength(url: String, videoUrl: String): Long {
         val request = Request.Builder()
             .url(url)
-            .header("Range", "bytes=0-0")
             .headers(rumbleHeaders(videoUrl))
+            .header("Range", "bytes=0-0")
             .get()
             .build()
         return http.newCall(request).execute().use { response ->
