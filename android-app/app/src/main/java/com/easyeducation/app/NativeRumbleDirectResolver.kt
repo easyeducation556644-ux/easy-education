@@ -226,7 +226,7 @@ internal class NativeRumbleDirectResolver(
         private const val MAX_HEIGHT = 2160
         private val EMBED_PATH = Regex("^/embed/(?:[0-9a-z]+\\.)?([0-9a-z]+)", RegexOption.IGNORE_CASE)
         private val EMBED_URL = Regex(
-            "(?:https?:)?(?:\\\\?/){2}(?:www\\.)?rumble\\.com(?:\\\\?/)embed(?:\\\\?)/(?:[0-9a-z]+\\.)?([0-9a-z]+)",
+            "(?:https?:)?//(?:www\\.)?rumble\\.com/embed/(?:[0-9a-z]+\\.)?([0-9a-z]+)",
             RegexOption.IGNORE_CASE,
         )
         private val HEIGHT_HINT = Regex("(\\d{3,4})p", RegexOption.IGNORE_CASE)
