@@ -3,7 +3,6 @@
 package com.easyeducation.app
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -385,7 +384,7 @@ fun YoutubeClassWatchPage(
             views = views,
             onDismiss = { descriptionSheet = false },
             onOpenResource = { resource ->
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resource.url))) }
+                NativeResourceViewerActivity.open(context, resource.label, resource.url)
             },
         )
     }
@@ -471,7 +470,7 @@ fun YoutubeClassWatchPage(
                 } else classItem.resourceLinks.forEach { resource ->
                     Surface(
                         modifier = Modifier.fillMaxWidth().clickable {
-                            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(resource.url))) }
+                            NativeResourceViewerActivity.open(context, resource.label, resource.url)
                         },
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(13.dp),
