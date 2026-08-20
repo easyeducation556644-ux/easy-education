@@ -51,8 +51,9 @@ class NativeRepository(context: Context) {
     suspend fun cachedCourses(uid: String): List<NativeCourse> = withContext(Dispatchers.IO) {
         val orderedEnrollments = cachedEnrollments(uid)
             .sortedWith(
-                compareBy<NativeEnrollment> { if (it.enrolledAt > 0L) it.enrolledAt else Long.MAX_VALUE }
-                    .thenBy { it.id },
+                compareByDescending<NativeEnrollment> {
+                    if (it.enrolledAt > 0L) it.enrolledAt else Long.MIN_VALUE
+                }.thenByDescending { it.id },
             )
         val seen = linkedSetOf<String>()
         orderedEnrollments.mapNotNull { enrollment ->
@@ -78,7 +79,7 @@ class NativeRepository(context: Context) {
         val canonicalCourseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.toMutableSet()
 
         // Payments are also used as an ordering source because an enrollment document can be
-        // rewritten later. My Courses should keep the first purchase/enrollment order, not title order.
+        // rewritten later. My Courses keeps the actual purchase/enrollment timeline instead of title order.
         val approvedPayments = firestore.collection("payments")
             .whereEqualTo("userId", uid)
             .whereEqualTo("status", "approved")
