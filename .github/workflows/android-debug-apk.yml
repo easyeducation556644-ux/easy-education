@@ -2,7 +2,7 @@ name: Android signed APK
 
 on:
   push:
-    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download"]
+    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download", "agent/native-2.10.10-long-session-recovery"]
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
   pull_request:
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
@@ -33,8 +33,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Native Android 2.10.9 signed APK verification is running",
-              "context": "Android native 2.10.9 signed APK",
+              "description": "Native Android 2.10.10 signed APK verification is running",
+              "context": "Android native 2.10.10 signed APK",
           }))
           PY
           curl --fail-with-body --silent --show-error \
@@ -94,8 +94,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Native Android 2.10.9 release build and APK signature verification",
-              "context": "Android native 2.10.9 signed APK",
+              "description": "Native Android 2.10.10 release build and APK signature verification",
+              "context": "Android native 2.10.10 signed APK",
           }))
           PY
           curl --fail-with-body --silent --show-error \
