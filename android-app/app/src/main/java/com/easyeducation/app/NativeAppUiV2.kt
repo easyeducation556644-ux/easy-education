@@ -324,8 +324,6 @@ fun EasyEducationNativeAppV2(
 private fun NavHostController.navigateHome(currentRoute: String) {
     if (currentRoute == "home") return
     if (popBackStack("home", inclusive = false)) return
-    // Notification/deep-link launches can start without a Home entry. Replace that isolated start
-    // destination so Home is still deterministic instead of leaving the user on the child screen.
     navigate("home") {
         popUpTo(graph.startDestinationId) {
             inclusive = true
@@ -338,7 +336,7 @@ private fun NavHostController.navigateHome(currentRoute: String) {
 
 private fun String.inCourseRoutes(): Boolean =
     startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
-        startsWith("past-classes")
+        startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes")
 
 private fun nativeStartRoute(initialPath: String?): String {
     val path = initialPath?.trim().orEmpty()
@@ -442,36 +440,24 @@ private fun V2NavHost(
         startDestination = startRoute,
         modifier = Modifier.fillMaxSize(),
         enterTransition = {
-            if (targetState.destination.route == CLASS_ROUTE) {
-                EnterTransition.None
-            } else {
-                fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
-                    slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> fullWidth / 16 }
-            }
+            if (targetState.destination.route == CLASS_ROUTE) EnterTransition.None
+            else fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> fullWidth / 16 }
         },
         exitTransition = {
-            if (targetState.destination.route == CLASS_ROUTE) {
-                ExitTransition.None
-            } else {
-                fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
-                    slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> -fullWidth / 30 }
-            }
+            if (targetState.destination.route == CLASS_ROUTE) ExitTransition.None
+            else fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> -fullWidth / 30 }
         },
         popEnterTransition = {
-            if (initialState.destination.route == CLASS_ROUTE) {
-                EnterTransition.None
-            } else {
-                fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
-                    slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> -fullWidth / 16 }
-            }
+            if (initialState.destination.route == CLASS_ROUTE) EnterTransition.None
+            else fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
+                slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { fullWidth -> -fullWidth / 16 }
         },
         popExitTransition = {
-            if (initialState.destination.route == CLASS_ROUTE) {
-                ExitTransition.None
-            } else {
-                fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
-                    slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> fullWidth / 30 }
-            }
+            if (initialState.destination.route == CLASS_ROUTE) ExitTransition.None
+            else fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
+                slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { fullWidth -> fullWidth / 30 }
         },
     ) {
         composable("home") { V2Home(nav, viewModel, state) }
@@ -483,16 +469,33 @@ private fun V2NavHost(
             "past-classes/{courseId}",
             listOf(navArgument("courseId") { type = NavType.StringType }),
         ) { entry ->
-            V2PastClassPage(
-                nav = nav,
-                viewModel = viewModel,
-                state = state,
-                courseId = entry.arguments?.getString("courseId").orEmpty(),
-            )
+            V2PastClassPage(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty())
         }
         composable("add-course") { V2AddCourse(nav, viewModel, state) }
         composable("course/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->
             V2Course(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty())
+        }
+        composable(
+            "archive/{courseId}",
+            listOf(navArgument("courseId") { type = NavType.StringType }),
+        ) { entry ->
+            NativeArchiveCourseScreen(nav, state, entry.arguments?.getString("courseId").orEmpty())
+        }
+        composable(
+            "archive-chapter/{courseId}/{subject}/{chapter}",
+            listOf(
+                navArgument("courseId") { type = NavType.StringType },
+                navArgument("subject") { type = NavType.StringType },
+                navArgument("chapter") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            NativeArchiveChapterScreen(
+                nav = nav,
+                state = state,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+                subject = Uri.decode(entry.arguments?.getString("subject").orEmpty()),
+                chapter = Uri.decode(entry.arguments?.getString("chapter").orEmpty()),
+            )
         }
         composable(
             "subject/{courseId}/{subject}",
@@ -536,12 +539,11 @@ private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state:
     val context = LocalContext.current
     val ready = state.downloads.count { it.state == "completed" }
     LaunchedEffect(state.courses.map { it.id }) {
-        // Prime summary cards from SQLite first. NativeRepository only reaches Firestore when a
-        // course has never been cached, so Home stays cheap and remains useful offline.
         state.courses.take(4).forEach { course -> viewModel.loadCourse(course.id) }
     }
     val cachedClasses = state.courseContent.values
         .flatMap { it.classes }
+        .filterNot { it.isArchived }
         .distinctBy { it.id }
     val latestClasses = cachedClasses
         .filter { it.courseId.isNotBlank() }
@@ -772,21 +774,13 @@ private fun V2PastCourses(nav: NavHostController, viewModel: NativeAppViewModel,
     LaunchedEffect(state.courses.isEmpty(), state.online) {
         if (state.courses.isEmpty() && state.online) viewModel.refreshOnline()
     }
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, "Past classes") }
         item {
             V2OutlinedCard {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Icon(
-                            Icons.Default.History,
-                            null,
-                            Modifier.padding(11.dp).size(25.dp),
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
+                        Icon(Icons.Default.History, null, Modifier.padding(11.dp).size(25.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
@@ -803,14 +797,9 @@ private fun V2PastCourses(nav: NavHostController, viewModel: NativeAppViewModel,
         }
         if (state.courses.isEmpty()) {
             item {
-                V2Empty(
-                    if (state.online) "No enrolled course is available yet. Add a course, then sync again."
-                    else "No course is cached on this device. Connect once to load your enrollments.",
-                )
+                V2Empty(if (state.online) "No enrolled course is available yet. Add a course, then sync again." else "No course is cached on this device. Connect once to load your enrollments.")
             }
-            if (state.online) {
-                item { Button(onClick = { nav.navigate("add-course") }, shape = V2Pill) { Text("Add a course") } }
-            }
+            if (state.online) item { Button(onClick = { nav.navigate("add-course") }, shape = V2Pill) { Text("Add a course") } }
         } else {
             items(state.courses, key = { "past-course-${it.id}" }) { course ->
                 V2LearningRow(course.title, course.thumbnailUrl, Icons.Default.History) {
@@ -848,19 +837,18 @@ private fun V2PastClassPage(
     }
 
     val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
-    val classes = content.classes.sortedWith(
-        compareByDescending<NativeClassItem> { it.publishedAt }
-            .thenByDescending { it.order }
-            .thenBy { it.title.lowercase() },
-    )
+    val classes = content.classes
+        .filterNot { it.isArchived }
+        .sortedWith(
+            compareByDescending<NativeClassItem> { it.publishedAt }
+                .thenByDescending { it.order }
+                .thenBy { it.title.lowercase() },
+        )
     val pageCount = maxOf(1, ceil(classes.size / PAST_CLASS_PAGE_SIZE.toDouble()).toInt())
     var page by rememberSaveable(courseId) { mutableIntStateOf(0) }
     LaunchedEffect(pageCount) { page = page.coerceIn(0, pageCount - 1) }
 
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Past classes") }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -873,71 +861,39 @@ private fun V2PastClassPage(
                     )
                 }
                 if (state.online) {
-                    IconButton(onClick = { viewModel.loadCourse(courseId, force = true) }) {
-                        Icon(Icons.Default.Refresh, "Refresh classes")
-                    }
+                    IconButton(onClick = { viewModel.loadCourse(courseId, force = true) }) { Icon(Icons.Default.Refresh, "Refresh classes") }
                 }
             }
         }
         if (classes.isEmpty()) {
-            item {
-                V2Empty(
-                    if (state.online) "No class is available in this course yet."
-                    else "No class from this course is cached. Connect and retry.",
-                )
-            }
+            item { V2Empty(if (state.online) "No class is available in this course yet." else "No class from this course is cached. Connect and retry.") }
         } else {
             item(key = "past-class-page-$courseId") {
                 AnimatedContent(
                     targetState = page,
                     transitionSpec = {
                         val direction = if (targetState > initialState) 1 else -1
-                        (slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { width ->
-                            direction * width / 4
-                        } + fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
-                            (slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { width ->
-                                -direction * width / 5
-                            } + fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)))
+                        (slideInHorizontally(animationSpec = tween(APP_MOTION_EMPHASIZED_MS)) { width -> direction * width / 4 } +
+                            fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
+                            (slideOutHorizontally(animationSpec = tween(APP_MOTION_STANDARD_MS)) { width -> -direction * width / 5 } +
+                                fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)))
                     },
                     label = "past class page",
                 ) { activePage ->
-                    Column(
-                        Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(11.dp),
-                    ) {
-                        classes.drop(activePage * PAST_CLASS_PAGE_SIZE)
-                            .take(PAST_CLASS_PAGE_SIZE)
-                            .forEach { classItem ->
-                                V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
-                            }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                        classes.drop(activePage * PAST_CLASS_PAGE_SIZE).take(PAST_CLASS_PAGE_SIZE).forEach { classItem ->
+                            V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
+                        }
                     }
                 }
             }
             item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedButton(
-                        onClick = { page -= 1 },
-                        enabled = page > 0,
-                        shape = V2Pill,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Previous") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { page -= 1 }, enabled = page > 0, shape = V2Pill, modifier = Modifier.weight(1f)) { Text("Previous") }
                     Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surfaceVariant) {
-                        Text(
-                            "${page + 1} / $pageCount",
-                            Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Text("${page + 1} / $pageCount", Modifier.padding(horizontal = 13.dp, vertical = 10.dp), fontWeight = FontWeight.Bold)
                     }
-                    Button(
-                        onClick = { page += 1 },
-                        enabled = page < pageCount - 1,
-                        shape = V2Pill,
-                        modifier = Modifier.weight(1f),
-                    ) {
+                    Button(onClick = { page += 1 }, enabled = page < pageCount - 1, shape = V2Pill, modifier = Modifier.weight(1f)) {
                         Text("Next")
                         Spacer(Modifier.width(4.dp))
                         Icon(Icons.Default.ArrowForward, null, Modifier.size(16.dp))
@@ -984,14 +940,10 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
     }
     LaunchedEffect(awaitingEnrollment, courseIds) {
         val baseline = enrollmentBaseline ?: return@LaunchedEffect
-        if (awaitingEnrollment && courseIds.any { it !in baseline }) {
-            returnToNativeCourses()
-        }
+        if (awaitingEnrollment && courseIds.any { it !in baseline }) returnToNativeCourses()
     }
 
-    BackHandler(enabled = canGoBack) {
-        browser?.goBack()
-    }
+    BackHandler(enabled = canGoBack) { browser?.goBack() }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -1007,10 +959,7 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             V2Back(nav, "Add course")
         }
         Box(Modifier.fillMaxSize()) {
@@ -1057,11 +1006,7 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                                 }
                             }
 
-                            override fun onReceivedError(
-                                view: WebView?,
-                                request: WebResourceRequest?,
-                                error: WebResourceError?,
-                            ) {
+                            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                                 if (request?.isForMainFrame == true) {
                                     loading = false
                                     pageError = "Check your connection and try again."
@@ -1086,9 +1031,7 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                     }
                 },
                 update = { webView ->
-                    if (state.online && webView.url.isNullOrBlank() && pageError == null) {
-                        webView.loadUrl("$WEB_ORIGIN/courses")
-                    }
+                    if (state.online && webView.url.isNullOrBlank() && pageError == null) webView.loadUrl("$WEB_ORIGIN/courses")
                 },
             )
             val overlayState = when {
@@ -1100,10 +1043,8 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                 targetState = overlayState,
                 modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
-                    (fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) +
-                        scaleIn(initialScale = 0.985f, animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
-                        (fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) +
-                            scaleOut(targetScale = 0.99f, animationSpec = tween(APP_MOTION_QUICK_MS)))
+                    (fadeIn(animationSpec = tween(APP_MOTION_STANDARD_MS)) + scaleIn(initialScale = 0.985f, animationSpec = tween(APP_MOTION_STANDARD_MS))) togetherWith
+                        (fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) + scaleOut(targetScale = 0.99f, animationSpec = tween(APP_MOTION_QUICK_MS)))
                 },
                 label = "course store state",
             ) { target ->
@@ -1127,23 +1068,17 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
             AnimatedContent(
                 targetState = loading && overlayState == "ready",
                 modifier = Modifier.align(Alignment.TopCenter),
-                transitionSpec = {
-                    fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)) togetherWith
-                        fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS))
-                },
+                transitionSpec = { fadeIn(animationSpec = tween(APP_MOTION_QUICK_MS)) togetherWith fadeOut(animationSpec = tween(APP_MOTION_QUICK_MS)) },
                 label = "course store loading",
             ) { showProgress ->
-                if (showProgress) LinearProgressIndicator(Modifier.fillMaxWidth())
-                else Spacer(Modifier.fillMaxWidth().height(4.dp))
+                if (showProgress) LinearProgressIndicator(Modifier.fillMaxWidth()) else Spacer(Modifier.fillMaxWidth().height(4.dp))
             }
             AnimatedContent(
                 targetState = awaitingEnrollment,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
                 transitionSpec = {
-                    (fadeIn(tween(APP_MOTION_QUICK_MS)) +
-                        slideInVertically(tween(APP_MOTION_STANDARD_MS)) { -it }) togetherWith
-                        (fadeOut(tween(APP_MOTION_QUICK_MS)) +
-                            slideOutVertically(tween(APP_MOTION_STANDARD_MS)) { -it })
+                    (fadeIn(tween(APP_MOTION_QUICK_MS)) + slideInVertically(tween(APP_MOTION_STANDARD_MS)) { -it }) togetherWith
+                        (fadeOut(tween(APP_MOTION_QUICK_MS)) + slideOutVertically(tween(APP_MOTION_STANDARD_MS)) { -it })
                 },
                 label = "course enrollment return",
             ) { showEnrollmentProgress ->
@@ -1155,9 +1090,7 @@ private fun V2AddCourse(nav: NavHostController, viewModel: NativeAppViewModel, s
                             Text("Adding course to your app…", style = MaterialTheme.typography.labelMedium)
                         }
                     }
-                } else {
-                    Spacer(Modifier.size(0.dp))
-                }
+                } else Spacer(Modifier.size(0.dp))
             }
         }
     }
@@ -1189,9 +1122,7 @@ private fun V2WebOffline(title: String, message: String, onRetry: () -> Unit) {
 @Composable
 private fun V2CourseCard(course: NativeCourse, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth()
-            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
-            .clickable(onClick = onClick),
+        Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)).clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(14.dp),
@@ -1224,10 +1155,19 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
     if (content == null) { V2Loading("Loading course…"); return }
     if (!(state.online || viewModel.hasOfflineLease(courseId))) { V2Locked(nav); return }
     val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
+    val regularClasses = content.classes.filterNot { it.isArchived }
+    val hasArchive = content.classes.any { it.isArchived }
+
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Course") }
         course?.thumbnailUrl?.takeIf { it.isNotBlank() }?.let { image ->
             item { AsyncImage(image, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 7f).clip(RoundedCornerShape(14.dp))) }
+        }
+        course?.takeIf { it.telegramLink.isNotBlank() }?.let { telegramCourse ->
+            item { NativeTelegramJoinCard(telegramCourse, state.online) }
+        }
+        if (hasArchive) {
+            item { NativeArchiveEntryCard { nav.navigate("archive/$courseId") } }
         }
         when {
             content.subjects.isNotEmpty() -> {
@@ -1246,7 +1186,8 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
             }
             else -> {
                 item { V2Section("Classes") }
-                items(content.classes, key = { it.id }) { classItem ->
+                if (regularClasses.isEmpty()) item { V2Empty("No active classes are available yet.") }
+                else items(regularClasses, key = { it.id }) { classItem ->
                     V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
                 }
             }
@@ -1260,7 +1201,9 @@ private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: St
     val context = LocalContext.current
     val content = state.courseContent[courseId] ?: run { V2Loading("Loading subject…"); return }
     val chapters = content.chapters.filter { it.subject.isBlank() || it.subject.equals(subject, true) }.distinctBy { it.title.lowercase() }
-    val classes = content.classes.filter { classItem -> classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) } }
+    val classes = content.classes.filter { classItem ->
+        !classItem.isArchived && (classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) })
+    }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, subject) }
         if (chapters.isNotEmpty()) {
@@ -1272,7 +1215,8 @@ private fun V2Subject(nav: NavHostController, state: NativeUiState, courseId: St
             }
         } else {
             item { V2Section("Classes") }
-            items(classes, key = { it.id }) { classItem ->
+            if (classes.isEmpty()) item { V2Empty("No active classes are available in this subject yet.") }
+            else items(classes, key = { it.id }) { classItem ->
                 V2ClassRow(classItem) { openClass(context, nav, courseId, classItem.id) }
             }
         }
@@ -1285,7 +1229,8 @@ private fun V2Chapter(nav: NavHostController, state: NativeUiState, courseId: St
     val context = LocalContext.current
     val content = state.courseContent[courseId] ?: run { V2Loading("Loading chapter…"); return }
     val classes = content.classes.filter { classItem ->
-        classItem.chapters.any { it.equals(chapter, true) } &&
+        !classItem.isArchived &&
+            classItem.chapters.any { it.equals(chapter, true) } &&
             (subject.isBlank() || classItem.subjects.isEmpty() || classItem.subjects.any { it.equals(subject, true) })
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
@@ -1310,9 +1255,7 @@ private fun openClass(context: Context, nav: NavHostController, courseId: String
 @Composable
 private fun V2LearningRow(title: String, imageUrl: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth()
-            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
-            .clickable(onClick = onClick),
+        Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)).clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(13.dp),
@@ -1329,9 +1272,7 @@ private fun V2LearningRow(title: String, imageUrl: String, icon: androidx.compos
 @Composable
 private fun V2ClassRow(classItem: NativeClassItem, onClick: () -> Unit) {
     Card(
-        Modifier.fillMaxWidth()
-            .animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS))
-            .clickable(onClick = onClick),
+        Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(APP_MOTION_STANDARD_MS)).clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(13.dp),
@@ -1424,8 +1365,12 @@ private fun V2Downloads(viewModel: NativeAppViewModel, state: NativeUiState) {
                                 enabled = viewModel.hasOfflineLease(task.courseId),
                                 shape = V2Pill,
                             ) { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(5.dp)); Text("Play") }
-                            "downloading", "queued" -> OutlinedButton(onClick = { viewModel.pauseDownload(context, task.id) }, shape = V2Pill) { Icon(Icons.Default.Pause, null); Spacer(Modifier.width(5.dp)); Text("Pause") }
-                            else -> OutlinedButton(onClick = { viewModel.resumeDownload(context, task.id) }, shape = V2Pill) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(5.dp)); Text("Resume") }
+                            "downloading", "queued" -> OutlinedButton(onClick = { viewModel.pauseDownload(context, task.id) }, shape = V2Pill) {
+                                Icon(Icons.Default.Pause, null); Spacer(Modifier.width(5.dp)); Text("Pause")
+                            }
+                            else -> OutlinedButton(onClick = { viewModel.resumeDownload(context, task.id) }, shape = V2Pill) {
+                                Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(5.dp)); Text("Resume")
+                            }
                         }
                         IconButton(onClick = { deleteId = task.id }) { Icon(Icons.Default.Delete, "Delete") }
                     }
@@ -1465,7 +1410,9 @@ private fun V2Profile(
                     if (profilePhoto.isNotBlank()) {
                         AsyncImage(profilePhoto, null, contentScale = ContentScale.Crop, modifier = Modifier.size(56.dp).clip(CircleShape))
                     } else {
-                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) { Icon(Icons.Default.Person, null, Modifier.padding(14.dp).size(28.dp)) }
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Icon(Icons.Default.Person, null, Modifier.padding(14.dp).size(28.dp))
+                        }
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -1480,11 +1427,7 @@ private fun V2Profile(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Logged-in devices", Modifier.weight(1f), fontWeight = FontWeight.Bold)
                 Surface(shape = V2Pill, color = MaterialTheme.colorScheme.surfaceVariant) {
-                    Text(
-                        "${visibleDevices.size} active",
-                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                    )
+                    Text("${visibleDevices.size} active", Modifier.padding(horizontal = 10.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -1500,20 +1443,11 @@ private fun V2Profile(
                             Text(device.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (device.isCurrent) {
                                 Surface(shape = V2Pill, color = MaterialTheme.colorScheme.primaryContainer) {
-                                    Text(
-                                        "This device",
-                                        Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    )
+                                    Text("This device", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                                 }
                             }
                         }
-                        val platform = if (device.osVersion.isNotBlank()) {
-                            "${device.platform.ifBlank { "Android" }} ${device.osVersion}"
-                        } else {
-                            device.platform
-                        }
+                        val platform = if (device.osVersion.isNotBlank()) "${device.platform.ifBlank { "Android" }} ${device.osVersion}" else device.platform
                         if (platform.isNotBlank()) Text(platform, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         val details = listOf(
                             device.appVersion.takeIf { it.isNotBlank() }?.let { "App $it" },
@@ -1521,11 +1455,7 @@ private fun V2Profile(
                             device.language.takeIf { it.isNotBlank() },
                         ).filterNotNull().joinToString(" • ")
                         if (details.isNotBlank()) Text(details, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(
-                            if (device.isCurrent) "Active now" else v2DeviceLastSeen(device.lastSeen),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Text(if (device.isCurrent) "Active now" else v2DeviceLastSeen(device.lastSeen), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -1533,7 +1463,9 @@ private fun V2Profile(
         item {
             V2OutlinedCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Palette, null); Spacer(Modifier.width(8.dp)); Text("Appearance", fontWeight = FontWeight.Bold) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Palette, null); Spacer(Modifier.width(8.dp)); Text("Appearance", fontWeight = FontWeight.Bold)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                         ThemeChoice("System", NativeThemePreferences.SYSTEM, themeMode, onThemeMode, Modifier.weight(1f))
                         ThemeChoice("Light", NativeThemePreferences.LIGHT, themeMode, onThemeMode, Modifier.weight(1f))
@@ -1564,10 +1496,8 @@ private fun ThemeChoice(label: String, mode: String, selected: String, onSelect:
 }
 
 private fun v2DeviceLastSeen(value: String): String {
-    val instant = runCatching { java.time.Instant.parse(value) }.getOrNull()
-        ?: return "Last active time unavailable"
-    val formatted = SimpleDateFormat("dd MMM yyyy • h:mm a", Locale.getDefault())
-        .format(Date.from(instant))
+    val instant = runCatching { java.time.Instant.parse(value) }.getOrNull() ?: return "Last active time unavailable"
+    val formatted = SimpleDateFormat("dd MMM yyyy • h:mm a", Locale.getDefault()).format(Date.from(instant))
     return "Last active $formatted"
 }
 
@@ -1647,9 +1577,7 @@ private fun v2DownloadState(task: SecureDownloadTask): String = when (task.state
 
 private fun classDateLabel(timestamp: Long): String {
     if (timestamp <= 0L) return ""
-    return runCatching {
-        SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(timestamp))
-    }.getOrDefault("")
+    return runCatching { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(timestamp)) }.getOrDefault("")
 }
 
 private fun openWeb(context: android.content.Context, url: String) {
