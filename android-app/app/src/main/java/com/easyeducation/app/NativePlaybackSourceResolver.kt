@@ -15,7 +15,6 @@ import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.net.URI
 import java.util.concurrent.TimeUnit
 
 /**
@@ -147,20 +146,27 @@ object NativePlaybackSourceResolver {
         sourceUrl: String,
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
-        // Primary playback path: resolve and probe Rumble's fresh CDN URL from the actual Android
-        // device. This preserves the native custom player and avoids serverless-IP 403s.
+        // Use the same HLS-first resolver that powers secure Rumble downloads. The older playback
+        // resolver preferred a reachable progressive MP4, but an HTTP-successful MP4 can still
+        // expose no usable Android video frames. HLS is Rumble's canonical adaptive playback path.
         runCatching {
-            RumbleDeviceResolver().resolve(sourceUrl, requestedHeight)
+            NativeRumbleDirectResolver().resolve(sourceUrl, requestedHeight)
         }.getOrNull()?.let { resolved ->
             return NativeOnlinePlaybackSource.Direct(
                 url = resolved.url,
                 hls = resolved.hls,
-                requestHeaders = resolved.requestHeaders,
+                requestHeaders = mapOf(
+                    "User-Agent" to NativeRumbleDirectResolver.RUMBLE_USER_AGENT,
+                    "Accept" to "*/*",
+                    "Accept-Encoding" to "identity",
+                    "Referer" to sourceUrl,
+                    "Origin" to NativeRumbleDirectResolver.RUMBLE_ORIGIN,
+                ),
             )
         }
 
-        // Fallback only: keep the authenticated server path for unusual metadata shapes and for
-        // compatibility with existing download authorization. Playback normally never reaches it.
+        // Compatibility fallback for unusual payloads. The server fallback also chooses HLS before
+        // the progressive range proxy, so a reachable-but-black MP4 is never preferred for playback.
         return resolveRumbleServerFallback(classId, sourceUrl, requestedHeight)
     }
 
@@ -224,6 +230,7 @@ object NativePlaybackSourceResolver {
                     "Accept" to "*/*",
                     "Accept-Encoding" to "identity",
                     "Referer" to sourceUrl,
+                    "Origin" to NativeRumbleDirectResolver.RUMBLE_ORIGIN,
                 ),
             )
         }
