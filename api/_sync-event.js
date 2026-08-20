@@ -1,4 +1,9 @@
-import { requireAuthenticatedUser } from "./utils/firebase-admin.js"
+import {
+  isFullAdminProfile,
+  profileHasAdminPage,
+  profileHasUserAction,
+  requireAuthenticatedUser,
+} from "./utils/firebase-admin.js"
 
 const PUBLIC_COLLECTIONS = new Set([
   "courses",
@@ -23,6 +28,19 @@ const USER_COLLECTIONS = new Set([
   "examAttempts",
   "cqSubmissions",
 ])
+
+const PUBLIC_COLLECTION_PAGE = {
+  courses: "courses",
+  classes: "classes",
+  subjects: "subjects",
+  chapters: "chapters",
+  settings: "settings",
+  categories: "categories",
+  teachers: "teachers",
+  announcements: "announcements",
+  exams: "exams",
+  examQuestions: "exams",
+}
 
 const FEED_LIMIT = 1000
 const ID_PATTERN = /^[A-Za-z0-9_:-]{1,220}$/
@@ -60,11 +78,7 @@ function appendToFeed(currentFeed, event) {
   }
 
   const nextSeq = currentSeq + 1
-  const nextEvent = {
-    ...event,
-    seq: nextSeq,
-    createdAt: Date.now(),
-  }
+  const nextEvent = { ...event, seq: nextSeq, createdAt: Date.now() }
   return {
     duplicate: false,
     feed: {
@@ -136,9 +150,7 @@ export async function publishEnrollmentSync({ db, userId, transactionId, enrolle
       .where("transactionId", "==", transaction)
       .limit(1)
       .get()
-    if (!paymentSnapshot.empty) {
-      events.push({ collection: "payments", docId: paymentSnapshot.docs[0].id })
-    }
+    if (!paymentSnapshot.empty) events.push({ collection: "payments", docId: paymentSnapshot.docs[0].id })
   }
 
   for (const courseId of [...new Set(enrolledCourseIds.filter(Boolean))]) {
@@ -223,6 +235,26 @@ export async function publishTargetedSyncEvent({ db, event, callerUid, isAdmin }
   return { scope: "user", userId, duplicate }
 }
 
+function canPublishPublicEvent(userProfile, event) {
+  if (isFullAdminProfile(userProfile)) return true
+  const page = PUBLIC_COLLECTION_PAGE[event.collection]
+  return Boolean(page && profileHasAdminPage(userProfile, page))
+}
+
+function canPublishUserEvent(userProfile, event) {
+  if (isFullAdminProfile(userProfile)) return true
+  if (event.collection === "payments" || event.collection === "userCourses") {
+    return profileHasAdminPage(userProfile, "payments")
+      || profileHasUserAction(userProfile, "grantCourseAccess")
+      || profileHasUserAction(userProfile, "manageCourseAccess")
+  }
+  if (event.collection === "examResults" || event.collection === "cqSubmissions" || event.collection === "examAttempts") {
+    return profileHasAdminPage(userProfile, "examResults")
+      || profileHasAdminPage(userProfile, "examSubmissions")
+  }
+  return false
+}
+
 export default async function syncEventHandler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST")
@@ -234,12 +266,14 @@ export default async function syncEventHandler(req, res) {
   try {
     const { decodedToken, userProfile, db } = await requireAuthenticatedUser(req)
     const event = normalizeEvent(req.body || {})
-    const isAdmin = userProfile?.role === "admin"
+    const elevated = PUBLIC_COLLECTIONS.has(event.collection)
+      ? canPublishPublicEvent(userProfile, event)
+      : canPublishUserEvent(userProfile, event)
     const result = await publishTargetedSyncEvent({
       db,
       event,
       callerUid: decodedToken.uid,
-      isAdmin,
+      isAdmin: elevated,
     })
     return res.status(200).json({ success: true, ...result })
   } catch (error) {
