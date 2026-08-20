@@ -1,4 +1,4 @@
-release requested at 2026-08-20T12:01:00Z
-source: e3c0fe41faa619d9a7119408686b1f5a2919a4ac
+release requested at 2026-08-20T12:06:00Z
+source: ac933eeea3f84a09f87ad9521f9af0dd9b619726
 version: 2.10.3-native-rumble
-reason: native Rumble playback direct resolver verification
+reason: native Rumble playback direct resolver verification with signed APK status
