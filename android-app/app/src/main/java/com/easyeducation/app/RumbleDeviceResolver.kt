@@ -387,7 +387,7 @@ private class RumbleCookieJar : CookieJar {
 
     @Synchronized
     fun cookieHeader(url: String): String {
-        val httpUrl = runCatching { HttpUrl.get(url) }.getOrNull() ?: return ""
+        val httpUrl = runCatching { Request.Builder().url(url).build().url }.getOrNull() ?: return ""
         return loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
     }
 }
