@@ -44,8 +44,7 @@ sealed interface NativeOnlinePlaybackSource {
 
 object NativePlaybackSourceResolver {
     private const val APP_ORIGIN = "https://easy-education.vercel.app"
-    private const val RUMBLE_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
+    private const val RUMBLE_USER_AGENT = NativeRumbleDirectResolver.RUMBLE_USER_AGENT
 
     fun resolveOnline(
         classId: String,
@@ -142,7 +141,46 @@ object NativePlaybackSourceResolver {
         format.clientVersion.takeIf { it.isNotBlank() }?.let { put("X-YouTube-Client-Version", it) }
     }
 
+    /**
+     * Native playback resolves Rumble on-device first. The previous implementation required the
+     * production Vercel API even to start playback, so an APK built from a newer agent branch could
+     * still fail whenever the web deployment lagged behind. The authenticated service is retained
+     * as a fallback and for the existing secure MP4 proxy contract.
+     */
     private fun resolveRumble(
+        classId: String,
+        sourceUrl: String,
+        requestedHeight: Int,
+    ): NativeOnlinePlaybackSource {
+        val directAttempt = runCatching {
+            NativeRumbleDirectResolver().resolve(sourceUrl, requestedHeight)
+        }
+        directAttempt.getOrNull()?.let { stream ->
+            return NativeOnlinePlaybackSource.Direct(
+                url = stream.url,
+                hls = stream.hls,
+                requestHeaders = rumbleHeaders(sourceUrl),
+            )
+        }
+
+        return runCatching {
+            resolveRumbleViaService(classId, sourceUrl, requestedHeight)
+        }.getOrElse { serviceError ->
+            val directMessage = directAttempt.exceptionOrNull()?.message.orEmpty()
+                .ifBlank { "direct resolver failed" }
+            val fallbackMessage = serviceError.message.orEmpty().ifBlank { "service fallback failed" }
+            error("Rumble playback unavailable. Direct: $directMessage. Fallback: $fallbackMessage")
+        }
+    }
+
+    private fun rumbleHeaders(sourceUrl: String): Map<String, String> = linkedMapOf(
+        "User-Agent" to RUMBLE_USER_AGENT,
+        "Referer" to sourceUrl,
+        "Accept-Encoding" to "identity",
+        "Accept-Language" to "en-US,en;q=0.9",
+    )
+
+    private fun resolveRumbleViaService(
         classId: String,
         sourceUrl: String,
         requestedHeight: Int,
@@ -197,11 +235,7 @@ object NativePlaybackSourceResolver {
             return NativeOnlinePlaybackSource.Direct(
                 url = selected.url,
                 hls = true,
-                requestHeaders = mapOf(
-                    "User-Agent" to RUMBLE_USER_AGENT,
-                    "Referer" to sourceUrl,
-                    "Origin" to "https://rumble.com",
-                ),
+                requestHeaders = rumbleHeaders(sourceUrl),
             )
         }
 
