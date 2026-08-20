@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -31,6 +32,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -70,6 +73,8 @@ fun NativeInlinePlayer(
         mutableStateOf(sourceUrl.isNotBlank() && online && !preparedAtEntry)
     }
     var errorText by remember(classId, sourceUrl) { mutableStateOf<String?>(null) }
+    var refreshGeneration by remember(classId, sourceUrl, requestedHeight) { mutableIntStateOf(0) }
+    var autoRefreshUsed by remember(classId, sourceUrl, requestedHeight) { mutableStateOf(false) }
 
     fun configureInlineSurface(surface: YoutubeStylePlayerView, ctx: Context) {
         surface.setFullscreenPresentation(false)
@@ -164,14 +169,30 @@ fun NativeInlinePlayer(
         }
     }
 
-    LaunchedEffect(classId, sourceUrl, online, requestedHeight) {
+    DisposableEffect(exoPlayer, classId, sourceUrl, online) {
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                if (!online || autoRefreshUsed || !needsFreshSignedSource(error)) return
+                autoRefreshUsed = true
+                loading = true
+                errorText = null
+                refreshGeneration += 1
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose { exoPlayer.removeListener(listener) }
+    }
+
+    LaunchedEffect(classId, sourceUrl, online, requestedHeight, refreshGeneration) {
         if (!online || sourceUrl.isBlank()) {
             loading = false
             errorText = if (sourceUrl.isBlank()) "Video source is unavailable" else null
             return@LaunchedEffect
         }
 
-        val alreadyPrepared = PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
+        val forceRefresh = refreshGeneration > 0
+        val alreadyPrepared = !forceRefresh &&
+            PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) &&
             exoPlayer.mediaItemCount > 0
         // During mini -> watch expansion the destination must lay out its inline host underneath the
         // still-live overlay. Removing the mini here caused the exact decoder-surface flash seen on
@@ -196,12 +217,21 @@ fun NativeInlinePlayer(
                 sourceUrl = sourceUrl,
                 requestedHeight = requestedHeight,
                 autoPlay = true,
+                forceRefresh = forceRefresh,
             )
         }.onSuccess {
             loading = false
+            errorText = null
         }.onFailure { error ->
-            loading = false
-            errorText = friendlyPlayerError(error.message)
+            if (!autoRefreshUsed && needsFreshSignedSource(error)) {
+                autoRefreshUsed = true
+                loading = true
+                errorText = null
+                refreshGeneration += 1
+            } else {
+                loading = false
+                errorText = friendlyPlayerError(error.message)
+            }
         }
     }
 
@@ -272,13 +302,30 @@ private fun Context.findActivity(): Activity? {
     return current as? Activity
 }
 
+private fun needsFreshSignedSource(error: Throwable): Boolean {
+    var current: Throwable? = error
+    repeat(8) {
+        val value = current?.message.orEmpty()
+        if (
+            value.contains("403", true) ||
+            value.contains("HTTP 403", true) ||
+            value.contains("forbidden", true) ||
+            value.contains("access expired", true) ||
+            value.contains("authorization expired", true)
+        ) return true
+        current = current?.cause
+        if (current == null) return false
+    }
+    return false
+}
+
 private fun friendlyPlayerError(message: String?): String {
     val value = message.orEmpty()
     return when {
         value.contains("Unable to resolve host", true) ||
             value.contains("Failed to connect", true) ||
             value.contains("timeout", true) -> "Network problem. Check your connection and try again."
-        value.contains("403", true) -> "Video access expired. Reopen the class to refresh the stream."
+        value.contains("403", true) -> "Video access could not be refreshed. Check your connection and reopen the class."
         value.isBlank() -> "Could not open this video."
         else -> value
     }
