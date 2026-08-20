@@ -282,6 +282,24 @@ class SecureHlsDownloadService : Service() {
     }
 
     private fun resolveRumblePlaylist(task: SecureDownloadTask): SelectedPlaylist {
+        // Native direct resolution first: no dependency on the production web parser revision.
+        runCatching {
+            NativeRumbleDirectResolver(http).resolve(task.sourceUrl, task.height)
+        }.getOrNull()?.takeIf { it.hls }?.let { stream ->
+            val height = stream.height.takeIf { it > 0 } ?: task.height
+            val lines = getText(task, stream.url).lines()
+            return SelectedPlaylist(
+                url = stream.url,
+                lines = lines,
+                height = height,
+                label = if (height > 0) "${height}p" else task.qualityLabel.ifBlank { "Source quality" },
+            )
+        }
+
+        return resolveRumblePlaylistServer(task)
+    }
+
+    private fun resolveRumblePlaylistServer(task: SecureDownloadTask): SelectedPlaylist {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val optionsUrl = APP_ORIGIN + "/api/offline-video?options=1" +
@@ -412,9 +430,18 @@ class SecureHlsDownloadService : Service() {
         }
 
     private fun mediaRequest(task: SecureDownloadTask, url: String): Request {
-        val builder = Request.Builder().url(url).header("User-Agent", MEDIA_USER_AGENT)
-        if (task.sourceKind == "rumble-hls" || isRumblePage(task.sourceUrl)) {
-            builder.header("Referer", task.sourceUrl)
+        val rumble = task.sourceKind == "rumble-hls" || isRumblePage(task.sourceUrl)
+        val builder = Request.Builder()
+            .url(url)
+            .header(
+                "User-Agent",
+                if (rumble) NativeRumbleDirectResolver.RUMBLE_USER_AGENT else MEDIA_USER_AGENT,
+            )
+        if (rumble) {
+            builder
+                .header("Referer", task.sourceUrl)
+                .header("Origin", NativeRumbleDirectResolver.RUMBLE_ORIGIN)
+                .header("Accept-Encoding", "identity")
         }
         return builder.build()
     }
