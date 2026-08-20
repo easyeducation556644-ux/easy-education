@@ -1,7 +1,7 @@
 "use client"
 
 import { Routes, Route, Link, Navigate, useLocation } from "react-router-dom"
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
 import {
   Users,
   BookOpen,
@@ -56,198 +56,184 @@ import ManageAdministration from "./ManageAdministration"
 import ManageSecurityEvents from "./ManageSecurityEvents"
 import { useAuth } from "../../contexts/AuthContext"
 import {
+  ADMIN_PAGE_CATALOG,
   ADMIN_PERMISSION_KEYS,
   getDefaultAdminPath,
   hasAdminPermission,
   isFullAdmin,
 } from "../../lib/adminPermissions"
 
+const ICON_BY_PERMISSION = {
+  [ADMIN_PERMISSION_KEYS.OVERVIEW]: LayoutDashboard,
+  [ADMIN_PERMISSION_KEYS.READ_USAGE]: BarChart3,
+  [ADMIN_PERMISSION_KEYS.ADMINISTRATION]: ShieldCheck,
+  [ADMIN_PERMISSION_KEYS.SECURITY_EVENTS]: ShieldAlert,
+  [ADMIN_PERMISSION_KEYS.NOTIFICATIONS]: Bell,
+  [ADMIN_PERMISSION_KEYS.BAN_ALERTS]: AlertTriangle,
+  [ADMIN_PERMISSION_KEYS.BAN_MANAGEMENT]: Ban,
+  [ADMIN_PERMISSION_KEYS.USERS]: Users,
+  [ADMIN_PERMISSION_KEYS.CATEGORIES]: Grid,
+  [ADMIN_PERMISSION_KEYS.COURSES]: BookOpen,
+  [ADMIN_PERMISSION_KEYS.SUBJECTS]: BookMarked,
+  [ADMIN_PERMISSION_KEYS.CHAPTERS]: BookMarked,
+  [ADMIN_PERMISSION_KEYS.CLASSES]: Video,
+  [ADMIN_PERMISSION_KEYS.CLASS_COMMENTS]: MessageSquare,
+  [ADMIN_PERMISSION_KEYS.EXAMS]: FileQuestion,
+  [ADMIN_PERMISSION_KEYS.EXAM_RESULTS]: BarChart3,
+  [ADMIN_PERMISSION_KEYS.EXAM_SUBMISSIONS]: FileQuestion,
+  [ADMIN_PERMISSION_KEYS.TEACHERS]: GraduationCap,
+  [ADMIN_PERMISSION_KEYS.ANNOUNCEMENTS]: Megaphone,
+  [ADMIN_PERMISSION_KEYS.COUPONS]: Tag,
+  [ADMIN_PERMISSION_KEYS.PAYMENTS]: CreditCard,
+  [ADMIN_PERMISSION_KEYS.TELEGRAM]: Send,
+  [ADMIN_PERMISSION_KEYS.SETTINGS]: Settings,
+  [ADMIN_PERMISSION_KEYS.RANKINGS]: BarChart3,
+}
+
 function AdminRoute({ children, permission, fullOnly = false }) {
   const { userProfile } = useAuth()
   const allowed = fullOnly ? isFullAdmin(userProfile) : hasAdminPermission(userProfile, permission)
-
   return allowed ? children : <Navigate to={getDefaultAdminPath(userProfile)} replace />
+}
+
+function NotificationBadge({ count, pulse = false }) {
+  if (!count) return null
+  return (
+    <span className={`ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 ${pulse ? "animate-pulse" : ""}`}>
+      {count > 99 ? "99+" : count}
+    </span>
+  )
 }
 
 export default function AdminDashboard() {
   const location = useLocation()
   const { userProfile } = useAuth()
   const fullAdmin = isFullAdmin(userProfile)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
   const [unreadBanCount, setUnreadBanCount] = useState(0)
 
-  useEffect(() => {
-    if (!fullAdmin) return
-    const notificationsQuery = query(
-      collection(db, "notifications"),
-      where("isRead", "==", false)
-    )
-    
-    const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
-      setUnreadCount(snapshot.size)
-    })
-
-    return () => unsubscribe()
-  }, [fullAdmin])
+  const canReadNotifications = hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.NOTIFICATIONS)
+  const canReadBanAlerts = hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.BAN_ALERTS)
 
   useEffect(() => {
-    if (!fullAdmin) return
-    const banNotificationsQuery = query(
-      collection(db, "banNotifications"),
-      where("isRead", "==", false)
-    )
-    
-    const unsubscribe = onSnapshot(banNotificationsQuery, (snapshot) => {
-      setUnreadBanCount(snapshot.size)
-    })
+    if (!canReadNotifications) {
+      setUnreadCount(0)
+      return
+    }
+    const notificationsQuery = query(collection(db, "notifications"), where("isRead", "==", false))
+    return onSnapshot(notificationsQuery, (snapshot) => setUnreadCount(snapshot.size))
+  }, [canReadNotifications])
 
-    return () => unsubscribe()
-  }, [fullAdmin])
+  useEffect(() => {
+    if (!canReadBanAlerts) {
+      setUnreadBanCount(0)
+      return
+    }
+    const banNotificationsQuery = query(collection(db, "banNotifications"), where("isRead", "==", false))
+    return onSnapshot(banNotificationsQuery, (snapshot) => setUnreadBanCount(snapshot.size))
+  }, [canReadBanAlerts])
 
-  const navItems = [
-    { name: "Overview", path: "/admin", icon: LayoutDashboard, fullOnly: true },
-    { name: "Read Usage", path: "/admin/read-usage", icon: BarChart3, fullOnly: true },
-    { name: "Administration", path: "/admin/administration", icon: ShieldCheck, fullOnly: true },
-    { name: "Security Events", path: "/admin/security-events", icon: ShieldAlert, fullOnly: true },
-    { name: "Notifications", path: "/admin/notifications", icon: Bell, fullOnly: true },
-    { name: "Ban Alerts", path: "/admin/ban-notifications", icon: AlertTriangle, fullOnly: true },
-    { name: "Ban Info", path: "/admin/ban-management", icon: Ban, fullOnly: true },
-    { name: "Users", path: "/admin/users", icon: Users, fullOnly: true },
-    { name: "Categories", path: "/admin/categories", icon: Grid, fullOnly: true },
-    { name: "Courses", path: "/admin/courses", icon: BookOpen, fullOnly: true },
-    { name: "Subjects", path: "/admin/subjects", icon: BookMarked, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
-    { name: "Chapters", path: "/admin/chapters", icon: BookMarked, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
-    { name: "Classes & PDF", path: "/admin/classes", icon: Video, permission: ADMIN_PERMISSION_KEYS.CLASS_PDF },
-    { name: "Class Comments", path: "/admin/class-comments", icon: MessageSquare, fullOnly: true },
-    { name: "Exam Create", path: "/admin/exams", icon: FileQuestion, permission: ADMIN_PERMISSION_KEYS.EXAM_CREATE },
-    { name: "Exam Results", path: "/admin/exam-results", icon: BarChart3, fullOnly: true },
-    { name: "CQ Submissions", path: "/admin/exam-submissions", icon: FileQuestion, fullOnly: true },
-    { name: "Teachers", path: "/admin/teachers", icon: GraduationCap, fullOnly: true },
-    { name: "Announcements", path: "/admin/announcements", icon: Megaphone, fullOnly: true },
-    { name: "Coupons", path: "/admin/coupons", icon: Tag, fullOnly: true },
-    { name: "Payments", path: "/admin/payments", icon: CreditCard, fullOnly: true },
-    { name: "Telegram Subs", path: "/admin/telegram", icon: Send, fullOnly: true },
-    { name: "Settings", path: "/admin/settings", icon: Settings, fullOnly: true },
-    { name: "Rankings", path: "/admin/rankings", icon: BarChart3, fullOnly: true },
-  ]
+  const navItems = ADMIN_PAGE_CATALOG.map((page) => ({
+    ...page,
+    name: page.label,
+    icon: ICON_BY_PERMISSION[page.id] || LayoutDashboard,
+  }))
 
-  const visibleNavItems = navItems.filter(
-    (item) => (item.fullOnly && fullAdmin) || (item.permission && hasAdminPermission(userProfile, item.permission)),
+  const visibleNavItems = navItems.filter((item) =>
+    item.fullAdminOnly ? fullAdmin : hasAdminPermission(userProfile, item.id),
   )
-  const currentPage = visibleNavItems.find((item) => item.path === location.pathname)?.name || "Admin Panel"
+  const currentPage =
+    visibleNavItems
+      .filter((item) => item.path === "/admin" ? location.pathname === "/admin" : location.pathname.startsWith(item.path))
+      .sort((a, b) => b.path.length - a.path.length)[0]?.name || "Admin Panel"
+
+  const renderNavItem = (item, mobile = false) => {
+    const isActive = item.path === "/admin"
+      ? location.pathname === "/admin"
+      : location.pathname.startsWith(item.path)
+    const Icon = item.icon
+    return (
+      <Link
+        key={item.path}
+        to={item.path}
+        onClick={mobile ? () => setMobileMenuOpen(false) : undefined}
+        className={mobile
+          ? `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${isActive ? "bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-md" : "hover:bg-muted text-foreground hover:text-primary"}`
+          : `flex items-center gap-2.5 px-2.5 py-2 rounded-md transition-all duration-200 text-xs ${isActive ? "bg-primary text-primary-foreground shadow-sm font-medium" : "hover:bg-muted text-foreground hover:text-primary font-normal"}`}
+      >
+        <Icon className={mobile ? "w-5 h-5 flex-shrink-0" : "w-4 h-4 flex-shrink-0"} />
+        <span className={mobile ? "font-medium" : ""}>{item.name}</span>
+        {item.id === ADMIN_PERMISSION_KEYS.NOTIFICATIONS && <NotificationBadge count={unreadCount} />}
+        {item.id === ADMIN_PERMISSION_KEYS.BAN_ALERTS && <NotificationBadge count={unreadBanCount} pulse />}
+      </Link>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Desktop Header - Compact */}
       <div className="hidden lg:block border-b border-border bg-card sticky top-0 z-40 shadow-sm">
         <div className="px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-bold text-foreground">Admin Panel</h1>
-              <p className="text-xs text-muted-foreground font-medium">{currentPage}</p>
-            </div>
-          </div>
+          <h1 className="text-lg font-bold text-foreground">Admin Panel</h1>
+          <p className="text-xs text-muted-foreground font-medium">{currentPage}</p>
         </div>
       </div>
 
-      {/* Mobile Header */}
       <div className="lg:hidden flex items-center justify-between p-4 bg-card border-b border-border sticky top-0 z-50 shadow-sm">
         <div>
           <h1 className="text-base font-bold text-foreground">Admin Panel</h1>
           <p className="text-xs text-muted-foreground font-medium">{currentPage}</p>
         </div>
-        <button
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 hover:bg-muted rounded-lg transition-colors flex-shrink-0"
-        >
+        <button onClick={() => setMobileMenuOpen((value) => !value)} className="p-2 hover:bg-muted rounded-lg transition-colors flex-shrink-0">
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Desktop Sidebar - Compact */}
         <div className="hidden lg:flex flex-col w-56 bg-card border-r border-border overflow-y-auto">
           <div className="p-3">
-            <nav className="space-y-0.5">
-              {visibleNavItems.map((item) => {
-                const isActive = location.pathname === item.path
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md transition-all duration-200 text-xs ${
-                      isActive
-                        ? "bg-primary text-primary-foreground shadow-sm font-medium"
-                        : "hover:bg-muted text-foreground hover:text-primary font-normal"
-                    }`}
-                  >
-                    <item.icon className="w-4 h-4 flex-shrink-0" />
-                    <span>{item.name}</span>
-                    {item.name === "Notifications" && unreadCount > 0 && (
-                      <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
-                        {unreadCount > 99 ? "99+" : unreadCount}
-                      </span>
-                    )}
-                    {item.name === "Ban Alerts" && unreadBanCount > 0 && (
-                      <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 animate-pulse">
-                        {unreadBanCount > 99 ? "99+" : unreadBanCount}
-                      </span>
-                    )}
-                  </Link>
-                )
-              })}
-            </nav>
+            <nav className="space-y-0.5">{visibleNavItems.map((item) => renderNavItem(item))}</nav>
           </div>
         </div>
 
-        {/* Main Content */}
         <div className="flex-1 overflow-y-auto pb-20 lg:pb-0">
           <div className="p-3 sm:p-4 lg:p-4">
             <Routes>
-              <Route index element={fullAdmin ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
-              <Route path="read-usage" element={<AdminRoute fullOnly><ReadUsage /></AdminRoute>} />
+              <Route index element={hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.OVERVIEW) ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
+              <Route path="read-usage" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.READ_USAGE}><ReadUsage /></AdminRoute>} />
               <Route path="administration" element={<AdminRoute fullOnly><ManageAdministration /></AdminRoute>} />
-              <Route path="security-events" element={<AdminRoute fullOnly><ManageSecurityEvents /></AdminRoute>} />
-              <Route path="notifications" element={<AdminRoute fullOnly><Notifications /></AdminRoute>} />
-              <Route path="ban-notifications" element={<AdminRoute fullOnly><BannedNotifications /></AdminRoute>} />
-              <Route path="ban-management" element={<AdminRoute fullOnly><BanManagement /></AdminRoute>} />
-              <Route path="users" element={<AdminRoute fullOnly><ManageUsers /></AdminRoute>} />
-              <Route path="courses" element={<AdminRoute fullOnly><ManageCourses /></AdminRoute>} />
-              <Route path="classes" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageClasses /></AdminRoute>} />
-              <Route path="class-comments" element={<AdminRoute fullOnly><ClassComments /></AdminRoute>} />
-              <Route path="exams" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_CREATE}><ManageExams /></AdminRoute>} />
-              <Route path="exams/:examId/questions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_CREATE}><ManageExamQuestions /></AdminRoute>} />
-              <Route path="exam-results" element={<AdminRoute fullOnly><ViewExamResults /></AdminRoute>} />
-              <Route path="exam-submissions" element={<AdminRoute fullOnly><ViewExamSubmissions /></AdminRoute>} />
-              <Route path="subjects" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageSubjects /></AdminRoute>} />
-              <Route path="chapters" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_PDF}><ManageChapters /></AdminRoute>} />
-              <Route path="categories" element={<AdminRoute fullOnly><ManageCategories /></AdminRoute>} />
-              <Route path="teachers" element={<AdminRoute fullOnly><ManageTeachers /></AdminRoute>} />
-              <Route path="announcements" element={<AdminRoute fullOnly><ManageAnnouncements /></AdminRoute>} />
-              <Route path="coupons" element={<AdminRoute fullOnly><ManageCoupons /></AdminRoute>} />
-              <Route path="payments" element={<AdminRoute fullOnly><ManagePayments /></AdminRoute>} />
-              <Route path="telegram" element={<AdminRoute fullOnly><ManageTelegramSubmissions /></AdminRoute>} />
-              <Route path="settings" element={<AdminRoute fullOnly><WebsiteSettings /></AdminRoute>} />
-              <Route path="rankings" element={<AdminRoute fullOnly><Rankings /></AdminRoute>} />
+              <Route path="security-events" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SECURITY_EVENTS}><ManageSecurityEvents /></AdminRoute>} />
+              <Route path="notifications" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.NOTIFICATIONS}><Notifications /></AdminRoute>} />
+              <Route path="ban-notifications" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_ALERTS}><BannedNotifications /></AdminRoute>} />
+              <Route path="ban-management" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_MANAGEMENT}><BanManagement /></AdminRoute>} />
+              <Route path="users" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.USERS}><ManageUsers /></AdminRoute>} />
+              <Route path="categories" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CATEGORIES}><ManageCategories /></AdminRoute>} />
+              <Route path="courses" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.COURSES}><ManageCourses /></AdminRoute>} />
+              <Route path="subjects" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SUBJECTS}><ManageSubjects /></AdminRoute>} />
+              <Route path="chapters" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CHAPTERS}><ManageChapters /></AdminRoute>} />
+              <Route path="classes" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASSES}><ManageClasses /></AdminRoute>} />
+              <Route path="class-comments" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_COMMENTS}><ClassComments /></AdminRoute>} />
+              <Route path="exams" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAMS}><ManageExams /></AdminRoute>} />
+              <Route path="exams/:examId/questions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAMS}><ManageExamQuestions /></AdminRoute>} />
+              <Route path="exam-results" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_RESULTS}><ViewExamResults /></AdminRoute>} />
+              <Route path="exam-submissions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAM_SUBMISSIONS}><ViewExamSubmissions /></AdminRoute>} />
+              <Route path="teachers" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.TEACHERS}><ManageTeachers /></AdminRoute>} />
+              <Route path="announcements" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.ANNOUNCEMENTS}><ManageAnnouncements /></AdminRoute>} />
+              <Route path="coupons" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.COUPONS}><ManageCoupons /></AdminRoute>} />
+              <Route path="payments" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.PAYMENTS}><ManagePayments /></AdminRoute>} />
+              <Route path="telegram" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.TELEGRAM}><ManageTelegramSubmissions /></AdminRoute>} />
+              <Route path="settings" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SETTINGS}><WebsiteSettings /></AdminRoute>} />
+              <Route path="rankings" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.RANKINGS}><Rankings /></AdminRoute>} />
               <Route path="*" element={<Navigate to={getDefaultAdminPath(userProfile)} replace />} />
             </Routes>
           </div>
         </div>
       </div>
 
-      {/* Mobile Bottom Sheet Menu */}
       <AnimatePresence>
         {mobileMenuOpen && (
           <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setMobileMenuOpen(false)}
-              className="fixed inset-0 bg-black/40 z-40 lg:hidden"
-            />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setMobileMenuOpen(false)} className="fixed inset-0 bg-black/40 z-40 lg:hidden" />
             <motion.div
               initial={{ y: "100%" }}
               animate={{ y: 0 }}
@@ -255,41 +241,10 @@ export default function AdminDashboard() {
               transition={{ type: "spring", damping: 30, stiffness: 300 }}
               className="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 rounded-t-2xl max-h-[80vh] overflow-y-auto lg:hidden"
             >
-              <div className="flex justify-center pt-2 pb-4">
-                <div className="w-12 h-1 bg-muted rounded-full" />
-              </div>
+              <div className="flex justify-center pt-2 pb-4"><div className="w-12 h-1 bg-muted rounded-full" /></div>
               <div className="px-4 pb-6">
                 <h2 className="text-lg font-bold mb-4">Admin Menu</h2>
-                <nav className="space-y-2">
-                  {visibleNavItems.map((item) => {
-                    const isActive = location.pathname === item.path
-                    return (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        onClick={() => setMobileMenuOpen(false)}
-                        className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-                          isActive
-                            ? "bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-md"
-                            : "hover:bg-muted text-foreground hover:text-primary"
-                        }`}
-                      >
-                        <item.icon className="w-5 h-5 flex-shrink-0" />
-                        <span className="font-medium">{item.name}</span>
-                        {item.name === "Notifications" && unreadCount > 0 && (
-                          <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] h-[20px] flex items-center justify-center px-1.5">
-                            {unreadCount > 99 ? "99+" : unreadCount}
-                          </span>
-                        )}
-                        {item.name === "Ban Alerts" && unreadBanCount > 0 && (
-                          <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] h-[20px] flex items-center justify-center px-1.5 animate-pulse">
-                            {unreadBanCount > 99 ? "99+" : unreadBanCount}
-                          </span>
-                        )}
-                      </Link>
-                    )
-                  })}
-                </nav>
+                <nav className="space-y-2">{visibleNavItems.map((item) => renderNavItem(item, true))}</nav>
               </div>
             </motion.div>
           </>
