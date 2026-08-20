@@ -34,6 +34,7 @@ export const USER_ADMIN_ACTION_KEYS = {
   BAN: "ban",
   GRANT_COURSE_ACCESS: "grantCourseAccess",
   MANAGE_COURSE_ACCESS: "manageCourseAccess",
+  SCREEN_CAPTURE: "screenCapture",
   DELETE: "delete",
   PROMOTE_ADMIN: "promoteAdmin",
   FIX_ACCOUNTS: "fixAccounts",
@@ -62,6 +63,12 @@ export const USER_ADMIN_ACTIONS = [
     label: "Manage course access",
     description: "View and remove enrollments for allowed courses.",
     courseScoped: true,
+  },
+  {
+    id: USER_ADMIN_ACTION_KEYS.SCREEN_CAPTURE,
+    label: "Manage screen capture access",
+    description: "Allow or restore screenshot and screen-recording protection for specific users.",
+    dangerous: true,
   },
   {
     id: USER_ADMIN_ACTION_KEYS.DELETE,
