@@ -44,8 +44,6 @@ sealed interface NativeOnlinePlaybackSource {
 
 object NativePlaybackSourceResolver {
     private const val APP_ORIGIN = "https://easy-education.vercel.app"
-    private const val RUMBLE_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
 
     fun resolveOnline(
         classId: String,
@@ -147,6 +145,24 @@ object NativePlaybackSourceResolver {
         sourceUrl: String,
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
+        // Resolve on-device first. This keeps native playback working even when the web deployment
+        // is behind the APK's Rumble parser revision.
+        runCatching {
+            NativeRumbleDirectResolver().resolve(sourceUrl, requestedHeight)
+        }.getOrNull()?.let { stream ->
+            return NativeOnlinePlaybackSource.Direct(
+                url = stream.url,
+                hls = stream.hls,
+                requestHeaders = mapOf(
+                    "User-Agent" to NativeRumbleDirectResolver.RUMBLE_USER_AGENT,
+                    "Referer" to sourceUrl,
+                    "Origin" to NativeRumbleDirectResolver.RUMBLE_ORIGIN,
+                    "Accept-Encoding" to "identity",
+                ),
+            )
+        }
+
+        // Keep the authenticated server resolver as a compatibility fallback for unusual uploads.
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val url = "$APP_ORIGIN/api/offline-video?options=1" +
@@ -198,9 +214,10 @@ object NativePlaybackSourceResolver {
                 url = selected.url,
                 hls = true,
                 requestHeaders = mapOf(
-                    "User-Agent" to RUMBLE_USER_AGENT,
+                    "User-Agent" to NativeRumbleDirectResolver.RUMBLE_USER_AGENT,
                     "Referer" to sourceUrl,
-                    "Origin" to "https://rumble.com",
+                    "Origin" to NativeRumbleDirectResolver.RUMBLE_ORIGIN,
+                    "Accept-Encoding" to "identity",
                 ),
             )
         }
