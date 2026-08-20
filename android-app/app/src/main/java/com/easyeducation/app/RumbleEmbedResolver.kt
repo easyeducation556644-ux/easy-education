@@ -50,7 +50,7 @@ class RumbleEmbedResolver(
             .replace("\\/", "/")
         for (pattern in EMBED_PATTERNS) {
             val match = pattern.find(text) ?: continue
-            val raw = match.groups.getOrNull(1)?.value ?: match.value
+            val raw = match.groups[1]?.value ?: match.value
             val decoded = raw
                 .replace("&amp;", "&", ignoreCase = true)
                 .replace("&#38;", "&", ignoreCase = true)
