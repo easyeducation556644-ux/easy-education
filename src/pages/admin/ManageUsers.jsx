@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Wrench,
   ShieldCheck,
+  Camera,
 } from "lucide-react"
 import {
   addDoc,
@@ -50,7 +51,7 @@ import {
 const USERS_PAGE_SIZE = 10
 
 export default function ManageUsers() {
-  const { userProfile } = useAuth()
+  const { userProfile, currentUser } = useAuth()
   const [users, setUsers] = useState([])
   const [searchQuery, setSearchQuery] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
@@ -82,6 +83,7 @@ export default function ManageUsers() {
   const canBan = can(USER_ADMIN_ACTION_KEYS.BAN)
   const canGrant = can(USER_ADMIN_ACTION_KEYS.GRANT_COURSE_ACCESS)
   const canManageCourses = can(USER_ADMIN_ACTION_KEYS.MANAGE_COURSE_ACCESS)
+  const canCapture = can(USER_ADMIN_ACTION_KEYS.SCREEN_CAPTURE)
   const canDelete = can(USER_ADMIN_ACTION_KEYS.DELETE)
   const canPromote = can(USER_ADMIN_ACTION_KEYS.PROMOTE_ADMIN)
   const canFixAccounts = can(USER_ADMIN_ACTION_KEYS.FIX_ACCOUNTS)
@@ -253,6 +255,32 @@ export default function ManageUsers() {
     })
   }
 
+  const handleScreenCaptureAccess = (user) => {
+    if (!canCapture || !user?.id) return
+    const willAllow = user.allowScreenCapture !== true
+    setConfirmDialog({
+      isOpen: true,
+      title: willAllow ? "Allow Screen Capture" : "Restore Capture Restriction",
+      message: willAllow
+        ? `Allow ${user.name || user.email} to take screenshots and screen recordings in Easy Education? The app caches this exception for up to 24 hours.`
+        : `Restore screenshot and screen-recording protection for ${user.name || user.email}? Their app will pick up the change on the next daily policy refresh.`,
+      variant: willAllow ? "default" : "destructive",
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, "users", user.id), {
+            allowScreenCapture: willAllow,
+            screenCaptureAccessUpdatedAt: serverTimestamp(),
+            screenCaptureAccessUpdatedBy: userProfile?.id || currentUser?.uid || "unknown",
+          })
+          showSuccess(willAllow ? "Screen capture enabled for this user." : "Screen capture protection restored for this user.")
+          fetchUsers()
+        } catch (error) {
+          toast({ variant: "error", title: "Capture Access Failed", description: error.message || "Failed to update screen capture access." })
+        }
+      },
+    })
+  }
+
   const handleDeleteUser = (userId) => {
     if (!canDelete) return
     setConfirmDialog({
@@ -320,7 +348,7 @@ export default function ManageUsers() {
       const coursesToEnroll = [...coursesToEnrollMap.values()]
       if (coursesToEnroll.length === 0) throw new Error("No allowed course was selected")
       const transactionId = `MANUAL_${Date.now()}_${selectedUser.id}`
-      const token = await userProfile?.authUser?.getIdToken?.().catch(() => null)
+      const token = await currentUser?.getIdToken?.().catch(() => null)
 
       const response = await fetch("/api/process-enrollment", {
         method: "POST",
@@ -610,6 +638,7 @@ export default function ManageUsers() {
                   if (canBan) actions.push({ id: "ban", label: user.banned ? "Unban user" : "Ban user", icon: Ban, className: user.banned ? "text-green-500 border-green-500/20" : "text-yellow-500 border-yellow-500/20", onClick: () => handleBanUser(user.id, user.banned) })
                   if (canGrant) actions.push({ id: "grant", label: "Grant course", icon: UserPlus, className: "text-green-500 border-green-500/20", onClick: () => { setSelectedUser(user); setSelectedCoursesForGrant([]); setCourseSearchQuery(""); setShowGrantAccessModal(true) } })
                   if (canManageCourses && scopedEnrollments.length > 0) actions.push({ id: "courses", label: "Manage courses", icon: BookOpen, className: "text-blue-500 border-blue-500/20", badge: scopedEnrollments.length, onClick: () => { setSelectedUser(user); setShowRemoveModal(true) } })
+                  if (canCapture) actions.push({ id: "capture", label: user.allowScreenCapture === true ? "Restrict capture" : "Allow capture", icon: Camera, className: user.allowScreenCapture === true ? "text-orange-500 border-orange-500/20" : "text-cyan-500 border-cyan-500/20", onClick: () => handleScreenCaptureAccess(user) })
                   if (canPromote && !isFullAdmin(user)) actions.push({ id: "promote", label: "Make Full Admin", icon: ShieldCheck, className: "text-purple-500 border-purple-500/20", onClick: () => handlePromoteAdmin(user) })
                   if (canDelete) actions.push({ id: "delete", label: "Delete user", icon: Trash2, className: "text-red-500 border-red-500/20", onClick: () => handleDeleteUser(user.id) })
                   const expanded = actions.length <= 2
@@ -709,6 +738,7 @@ export default function ManageUsers() {
             <p className="font-semibold text-lg">{selectedUser.name || "Unnamed user"}</p>
             <p className="text-sm text-muted-foreground">{selectedUser.email}</p>
             <p className="text-sm mt-1">Role: {getRoleLabel(selectedUser.role, selectedUser.adminAccess)}</p>
+            <p className="text-sm mt-1">Screen capture: {selectedUser.allowScreenCapture === true ? "Allowed" : "Restricted"}</p>
           </div>
           <div className="grid grid-cols-2 gap-3 mb-4">
             <div className="p-3 border border-border rounded-lg"><p className="text-xs text-muted-foreground">Devices</p><p className="font-semibold">{selectedUser.devices?.length || 0}</p></div>
