@@ -49,8 +49,17 @@ class NativeRepository(context: Context) {
     }
 
     suspend fun cachedCourses(uid: String): List<NativeCourse> = withContext(Dispatchers.IO) {
-        cachedCourseIds(uid).mapNotNull { id -> cache.getDoc("courses", id)?.let(NativeCourse::from) }
-            .sortedBy { it.title.lowercase() }
+        val orderedEnrollments = cachedEnrollments(uid)
+            .sortedWith(
+                compareBy<NativeEnrollment> { if (it.enrolledAt > 0L) it.enrolledAt else Long.MIN_VALUE }
+                    .thenBy { it.id },
+            )
+        val seen = linkedSetOf<String>()
+        orderedEnrollments.mapNotNull { enrollment ->
+            val courseId = enrollment.courseId
+            if (courseId.isBlank() || !seen.add(courseId)) return@mapNotNull null
+            cache.getDoc("courses", courseId)?.let(NativeCourse::from)
+        }
     }
 
     suspend fun ensureEnrollments(uid: String): List<NativeCourse> {
@@ -68,18 +77,42 @@ class NativeRepository(context: Context) {
         val enrollmentJson = canonicalSnapshot.documents.map(DocumentSnapshot::toCacheJson).toMutableList()
         val canonicalCourseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.toMutableSet()
 
-        // Compatibility for old approved payments that pre-date deterministic userCourses docs.
+        // Payments are also used as an ordering source because an enrollment document can be
+        // rewritten later. My Courses should keep the first purchase/enrollment order, not title order.
         val approvedPayments = firestore.collection("payments")
             .whereEqualTo("userId", uid)
             .whereEqualTo("status", "approved")
             .get(Source.SERVER)
             .await()
-        val legacyCourseIds = approvedPayments.documents.flatMap(::paymentCourseIds).distinct()
-        legacyCourseIds.filter { it !in canonicalCourseIds }.forEach { courseId ->
+        val firstPaymentAtByCourse = linkedMapOf<String, Long>()
+        for (payment in approvedPayments.documents) {
+            val paidAt = paymentTimestamp(payment)
+            for (courseId in paymentCourseIds(payment)) {
+                if (courseId.isBlank()) continue
+                val previous = firstPaymentAtByCourse[courseId]
+                if (previous == null || (paidAt > 0L && (previous <= 0L || paidAt < previous))) {
+                    firstPaymentAtByCourse[courseId] = paidAt
+                }
+            }
+        }
+
+        enrollmentJson.forEach { enrollment ->
+            val courseId = enrollment.optString("courseId")
+            val paidAt = firstPaymentAtByCourse[courseId] ?: 0L
+            val currentAt = enrollment.optLong("enrolledAt", 0L)
+            if (paidAt > 0L && (currentAt <= 0L || paidAt < currentAt)) {
+                enrollment.put("enrolledAt", paidAt)
+            }
+        }
+
+        // Compatibility for old approved payments that pre-date deterministic userCourses docs.
+        firstPaymentAtByCourse.forEach { (courseId, paidAt) ->
+            if (courseId in canonicalCourseIds) return@forEach
             enrollmentJson += JSONObject()
                 .put("id", "legacy_${stableId("$uid:$courseId")}")
                 .put("userId", uid)
                 .put("courseId", courseId)
+                .put("enrolledAt", paidAt)
                 .put("legacyPaymentAccess", true)
             canonicalCourseIds += courseId
         }
@@ -104,42 +137,43 @@ class NativeRepository(context: Context) {
         val classes = cache.listDocs("classes", courseId = courseId)
             .map(NativeClassItem::from)
             .sortedWith(compareBy<NativeClassItem> { it.order }.thenBy { it.title })
+        val activeClasses = classes.filterNot { it.isArchived }
 
+        // Only active classes participate in the normal subject/chapter tree. Archived classes stay
+        // cached in NativeCourseContent.classes so the dedicated Archive screen can still render them.
         val storedSubjects = cache.listDocs("subjects", courseId = courseId)
             .map(NativeSubject::from)
-            .filter { it.title.isNotBlank() }
+            .filter { it.title.isNotBlank() && !it.title.equals("archive", true) }
         val subjectTitles = linkedSetOf<String>()
-        storedSubjects.forEach { subjectTitles += it.title }
-        classes.flatMap { it.subjects }.filter { it.isNotBlank() }.forEach { subjectTitles += it }
-        val subjects = if (storedSubjects.isNotEmpty()) {
-            val missing = subjectTitles.filter { title -> storedSubjects.none { it.title.equals(title, true) } }
-                .mapIndexed { index, title -> NativeSubject("derived:${stableId(title)}", courseId, title, 10_000 + index) }
-            (storedSubjects + missing).sortedWith(compareBy<NativeSubject> { it.order }.thenBy { it.title })
-        } else {
-            subjectTitles.mapIndexed { index, title -> NativeSubject("derived:${stableId(title)}", courseId, title, index) }
-        }
+        activeClasses.flatMap { it.subjects }
+            .filter { it.isNotBlank() && !it.equals("archive", true) }
+            .forEach { subjectTitles += it }
+        val subjects = subjectTitles.mapIndexed { index, title ->
+            storedSubjects.firstOrNull { it.title.equals(title, true) }
+                ?: NativeSubject("derived:${stableId(title)}", courseId, title, 10_000 + index)
+        }.sortedWith(compareBy<NativeSubject> { it.order }.thenBy { it.title })
 
         val storedChapters = cache.listDocs("chapters", courseId = courseId)
             .map(NativeChapter::from)
-            .filter { it.title.isNotBlank() }
+            .filter { it.title.isNotBlank() && !it.title.equals("archive", true) }
         val derivedChapters = linkedMapOf<String, NativeChapter>()
-        classes.forEach { item ->
-            val subject = item.subjects.firstOrNull().orEmpty()
-            item.chapters.filter { it.isNotBlank() }.forEach { title ->
-                val key = "$subject\u0000$title"
-                derivedChapters.putIfAbsent(
-                    key,
-                    NativeChapter("derived:${stableId(key)}", courseId, subject, title, item.order),
-                )
-            }
+        activeClasses.forEach { item ->
+            val subject = item.subjects.firstOrNull { !it.equals("archive", true) }.orEmpty()
+            item.chapters
+                .filter { it.isNotBlank() && !it.equals("archive", true) }
+                .forEach { title ->
+                    val key = "$subject\u0000$title"
+                    val stored = storedChapters.firstOrNull {
+                        it.title.equals(title, true) &&
+                            (it.subject.isBlank() || subject.isBlank() || it.subject.equals(subject, true))
+                    }
+                    derivedChapters.putIfAbsent(
+                        key,
+                        stored ?: NativeChapter("derived:${stableId(key)}", courseId, subject, title, item.order),
+                    )
+                }
         }
-        val missingChapters = derivedChapters.values.filter { candidate ->
-            storedChapters.none {
-                it.title.equals(candidate.title, true) &&
-                    (it.subject.isBlank() || candidate.subject.isBlank() || it.subject.equals(candidate.subject, true))
-            }
-        }
-        val chapters = (storedChapters + missingChapters)
+        val chapters = derivedChapters.values
             .sortedWith(compareBy<NativeChapter> { it.order }.thenBy { it.title })
 
         NativeCourseContent(course, subjects, chapters, classes)
@@ -291,11 +325,19 @@ class NativeRepository(context: Context) {
         withContext(Dispatchers.IO) { leaseStore.refresh(uid, courseIds) }
     }
 
-    private fun cachedCourseIds(uid: String): List<String> = cache.listDocs("userCourses", userId = uid)
+    private fun cachedEnrollments(uid: String): List<NativeEnrollment> = cache.listDocs("userCourses", userId = uid)
         .map(NativeEnrollment::from)
+        .filter { it.courseId.isNotBlank() }
+
+    private fun cachedCourseIds(uid: String): List<String> = cachedEnrollments(uid)
         .map { it.courseId }
-        .filter { it.isNotBlank() }
         .distinct()
+
+    private fun paymentTimestamp(snapshot: DocumentSnapshot): Long =
+        snapshot.getTimestamp("approvedAt")?.toDate()?.time
+            ?: snapshot.getTimestamp("submittedAt")?.toDate()?.time
+            ?: snapshot.getTimestamp("createdAt")?.toDate()?.time
+            ?: 0L
 
     private fun paymentCourseIds(snapshot: DocumentSnapshot): List<String> = buildList {
         snapshot.getString("courseId")?.takeIf { it.isNotBlank() }?.let(::add)
