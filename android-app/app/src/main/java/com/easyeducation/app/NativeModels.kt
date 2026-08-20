@@ -103,6 +103,7 @@ data class NativeCourse(
     val thumbnailUrl: String,
     val price: Double,
     val courseFormat: String,
+    val telegramLink: String = "",
 ) {
     companion object {
         fun from(json: JSONObject) = NativeCourse(
@@ -112,6 +113,7 @@ data class NativeCourse(
             thumbnailUrl = json.firstString("thumbnailURL", "imageURL", "imageUrl", "image", "thumbnail"),
             price = json.optDouble("price", 0.0),
             courseFormat = json.optString("courseFormat", "single"),
+            telegramLink = json.firstString("telegramLink", "telegramURL", "telegramUrl"),
         )
     }
 }
@@ -170,6 +172,7 @@ data class NativeClassItem(
     val teacherImageUrl: String = "",
     val resourceLinks: List<NativeResourceLink> = emptyList(),
     val publishedAt: Long = 0L,
+    val isArchived: Boolean = false,
 ) {
     companion object {
         fun from(json: JSONObject): NativeClassItem {
@@ -178,13 +181,18 @@ data class NativeClassItem(
                 .takeUnless { it == "[]" || it == "{}" }
                 .orEmpty()
                 .ifBlank { "Easy Education" }
+            val subjects = json.stringList("subject", "subjects")
+            val chapters = json.stringList("chapter", "chapters")
+            val archived = json.optBoolean("isArchived", false) ||
+                subjects.any { it.equals("archive", ignoreCase = true) } ||
+                chapters.any { it.equals("archive", ignoreCase = true) }
             return NativeClassItem(
                 id = json.optString("id"),
                 courseId = json.optString("courseId"),
                 title = json.firstString("title", "topic").ifBlank { "Class" },
                 topic = json.optString("topic"),
-                subjects = json.stringList("subject", "subjects"),
-                chapters = json.stringList("chapter", "chapters"),
+                subjects = subjects,
+                chapters = chapters,
                 order = json.optInt("order", 0),
                 duration = json.firstString("duration"),
                 sourceUrl = json.firstString(
@@ -210,6 +218,7 @@ data class NativeClassItem(
                 teacherImageUrl = json.firstString("teacherImageURL", "teacherImageUrl", "teacherPhotoURL", "teacherPhotoUrl"),
                 resourceLinks = json.resourceLinks(),
                 publishedAt = json.firstMillis("createdAt", "publishedAt", "timestamp", "date", "updatedAt"),
+                isArchived = archived,
             )
         }
     }
@@ -219,12 +228,14 @@ data class NativeEnrollment(
     val id: String,
     val userId: String,
     val courseId: String,
+    val enrolledAt: Long = 0L,
 ) {
     companion object {
         fun from(json: JSONObject) = NativeEnrollment(
             id = json.optString("id"),
             userId = json.optString("userId"),
             courseId = json.optString("courseId"),
+            enrolledAt = json.firstMillis("enrolledAt", "approvedAt", "submittedAt", "createdAt"),
         )
     }
 }
