@@ -4,6 +4,7 @@ import { User, Building, Phone, Facebook, Linkedin, Github, Camera, Monitor, Map
 import { doc, updateDoc } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { uploadImageToImgBB } from "../lib/imgbb"
+import { getDeviceName } from "../lib/deviceTracking"
 import { useAuth } from "../contexts/AuthContext"
 
 export default function Profile() {
@@ -392,7 +393,7 @@ export default function Profile() {
                         <div className="flex items-center gap-2">
                           <Monitor className="w-4 h-4" />
                           <span className="font-medium">Platform:</span>
-                          <span>{device.platform || 'Unknown'}</span>
+                          <span>{device.userAgent ? getDeviceName(device.userAgent, device.platform) : (device.platform || 'Unknown')}</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <Monitor className="w-4 h-4" />

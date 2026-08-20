@@ -425,6 +425,16 @@ class MainActivity : AppCompatActivity() {
             return true
         }
 
+        override fun onReceivedError(
+            view: WebView,
+            request: WebResourceRequest,
+            error: WebResourceError,
+        ) {
+            super.onReceivedError(view, request, error)
+            if (!request.isForMainFrame || request.url.host != APP_HOST) return
+            showOfflinePage(view, request.url.toString())
+        }
+
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             super.onPageCommitVisible(view, url)
             revealWeb()
@@ -443,6 +453,57 @@ class MainActivity : AppCompatActivity() {
             return serveLocalFile(request, file)
         }
     }
+
+    private fun showOfflinePage(view: WebView, failedUrl: String) {
+        val retryUrl = failedUrl.takeIf {
+            runCatching {
+                val uri = URI(it)
+                uri.scheme == "https" && uri.host == APP_HOST
+            }.getOrDefault(false)
+        } ?: "$APP_ORIGIN/"
+        val safeRetryUrl = escapeHtml(retryUrl)
+        view.stopLoading()
+        view.loadDataWithBaseURL(
+            APP_ORIGIN,
+            """
+                <!doctype html>
+                <html lang="en">
+                <head>
+                  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+                  <meta name="color-scheme" content="dark">
+                  <style>
+                    *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#0b1020;color:#f8fafc;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+                    body{min-height:100vh;display:grid;place-items:center;padding:28px;background:radial-gradient(circle at top,#18213b 0,#0b1020 55%)}
+                    .card{width:min(100%,420px);padding:30px 24px;border:1px solid #26324d;border-radius:24px;background:#111a2e;box-shadow:0 18px 60px #0008;text-align:center}
+                    .mark{width:64px;height:64px;margin:0 auto 18px;display:grid;place-items:center;border-radius:18px;background:#2563eb;font-size:30px;font-weight:800}
+                    h1{margin:0 0 10px;font-size:24px}p{margin:0;color:#a9b7d2;line-height:1.55;font-size:15px}
+                    a{display:block;margin-top:24px;padding:13px 18px;border-radius:14px;background:#2563eb;color:white;text-decoration:none;font-weight:700}
+                    small{display:block;margin-top:16px;color:#73829f}
+                  </style>
+                </head>
+                <body>
+                  <main class="card">
+                    <div class="mark">E</div>
+                    <h1>No internet connection</h1>
+                    <p>Easy Education needs a connection to open this page. Your downloaded lessons are still available from Downloads.</p>
+                    <a href="$safeRetryUrl">Try again</a>
+                    <small>Easy Education · Learn • Grow • Succeed</small>
+                  </main>
+                </body>
+                </html>
+            """.trimIndent(),
+            "text/html",
+            "UTF-8",
+            null,
+        )
+        revealWeb()
+    }
+
+    private fun escapeHtml(value: String): String = value
+        .replace("&", "&amp;")
+        .replace("\"", "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
 
     private fun notFoundResponse() = WebResourceResponse(
         "text/plain",
