@@ -26,7 +26,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -63,17 +62,8 @@ fun NativeInlinePlayer(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val rootView = LocalView.current
     val exoPlayer = remember { PersistentNativePlayer.player(context) }
     val hostRef = remember { AtomicReference<YoutubeWatchGestureHost?>() }
-
-    // Long classes can run for many hours. Keep the watch surface awake while this page owns it so
-    // Android screen timeout does not turn a healthy foreground class into an avoidable lifecycle stop.
-    DisposableEffect(rootView, classId) {
-        val previous = rootView.keepScreenOn
-        rootView.keepScreenOn = true
-        onDispose { rootView.keepScreenOn = previous }
-    }
 
     val preparedAtEntry = remember(classId, sourceUrl, requestedHeight) {
         PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) && exoPlayer.mediaItemCount > 0
@@ -81,6 +71,9 @@ fun NativeInlinePlayer(
     var handedToMini by remember(classId) { mutableStateOf(false) }
     var handedToFullscreen by remember(classId) { mutableStateOf(false) }
     var resumeAfterLifecyclePause by remember(classId) { mutableStateOf(false) }
+    var hasReachedReady by remember(classId, sourceUrl, requestedHeight) {
+        mutableStateOf(preparedAtEntry && (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.currentPosition > 0L))
+    }
     var loading by remember(classId, sourceUrl, requestedHeight) {
         mutableStateOf(sourceUrl.isNotBlank() && online && !preparedAtEntry)
     }
@@ -90,7 +83,9 @@ fun NativeInlinePlayer(
         surface.setFullscreenPresentation(false)
         surface.bindPlayer(exoPlayer)
         surface.setTitle(title)
-        surface.setLoading(loading)
+        // After the first usable frame, transient network recovery stays visually quiet. The
+        // existing frame/controls remain on screen while PersistentNativePlayer repairs the source.
+        surface.setLoading(loading && !hasReachedReady)
         surface.setNavigationAvailability(hasPrevious, hasNext)
         surface.onBack = {
             onBack?.invoke()
@@ -198,9 +193,7 @@ fun NativeInlinePlayer(
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 if (online && isRecoverableOnlinePlaybackError(error)) {
-                    // PersistentNativePlayer owns the unlimited re-resolve loop. Keep the same
-                    // surface alive while it recovers instead of replacing it with an error view.
-                    loading = true
+                    loading = !hasReachedReady
                     errorText = null
                 } else {
                     loading = false
@@ -211,11 +204,15 @@ fun NativeInlinePlayer(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
                     Player.STATE_READY -> {
+                        hasReachedReady = true
                         loading = false
                         errorText = null
                     }
-                    Player.STATE_BUFFERING -> if (exoPlayer.playWhenReady && online) {
-                        loading = true
+                    Player.STATE_BUFFERING -> {
+                        // Initial load may show progress. Once a class has started, ordinary CDN
+                        // renewal/network repair is intentionally silent so students do not see a
+                        // refresh spinner every time the provider rotates a signed URL.
+                        loading = !hasReachedReady && online
                     }
                 }
             }
@@ -233,21 +230,21 @@ fun NativeInlinePlayer(
 
         val alreadyPrepared =
             PersistentNativePlayer.matches(classId, sourceUrl, requestedHeight) && exoPlayer.mediaItemCount > 0
-        // During mini -> watch expansion the destination must lay out its inline host underneath the
-        // still-live overlay. Removing the mini here caused the exact decoder-surface flash seen on
-        // expansion; NativeMiniPlayerOverlay now restores into this host at animation completion.
         if (!NativeMiniPlayerOverlay.isExpandingTo(exoPlayer, classId)) {
             NativeMiniPlayerOverlay.dismiss(releasePlayer = false)
         }
         handedToMini = false
         if (alreadyPrepared) {
-            loading = exoPlayer.playbackState == Player.STATE_BUFFERING
+            if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.currentPosition > 0L) {
+                hasReachedReady = true
+            }
+            loading = !hasReachedReady && exoPlayer.playbackState == Player.STATE_BUFFERING
             errorText = null
             exoPlayer.playWhenReady = true
             return@LaunchedEffect
         }
 
-        loading = true
+        loading = !hasReachedReady
         errorText = null
         runCatching {
             PersistentNativePlayer.ensureOnline(
@@ -259,7 +256,10 @@ fun NativeInlinePlayer(
                 forceRefresh = false,
             )
         }.onSuccess {
-            loading = exoPlayer.playbackState != Player.STATE_READY
+            if (exoPlayer.playbackState == Player.STATE_READY || exoPlayer.currentPosition > 0L) {
+                hasReachedReady = true
+            }
+            loading = !hasReachedReady && exoPlayer.playbackState != Player.STATE_READY
             errorText = null
         }.onFailure { error ->
             loading = false
@@ -314,7 +314,7 @@ fun NativeInlinePlayer(
                 color = Color.White,
                 modifier = Modifier.padding(20.dp),
             )
-            loading -> CircularProgressIndicator()
+            loading && !hasReachedReady -> CircularProgressIndicator()
             errorText != null -> Text(
                 errorText.orEmpty(),
                 color = Color.White,
