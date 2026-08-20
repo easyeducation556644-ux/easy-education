@@ -92,10 +92,9 @@ fun RumbleEmbedPlayer(
                         settings.loadWithOverviewMode = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
-                        CookieManager.getInstance().apply {
-                            setAcceptCookie(true)
-                            setAcceptThirdPartyCookies(this@apply, true)
-                        }
+                        val cookieManager = CookieManager.getInstance()
+                        cookieManager.setAcceptCookie(true)
+                        cookieManager.setAcceptThirdPartyCookies(this, true)
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 loading = false
@@ -122,7 +121,7 @@ fun RumbleEmbedPlayer(
                                 return if (host == "rumble.com" || host.endsWith(".rumble.com")) {
                                     false
                                 } else {
-                                    // Keep player-originated links inside the app; never hand Rumble playback to a browser.
+                                    // Never hand Rumble playback/navigation to an external browser.
                                     true
                                 }
                             }
@@ -175,7 +174,12 @@ private fun rumbleEmbedUrl(sourceUrl: String): String? {
     val parsed = runCatching { Uri.parse(sourceUrl) }.getOrNull() ?: return null
     val id = parsed.pathSegments
         .asSequence()
-        .mapNotNull { segment -> Regex("^(v[0-9A-Za-z]+)", RegexOption.IGNORE_CASE).find(segment)?.groupValues?.getOrNull(1) }
+        .mapNotNull { segment ->
+            Regex("^(v[0-9A-Za-z]+)", RegexOption.IGNORE_CASE)
+                .find(segment)
+                ?.groupValues
+                ?.getOrNull(1)
+        }
         .firstOrNull()
         ?: return null
     return "https://rumble.com/embed/$id/"
@@ -185,11 +189,11 @@ private class RumbleFullscreenChromeClient(
     private val activity: Activity,
 ) : WebChromeClient() {
     private var customView: View? = null
-    private var customViewCallback: CustomViewCallback? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var fullscreenContainer: FrameLayout? = null
     private var previousSystemUiVisibility: Int = 0
 
-    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+    override fun onShowCustomView(view: View?, callback: WebChromeClient.CustomViewCallback?) {
         if (view == null) {
             callback?.onCustomViewHidden()
             return
