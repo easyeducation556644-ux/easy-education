@@ -40,6 +40,8 @@ import java.util.concurrent.atomic.AtomicReference
  * Inline presentation of the single process-local player session and the single visual player view.
  * Inline, mini, native PiP and fullscreen reparent that same YoutubeStylePlayerView. Presentation
  * changes therefore do not call resolver/setMediaSource/prepare and do not bind a second PlayerView.
+ * All providers, including Rumble, stay on this native Media3 surface; provider-specific resolution
+ * is handled by NativePlaybackSourceResolver without swapping the UI to a WebView.
  */
 @Composable
 fun NativeInlinePlayer(
@@ -59,11 +61,6 @@ fun NativeInlinePlayer(
     onFullscreen: (() -> Unit)? = null,
     onSharedSessionClassChanged: ((String) -> Unit)? = null,
 ) {
-    if (isRumbleVideoUrl(sourceUrl)) {
-        RumbleEmbedPlayer(sourceUrl = sourceUrl, online = online, modifier = modifier)
-        return
-    }
-
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val exoPlayer = remember { PersistentNativePlayer.player(context) }
