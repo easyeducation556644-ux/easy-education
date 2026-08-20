@@ -1,5 +1,8 @@
 package com.easyeducation.app
 
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -11,20 +14,22 @@ import java.util.concurrent.TimeUnit
  * Resolves Rumble playback on the device instead of proxying playback through Vercel.
  *
  * Rumble CDN URLs are temporary and may be protected by request-context checks. We resolve fresh
- * embed metadata, prefer progressive MP4 for the native Media3 player, and probe candidate URLs
- * from the actual device with the same browser-like headers that playback will use. This keeps the
- * custom player/seek/fullscreen path while avoiding serverless-IP 403s.
+ * embed metadata, keep the embed session cookies, prefer progressive MP4 for the native Media3
+ * player, and probe candidate URLs from the actual device with the same browser-like request
+ * context that playback will use.
  */
-class RumbleDeviceResolver(
-    private val http: OkHttpClient = OkHttpClient.Builder()
+class RumbleDeviceResolver {
+    private val cookieJar = RumbleCookieJar()
+    private val http = OkHttpClient.Builder()
+        .cookieJar(cookieJar)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(22, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .retryOnConnectionFailure(true)
-        .build(),
-) {
+        .build()
+
     data class Resolved(
         val url: String,
         val hls: Boolean,
@@ -45,6 +50,7 @@ class RumbleDeviceResolver(
         require(embedId.isNotBlank()) { "Unable to find the Rumble video ID" }
 
         val embedUrl = "https://rumble.com/embed/$embedId/"
+        seedEmbedSession(embedUrl)
         val payload = fetchMetadata(embedId, embedUrl)
         val candidates = collectCandidates(payload)
         require(candidates.isNotEmpty()) { "Rumble did not expose a playable CDN stream" }
@@ -69,10 +75,14 @@ class RumbleDeviceResolver(
         for (candidate in ordered.take(MAX_PROBED_CANDIDATES)) {
             for (headers in headerVariants) {
                 if (probe(candidate, headers)) {
+                    val playbackHeaders = headers.toMutableMap()
+                    cookieJar.cookieHeader(candidate.url)
+                        .takeIf { it.isNotBlank() }
+                        ?.let { playbackHeaders["Cookie"] = it }
                     return Resolved(
                         url = candidate.url,
                         hls = candidate.hls,
-                        requestHeaders = headers,
+                        requestHeaders = playbackHeaders,
                         height = candidate.height,
                     )
                 }
@@ -115,6 +125,26 @@ class RumbleDeviceResolver(
         }.getOrDefault("")
     }
 
+    private fun seedEmbedSession(embedUrl: String) {
+        runCatching {
+            http.newCall(
+                Request.Builder()
+                    .url(embedUrl)
+                    .header("User-Agent", DESKTOP_USER_AGENT)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("Sec-Fetch-Dest", "iframe")
+                    .header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Site", "same-origin")
+                    .get()
+                    .build(),
+            ).execute().use { response ->
+                // Reading a small prefix is unnecessary; headers are enough for CookieJar to persist
+                // Set-Cookie values and closing the body prevents the full embed page from buffering.
+                response.body?.close()
+            }
+        }
+    }
+
     private fun fetchMetadata(embedId: String, embedUrl: String): JSONObject {
         val endpoint = "https://rumble.com/embedJS/u3/?request=video&ver=2&v=$embedId"
         return http.newCall(
@@ -123,6 +153,9 @@ class RumbleDeviceResolver(
                 .header("User-Agent", DESKTOP_USER_AGENT)
                 .header("Accept", "application/json,text/plain,*/*")
                 .header("Referer", embedUrl)
+                .header("Sec-Fetch-Dest", "empty")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Site", "same-origin")
                 .get()
                 .build(),
         ).execute().use { response ->
@@ -325,5 +358,36 @@ class RumbleDeviceResolver(
             val host = URI(value).host?.lowercase().orEmpty()
             host == "rumble.com" || host.endsWith(".rumble.com")
         }.getOrDefault(false)
+    }
+}
+
+private class RumbleCookieJar : CookieJar {
+    private val cookies = mutableListOf<Cookie>()
+
+    @Synchronized
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        val now = System.currentTimeMillis()
+        this.cookies.removeAll { it.expiresAt < now }
+        cookies.forEach { incoming ->
+            this.cookies.removeAll {
+                it.name == incoming.name &&
+                    it.domain == incoming.domain &&
+                    it.path == incoming.path
+            }
+            if (incoming.expiresAt >= now) this.cookies += incoming
+        }
+    }
+
+    @Synchronized
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        val now = System.currentTimeMillis()
+        cookies.removeAll { it.expiresAt < now }
+        return cookies.filter { it.matches(url) }
+    }
+
+    @Synchronized
+    fun cookieHeader(url: String): String {
+        val httpUrl = runCatching { HttpUrl.get(url) }.getOrNull() ?: return ""
+        return loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
     }
 }
