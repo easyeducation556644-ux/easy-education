@@ -176,6 +176,7 @@ object NativePlaybackSourceResolver {
     private fun rumbleHeaders(sourceUrl: String): Map<String, String> = linkedMapOf(
         "User-Agent" to RUMBLE_USER_AGENT,
         "Referer" to sourceUrl,
+        "Origin" to "https://rumble.com",
         "Accept-Encoding" to "identity",
         "Accept-Language" to "en-US,en;q=0.9",
     )
