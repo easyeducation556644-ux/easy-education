@@ -4,6 +4,7 @@ import { getFirestore } from "firebase-admin/firestore"
 
 const DEFAULT_PROJECT_ID = "easy-education-real"
 const DEFAULT_APP_NAME = "[DEFAULT]"
+const LIMITED_ADMIN_MODES = new Set(["limited", "custom"])
 
 function getServiceAccount() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -110,9 +111,35 @@ export async function requireAuthenticatedUser(req) {
   }
 }
 
+export function isLimitedAdminProfile(userProfile) {
+  return userProfile?.role === "admin" && LIMITED_ADMIN_MODES.has(userProfile?.adminAccess?.mode)
+}
+
 export function isFullAdminProfile(userProfile) {
-  return (
-    userProfile?.role === "admin" &&
-    userProfile?.adminAccess?.mode !== "limited"
-  )
+  return userProfile?.role === "admin" && !LIMITED_ADMIN_MODES.has(userProfile?.adminAccess?.mode)
+}
+
+export function profileHasAdminPage(userProfile, page) {
+  if (isFullAdminProfile(userProfile)) return true
+  if (!isLimitedAdminProfile(userProfile)) return false
+  return Array.isArray(userProfile?.adminAccess?.pages) && userProfile.adminAccess.pages.includes(page)
+}
+
+export function profileHasUserAction(userProfile, action) {
+  if (isFullAdminProfile(userProfile)) return true
+  if (!profileHasAdminPage(userProfile, "users")) return false
+  return Array.isArray(userProfile?.adminAccess?.userActions)
+    && userProfile.adminAccess.userActions.includes(action)
+}
+
+export function profilePageCourseIds(userProfile, page) {
+  if (isFullAdminProfile(userProfile)) return null
+  if (!profileHasAdminPage(userProfile, page)) return []
+  const values = userProfile?.adminAccess?.courseIdsByPage?.[page]
+  return Array.isArray(values) ? [...new Set(values.filter(Boolean))] : []
+}
+
+export function profileCanManageCourse(userProfile, page, courseId) {
+  const allowed = profilePageCourseIds(userProfile, page)
+  return allowed === null || allowed.includes(courseId)
 }
