@@ -54,7 +54,7 @@ object NativePlaybackSourceResolver {
     ): NativeOnlinePlaybackSource {
         return when {
             YoutubeDeviceResolver.isYoutubeUrl(sourceUrl) -> resolveYoutube(sourceUrl, requestedHeight)
-            isRumblePage(sourceUrl) -> resolveRumble(classId, sourceUrl, requestedHeight)
+            RumbleDeviceResolver.isRumbleUrl(sourceUrl) -> resolveRumble(classId, sourceUrl, requestedHeight)
             sourceUrl.contains(".m3u8", ignoreCase = true) -> NativeOnlinePlaybackSource.Direct(
                 url = sourceUrl,
                 hls = true,
@@ -147,6 +147,28 @@ object NativePlaybackSourceResolver {
         sourceUrl: String,
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
+        // Primary playback path: resolve and probe Rumble's fresh CDN URL from the actual Android
+        // device. This preserves the native custom player and avoids serverless-IP 403s.
+        runCatching {
+            RumbleDeviceResolver().resolve(sourceUrl, requestedHeight)
+        }.getOrNull()?.let { resolved ->
+            return NativeOnlinePlaybackSource.Direct(
+                url = resolved.url,
+                hls = resolved.hls,
+                requestHeaders = resolved.requestHeaders,
+            )
+        }
+
+        // Fallback only: keep the authenticated server path for unusual metadata shapes and for
+        // compatibility with existing download authorization. Playback normally never reaches it.
+        return resolveRumbleServerFallback(classId, sourceUrl, requestedHeight)
+    }
+
+    private fun resolveRumbleServerFallback(
+        classId: String,
+        sourceUrl: String,
+        requestedHeight: Int,
+    ): NativeOnlinePlaybackSource {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val url = "$APP_ORIGIN/api/offline-video?options=1" +
@@ -193,10 +215,19 @@ object NativePlaybackSourceResolver {
                 ?: items.filter { heightOf(it) <= requestedHeight }.maxByOrNull(heightOf)
                 ?: items.minByOrNull(heightOf)
 
-        // Rumble's direct HLS CDN URLs can reject Android clients with HTTP 403 even when the
-        // metadata request itself succeeded. Prefer the authenticated Easy Education MP4 range
-        // proxy so playback uses the server-side Rumble request context that already resolved the
-        // video successfully. Keep direct HLS only as a last fallback for videos without MP4.
+        choose(hls) { it.height }?.let { selected ->
+            return NativeOnlinePlaybackSource.Direct(
+                url = selected.url,
+                hls = true,
+                requestHeaders = mapOf(
+                    "User-Agent" to RUMBLE_USER_AGENT,
+                    "Accept" to "*/*",
+                    "Accept-Encoding" to "identity",
+                    "Referer" to sourceUrl,
+                ),
+            )
+        }
+
         choose(mp4) { it.height }?.let { selectedMp4 ->
             val downloadToken = payload.optString("downloadToken")
             require(downloadToken.isNotBlank()) { "Playback authorization expired. Reopen the class." }
@@ -208,23 +239,6 @@ object NativePlaybackSourceResolver {
             )
         }
 
-        choose(hls) { it.height }?.let { selected ->
-            return NativeOnlinePlaybackSource.Direct(
-                url = selected.url,
-                hls = true,
-                requestHeaders = mapOf(
-                    "User-Agent" to RUMBLE_USER_AGENT,
-                    "Referer" to sourceUrl,
-                    "Origin" to "https://rumble.com",
-                ),
-            )
-        }
-
         error("No native Rumble stream is available")
     }
-
-    private fun isRumblePage(value: String): Boolean = runCatching {
-        val host = URI(value).host?.lowercase().orEmpty()
-        host == "rumble.com" || host.endsWith(".rumble.com")
-    }.getOrDefault(false)
 }
