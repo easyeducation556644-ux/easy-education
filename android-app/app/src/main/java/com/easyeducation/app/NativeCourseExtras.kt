@@ -33,7 +33,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -57,6 +56,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
@@ -72,31 +72,19 @@ private data class NativeArchiveGroup(
 @Composable
 fun NativeArchiveEntryCard(onClick: () -> Unit) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         shape = RoundedCornerShape(14.dp),
     ) {
-        Row(
-            Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-            ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                 Icon(Icons.Default.Archive, null, Modifier.padding(12.dp).size(25.dp))
             }
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f)) {
                 Text("Archive", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "View archived chapters and classes",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("View archived chapters and classes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text("›", style = MaterialTheme.typography.headlineSmall)
         }
@@ -104,11 +92,7 @@ fun NativeArchiveEntryCard(onClick: () -> Unit) {
 }
 
 @Composable
-fun NativeArchiveCourseScreen(
-    nav: NavHostController,
-    state: NativeUiState,
-    courseId: String,
-) {
+fun NativeArchiveCourseScreen(nav: NavHostController, state: NativeUiState, courseId: String) {
     val content = state.courseContent[courseId]
     if (content == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -118,16 +102,11 @@ fun NativeArchiveCourseScreen(
     val groups = remember(archived) { archiveGroups(archived) }
     val title = content.course?.title ?: state.courses.firstOrNull { it.id == courseId }?.title ?: "Archive"
 
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { nav.popBackStack() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                }
+                IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text("Archive", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -136,24 +115,16 @@ fun NativeArchiveCourseScreen(
         }
         if (groups.isEmpty()) {
             item {
-                Card(
-                    Modifier.fillMaxWidth(),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
+                Card(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Text("No archived classes are available.", Modifier.padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         } else {
             items(groups, key = { it.key }) { group ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            nav.navigate(
-                                "archive-chapter/$courseId/${Uri.encode(group.subject)}/${Uri.encode(group.chapter)}",
-                            )
-                        },
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        nav.navigate("archive-chapter/$courseId/${Uri.encode(group.subject)}/${Uri.encode(group.chapter)}")
+                    },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     shape = RoundedCornerShape(14.dp),
@@ -181,13 +152,7 @@ fun NativeArchiveCourseScreen(
 }
 
 @Composable
-fun NativeArchiveChapterScreen(
-    nav: NavHostController,
-    state: NativeUiState,
-    courseId: String,
-    subject: String,
-    chapter: String,
-) {
+fun NativeArchiveChapterScreen(nav: NavHostController, state: NativeUiState, courseId: String, subject: String, chapter: String) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val content = state.courseContent[courseId]
     if (content == null) {
@@ -203,10 +168,7 @@ fun NativeArchiveChapterScreen(
         actualChapter.equals(chapter, true) && actualSubject.equals(subject, true)
     }.sortedWith(compareBy<NativeClassItem> { it.order }.thenBy { it.title.lowercase() })
 
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item {
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -219,32 +181,24 @@ fun NativeArchiveChapterScreen(
         }
         if (classes.isEmpty()) {
             item {
-                Card(
-                    Modifier.fillMaxWidth(),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) { Text("No archived classes in this chapter.", Modifier.padding(18.dp)) }
+                Card(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Text("No archived classes in this chapter.", Modifier.padding(18.dp))
+                }
             }
         } else {
             items(classes, key = { it.id }) { item ->
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            NativeWatchBackdrop.capture(context)
-                            nav.navigate("class/$courseId/${item.id}")
-                        },
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        NativeWatchBackdrop.capture(context)
+                        nav.navigate("class/$courseId/${item.id}")
+                    },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     shape = RoundedCornerShape(13.dp),
                 ) {
                     Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (item.imageUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = item.imageUrl,
-                                contentDescription = item.title,
-                                modifier = Modifier.width(102.dp).height(66.dp),
-                            )
+                            AsyncImage(model = item.imageUrl, contentDescription = item.title, modifier = Modifier.width(102.dp).height(66.dp))
                         } else {
                             Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                                 Icon(Icons.Default.PlayArrow, null, Modifier.padding(18.dp).size(28.dp))
@@ -253,9 +207,7 @@ fun NativeArchiveChapterScreen(
                         Spacer(Modifier.width(11.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            if (item.teacherName.isNotBlank()) {
-                                Text(item.teacherName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                            if (item.teacherName.isNotBlank()) Text(item.teacherName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -266,10 +218,7 @@ fun NativeArchiveChapterScreen(
 }
 
 @Composable
-fun NativeTelegramJoinCard(
-    course: NativeCourse,
-    online: Boolean,
-) {
+fun NativeTelegramJoinCard(course: NativeCourse, online: Boolean) {
     if (course.telegramLink.isBlank()) return
     val context = androidx.compose.ui.platform.LocalContext.current
     val user = FirebaseAuth.getInstance().currentUser ?: return
@@ -293,9 +242,7 @@ fun NativeTelegramJoinCard(
                     .whereEqualTo("userId", user.uid)
                     .get(Source.SERVER)
                     .await()
-                val matching = snapshot.documents
-                    .mapNotNull { it.data }
-                    .filter { it["courseId"]?.toString() == course.id }
+                val matching = snapshot.documents.mapNotNull { it.data }.filter { it["courseId"]?.toString() == course.id }
                 when {
                     matching.any { it["status"]?.toString()?.equals("joined", true) == true } -> "joined"
                     matching.isNotEmpty() -> "requested"
@@ -305,11 +252,7 @@ fun NativeTelegramJoinCard(
         }.getOrElse { "none" }
     }
 
-    Card(
-        Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = RoundedCornerShape(14.dp),
-    ) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(14.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
@@ -377,17 +320,14 @@ fun NativeTelegramJoinCard(
                     onClick = {
                         errorText = null
                         if (dialogStep == 1) {
-                            if (telegramId.trim().isBlank()) {
-                                errorText = "Telegram ID is required."
-                            } else {
-                                dialogStep = 2
-                            }
+                            if (telegramId.trim().isBlank()) errorText = "Telegram ID is required."
+                            else dialogStep = 2
                         } else {
                             if (mobile.trim().isBlank()) {
                                 errorText = "Mobile number is required."
                             } else {
                                 submitting = true
-                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                                kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
                                     runCatching {
                                         firestore.collection("telegramSubmissions").add(
                                             mapOf(
@@ -433,22 +373,14 @@ fun NativeTelegramJoinCard(
 private fun archiveGroups(classes: List<NativeClassItem>): List<NativeArchiveGroup> {
     val groups = linkedMapOf<String, MutableList<NativeClassItem>>()
     for (item in classes) {
-        val subject = item.subjects.firstOrNull { !it.equals("archive", true) }
-            ?.takeIf { it.isNotBlank() }
-            ?: ARCHIVE_SUBJECT_SENTINEL
-        val chapters = item.chapters.filter { it.isNotBlank() && !it.equals("archive", true) }
-            .ifEmpty { listOf("Archived classes") }
-        for (chapter in chapters) {
-            groups.getOrPut("${subject.lowercase()}\u0000${chapter.lowercase()}") { mutableListOf() }.add(item)
-        }
+        val subject = item.subjects.firstOrNull { !it.equals("archive", true) }?.takeIf { it.isNotBlank() } ?: ARCHIVE_SUBJECT_SENTINEL
+        val chapters = item.chapters.filter { it.isNotBlank() && !it.equals("archive", true) }.ifEmpty { listOf("Archived classes") }
+        for (chapter in chapters) groups.getOrPut("${subject.lowercase()}\u0000${chapter.lowercase()}") { mutableListOf() }.add(item)
     }
     return groups.entries.map { (_, items) ->
         val first = items.first()
-        val subject = first.subjects.firstOrNull { !it.equals("archive", true) }
-            ?.takeIf { it.isNotBlank() }
-            ?: ARCHIVE_SUBJECT_SENTINEL
-        val chapter = first.chapters.firstOrNull { it.isNotBlank() && !it.equals("archive", true) }
-            ?: "Archived classes"
+        val subject = first.subjects.firstOrNull { !it.equals("archive", true) }?.takeIf { it.isNotBlank() } ?: ARCHIVE_SUBJECT_SENTINEL
+        val chapter = first.chapters.firstOrNull { it.isNotBlank() && !it.equals("archive", true) } ?: "Archived classes"
         NativeArchiveGroup(
             key = "${subject.lowercase()}\u0000${chapter.lowercase()}",
             subject = subject,
