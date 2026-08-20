@@ -2,7 +2,7 @@ name: Android signed APK
 
 on:
   push:
-    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8"]
+    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download"]
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
   pull_request:
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
