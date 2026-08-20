@@ -55,8 +55,10 @@ object NativeCapturePolicy {
 
     private fun apply(activity: Activity, uid: String?) {
         val allow = if (uid.isNullOrBlank()) false else {
-            activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean("allow:$uid", false)
+            val prefs = activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val checkedAt = prefs.getLong("checked:$uid", 0L)
+            val fresh = checkedAt > 0L && System.currentTimeMillis() - checkedAt < CACHE_TTL_MS
+            fresh && prefs.getBoolean("allow:$uid", false)
         }
         if (allow) {
             activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
