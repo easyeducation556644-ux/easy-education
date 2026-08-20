@@ -78,36 +78,32 @@ class NativeRepository(context: Context) {
         val enrollmentJson = canonicalSnapshot.documents.map(DocumentSnapshot::toCacheJson).toMutableList()
         val canonicalCourseIds = enrollmentJson.map { it.optString("courseId") }.filter { it.isNotBlank() }.toMutableSet()
 
-        // Payments are also used as an ordering source because an enrollment document can be
-        // rewritten later. My Courses keeps the actual purchase/enrollment timeline instead of title order.
+        // Approved payments are the authoritative purchase-order source. Keep the latest approved
+        // purchase per course so a newly purchased course appears at the top of My Courses.
         val approvedPayments = firestore.collection("payments")
             .whereEqualTo("userId", uid)
             .whereEqualTo("status", "approved")
             .get(Source.SERVER)
             .await()
-        val firstPaymentAtByCourse = linkedMapOf<String, Long>()
+        val latestPaymentAtByCourse = linkedMapOf<String, Long>()
         for (payment in approvedPayments.documents) {
             val paidAt = paymentTimestamp(payment)
             for (courseId in paymentCourseIds(payment)) {
                 if (courseId.isBlank()) continue
-                val previous = firstPaymentAtByCourse[courseId]
-                if (previous == null || (paidAt > 0L && (previous <= 0L || paidAt < previous))) {
-                    firstPaymentAtByCourse[courseId] = paidAt
-                }
+                val previous = latestPaymentAtByCourse[courseId] ?: 0L
+                if (paidAt > previous) latestPaymentAtByCourse[courseId] = paidAt
             }
         }
 
         enrollmentJson.forEach { enrollment ->
             val courseId = enrollment.optString("courseId")
-            val paidAt = firstPaymentAtByCourse[courseId] ?: 0L
+            val paidAt = latestPaymentAtByCourse[courseId] ?: 0L
             val currentAt = enrollment.optLong("enrolledAt", 0L)
-            if (paidAt > 0L && (currentAt <= 0L || paidAt < currentAt)) {
-                enrollment.put("enrolledAt", paidAt)
-            }
+            if (paidAt > currentAt) enrollment.put("enrolledAt", paidAt)
         }
 
         // Compatibility for old approved payments that pre-date deterministic userCourses docs.
-        firstPaymentAtByCourse.forEach { (courseId, paidAt) ->
+        latestPaymentAtByCourse.forEach { (courseId, paidAt) ->
             if (courseId in canonicalCourseIds) return@forEach
             enrollmentJson += JSONObject()
                 .put("id", "legacy_${stableId("$uid:$courseId")}")
