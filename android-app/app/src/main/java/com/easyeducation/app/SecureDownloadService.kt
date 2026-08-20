@@ -188,6 +188,29 @@ class SecureDownloadService : Service() {
     }
 
     private fun resolveRumble(task: SecureDownloadTask, sourceUrl: String): ProgressiveSource {
+        val directStreams = runCatching {
+            NativeRumbleDirectResolver(http).resolveAll(sourceUrl).filter { !it.hls }
+        }.getOrNull().orEmpty()
+        if (directStreams.isNotEmpty()) {
+            val selected = directStreams.firstOrNull { it.height == task.height }
+                ?: directStreams.filter { it.height in 1..task.height }.maxByOrNull { it.height }
+                ?: directStreams.minByOrNull { it.height.takeIf { value -> value > 0 } ?: Int.MAX_VALUE }
+            if (selected != null) {
+                val total = selected.contentLength.takeIf { it > 0L }
+                    ?: probeRumbleLength(task.id, selected.url, sourceUrl)
+                if (total > 0L) {
+                    val height = selected.height.takeIf { it > 0 } ?: task.height
+                    return ProgressiveSource(total, height, if (height > 0) "${height}p" else task.qualityLabel) { start, end ->
+                        fetchRumbleRange(task.id, selected.url, sourceUrl, start, end)
+                    }
+                }
+            }
+        }
+
+        return resolveRumbleServer(task, sourceUrl)
+    }
+
+    private fun resolveRumbleServer(task: SecureDownloadTask, sourceUrl: String): ProgressiveSource {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
         val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
         val optionsUrl = APP_ORIGIN + "/api/offline-video?options=1" +
@@ -240,12 +263,40 @@ class SecureDownloadService : Service() {
         }
     }
 
+    private fun probeRumbleLength(downloadId: String, url: String, sourceUrl: String): Long {
+        val request = rumbleRequest(url, sourceUrl)
+            .header("Range", "bytes=0-0")
+            .build()
+        return DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
+            val range = response.header("Content-Range").orEmpty()
+            range.substringAfterLast('/', "").toLongOrNull()
+                ?: if (response.code == 200) response.header("Content-Length")?.toLongOrNull() ?: 0L else 0L
+        }
+    }
+
     private fun fetchRange(downloadId: String, url: String, start: Long, end: Long): ByteArray {
         val request = Request.Builder()
             .url(url)
             .header("Range", "bytes=$start-$end")
             .header("User-Agent", USER_AGENT)
             .build()
+        return fetchCheckedRange(downloadId, request, start, end)
+    }
+
+    private fun fetchRumbleRange(
+        downloadId: String,
+        url: String,
+        sourceUrl: String,
+        start: Long,
+        end: Long,
+    ): ByteArray {
+        val request = rumbleRequest(url, sourceUrl)
+            .header("Range", "bytes=$start-$end")
+            .build()
+        return fetchCheckedRange(downloadId, request, start, end)
+    }
+
+    private fun fetchCheckedRange(downloadId: String, request: Request, start: Long, end: Long): ByteArray {
         return DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
             if (response.code != 206) error("Video server does not support safe resumable downloads (HTTP ${response.code})")
             val range = response.header("Content-Range").orEmpty()
@@ -256,6 +307,13 @@ class SecureDownloadService : Service() {
             response.body?.bytes() ?: error("Video server returned an empty chunk")
         }
     }
+
+    private fun rumbleRequest(url: String, sourceUrl: String): Request.Builder = Request.Builder()
+        .url(url)
+        .header("User-Agent", NativeRumbleDirectResolver.RUMBLE_USER_AGENT)
+        .header("Referer", sourceUrl)
+        .header("Origin", NativeRumbleDirectResolver.RUMBLE_ORIGIN)
+        .header("Accept-Encoding", "identity")
 
     private fun executeJson(downloadId: String, request: Request): JSONObject =
         DownloadRuntime.execute(downloadId, http.newCall(request)) { response ->
@@ -300,6 +358,6 @@ class SecureDownloadService : Service() {
         const val EXTRA_ID = "secure_download_id"
         const val EXTRA_GENERATION = "secure_download_generation"
         private const val APP_ORIGIN = "https://easy-education.vercel.app"
-        private const val USER_AGENT = "EasyEducationAndroid/2.1"
+        private const val USER_AGENT = "EasyEducationAndroid/2.10.9"
     }
 }
