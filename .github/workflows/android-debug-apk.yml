@@ -3,9 +3,9 @@ name: Android signed APK
 on:
   push:
     branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download"]
-    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml", "tools/apply_cps_home_release_patch.py"]
   pull_request:
-    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml", "tools/apply_cps_home_release_patch.py"]
   workflow_dispatch:
 
 permissions:
@@ -45,6 +45,28 @@ jobs:
             "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" \
             --data-binary @"$RUNNER_TEMP/status.json"
       - uses: actions/checkout@v4
+      - name: Apply final CPS Home wiring
+        run: python tools/apply_cps_home_release_patch.py
+      - name: Verify CPS upstream remains read-only
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('server/cps-readonly.js').read_text()
+          forbidden = [
+              'documents:commit', 'batchWrite', 'createDocument',
+              'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"',
+              "method: 'PATCH'", "method: 'PUT'", "method: 'DELETE'",
+          ]
+          hits = [needle for needle in forbidden if needle in source]
+          if hits:
+              raise SystemExit('Forbidden CPS upstream mutation capability found: ' + ', '.join(hits))
+          if 'fetch(url, { method: "GET"' not in source:
+              raise SystemExit('CPS GET-only transport guard missing')
+          if 'authenticated.db.collection(ENTITLEMENTS)' not in source:
+              raise SystemExit('Easy Education entitlement storage missing')
+          print('PASS: CPS upstream GET-only; grants/revokes target Easy Education Firestore')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
