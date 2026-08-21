@@ -89,20 +89,14 @@ fun NativeTrialOverlayHost(
                                     Icon(Icons.Default.CardGiftcard, null, Modifier.padding(12.dp).size(30.dp), tint = MaterialTheme.colorScheme.primary)
                                 }
                                 Text("Your free trial is ready", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                                Text(
-                                    "The timer starts only after you claim it.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-                                )
+                                Text("The timer starts only after you claim it.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
                             }
                         }
                         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(shape = TrialPill, color = MaterialTheme.colorScheme.primaryContainer) {
                                     Row(Modifier.padding(horizontal = 11.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Schedule, null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(5.dp))
-                                        Text(trialDurationLabel(offer), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                                        Icon(Icons.Default.Schedule, null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text(trialDurationLabel(offer), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
                                     }
                                 }
                             }
@@ -110,57 +104,31 @@ fun NativeTrialOverlayHost(
                             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 offer.courseTargets.take(5).forEach { course ->
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("•", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
-                                        Spacer(Modifier.width(7.dp))
-                                        Text(course.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        if (course.source == "cps") {
-                                            Spacer(Modifier.width(6.dp))
-                                            Surface(shape = TrialPill, color = MaterialTheme.colorScheme.secondaryContainer) {
-                                                Text("CPS", Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                            }
-                                        }
+                                        Text("•", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold); Spacer(Modifier.width(7.dp)); Text(course.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        if (course.source == "cps") { Spacer(Modifier.width(6.dp)); Surface(shape = TrialPill, color = MaterialTheme.colorScheme.secondaryContainer) { Text("CPS", Modifier.padding(horizontal = 7.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) } }
                                     }
                                 }
-                                if (offer.courseTargets.size > 5) {
-                                    Text("+${offer.courseTargets.size - 5} more courses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                                if (offer.courseTargets.size > 5) Text("+${offer.courseTargets.size - 5} more courses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Button(
-                                onClick = {
-                                    scope.launch {
-                                        NativeTrialStore.claim(context, uid, offer.id)
-                                        viewModel.refreshOnline()
-                                    }
-                                },
+                                onClick = { scope.launch { NativeTrialStore.claim(context, uid, offer.id); viewModel.refreshOnline() } },
                                 enabled = state.online && !trialState.busy,
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = TrialPill,
                             ) {
-                                if (trialState.busy) {
-                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(8.dp))
-                                }
+                                if (trialState.busy) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
                                 Text(if (trialState.busy) "Claiming…" else "Claim Trial")
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 TextButton(onClick = NativeTrialStore::dismissModalForSession) { Text("Maybe later") }
                                 TextButton(
-                                    onClick = {
-                                        scope.launch {
-                                            NativeTrialStore.cancel(context, uid, offer.id)
-                                            viewModel.refreshOnline()
-                                        }
-                                    },
+                                    onClick = { scope.launch { NativeTrialStore.cancel(context, uid, offer.id); viewModel.refreshOnline() } },
                                     enabled = state.online && !trialState.busy,
                                 ) {
-                                    Icon(Icons.Default.Close, null, Modifier.size(16.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Cancel trial")
+                                    Icon(Icons.Default.Close, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Cancel trial")
                                 }
                             }
-                            trialState.error?.takeIf { it.isNotBlank() }?.let { error ->
-                                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                            }
+                            trialState.error?.takeIf { it.isNotBlank() }?.let { error -> Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                         }
                     }
                 }
@@ -193,7 +161,7 @@ fun NativeTrialHomeBanner() {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            TextButton(onClick = { NativeTrialStore.dismissModalForSession() }) { Text("View") }
+            TextButton(onClick = NativeTrialStore::showModalForSession) { Text("View") }
         }
     }
 }

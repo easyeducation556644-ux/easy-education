@@ -15,12 +15,26 @@ import java.util.concurrent.TimeUnit
 private const val CPS_ACADEMIC_CACHE = "cps_academic"
 private const val CPS_ACADEMIC_API = "https://easy-education.vercel.app/api/cps"
 
+data class NativeCpsPlaylistClass(
+    val id: String,
+    val rawId: String,
+    val title: String,
+    val description: String,
+    val cdnType: String,
+    val videoUrl: String,
+    val thumbnailUrl: String,
+    val order: Int,
+    val timestamps: String,
+    val hasAccess: Boolean,
+)
+
 data class NativeCpsPlaylistGroup(
     val id: String,
     val title: String,
     val type: String,
     val order: Int,
     val classIds: List<String>,
+    val classes: List<NativeCpsPlaylistClass>,
 )
 
 data class NativeCpsLiveRecording(
@@ -139,6 +153,9 @@ class NativeCpsAcademicRepository(context: Context) {
             item.optJSONArray("recordings")?.forEachObject { it.put("url", "") }
         }
         safe.optJSONArray("resources")?.forEachObject { it.put("url", "") }
+        safe.optJSONArray("playlists")?.forEachObject { playlist ->
+            playlist.optJSONArray("classes")?.forEachObject { item -> item.put("videoUrl", "") }
+        }
         return safe
     }
 
@@ -153,6 +170,20 @@ class NativeCpsAcademicRepository(context: Context) {
                 type = item.optString("type"),
                 order = item.optInt("order", 0),
                 classIds = item.optJSONArray("classIds").strings(),
+                classes = item.optJSONArray("classes").objects().map { classItem ->
+                    NativeCpsPlaylistClass(
+                        id = classItem.optString("id"),
+                        rawId = classItem.optString("rawId"),
+                        title = classItem.optString("title").ifBlank { "Class" },
+                        description = classItem.optString("description"),
+                        cdnType = classItem.optString("cdnType"),
+                        videoUrl = classItem.optString("videoUrl"),
+                        thumbnailUrl = classItem.optString("thumbnailUrl"),
+                        order = classItem.optInt("order", 0),
+                        timestamps = classItem.optString("timestamps"),
+                        hasAccess = classItem.optBoolean("hasAccess", false),
+                    )
+                },
             )
         },
         liveClasses = payload.optJSONArray("liveClasses").objects().map { item ->

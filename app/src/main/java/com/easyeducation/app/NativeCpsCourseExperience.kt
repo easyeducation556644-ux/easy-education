@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
@@ -53,7 +54,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -70,7 +70,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private enum class CpsCoursePage { HOME, LIVE, LIVE_GROUP, RESOURCES, ROUTINE, TOPICS, EXAMS }
+private enum class CpsCoursePage { HOME, LIVE, LIVE_GROUP, PLAYLIST, ARCHIVES, RESOURCES, ROUTINE, TOPICS, EXAMS }
 private val CpsExperienceCard = RoundedCornerShape(20.dp)
 private val CpsExperienceSmall = RoundedCornerShape(14.dp)
 private val CpsExperiencePill = RoundedCornerShape(999.dp)
@@ -87,6 +87,8 @@ fun NativeCpsCourseExperience(
     val academicMap by NativeCpsAcademicStore.bundles.collectAsStateWithLifecycle()
     var pageName by rememberSaveable(courseId) { mutableStateOf(CpsCoursePage.HOME.name) }
     var liveGroupId by rememberSaveable(courseId) { mutableStateOf("") }
+    var playlistId by rememberSaveable(courseId) { mutableStateOf("") }
+    var playlistParentName by rememberSaveable(courseId) { mutableStateOf(CpsCoursePage.LIVE.name) }
     val page = runCatching { CpsCoursePage.valueOf(pageName) }.getOrDefault(CpsCoursePage.HOME)
 
     LaunchedEffect(courseId, state.online) {
@@ -96,17 +98,31 @@ fun NativeCpsCourseExperience(
     }
 
     BackHandler(enabled = page != CpsCoursePage.HOME) {
-        pageName = if (page == CpsCoursePage.LIVE_GROUP) CpsCoursePage.LIVE.name else CpsCoursePage.HOME.name
+        pageName = when (page) {
+            CpsCoursePage.LIVE_GROUP -> CpsCoursePage.LIVE.name
+            CpsCoursePage.PLAYLIST -> playlistParentName
+            CpsCoursePage.ARCHIVES -> CpsCoursePage.LIVE.name
+            else -> CpsCoursePage.HOME.name
+        }
     }
 
     val academic = academicMap[courseId]
     when (page) {
         CpsCoursePage.HOME -> CpsExperienceHome(nav, viewModel, state, courseId, academic) { target -> pageName = target.name }
-        CpsCoursePage.LIVE -> CpsExperienceLiveGroups(academic, onBack = { pageName = CpsCoursePage.HOME.name }) { group ->
-            liveGroupId = group
-            pageName = CpsCoursePage.LIVE_GROUP.name
-        }
+        CpsCoursePage.LIVE -> CpsExperienceLiveHub(
+            bundle = academic,
+            onBack = { pageName = CpsCoursePage.HOME.name },
+            onLiveGroup = { group -> liveGroupId = group; pageName = CpsCoursePage.LIVE_GROUP.name },
+            onPlaylist = { selected -> playlistId = selected; playlistParentName = CpsCoursePage.LIVE.name; pageName = CpsCoursePage.PLAYLIST.name },
+            onArchives = { pageName = CpsCoursePage.ARCHIVES.name },
+        )
         CpsCoursePage.LIVE_GROUP -> CpsExperienceLiveGroup(academic, liveGroupId, onBack = { pageName = CpsCoursePage.LIVE.name })
+        CpsCoursePage.PLAYLIST -> CpsExperiencePlaylist(state, courseId, academic, playlistId, onBack = { pageName = playlistParentName })
+        CpsCoursePage.ARCHIVES -> CpsExperienceArchives(academic, onBack = { pageName = CpsCoursePage.LIVE.name }) { selected ->
+            playlistId = selected
+            playlistParentName = CpsCoursePage.ARCHIVES.name
+            pageName = CpsCoursePage.PLAYLIST.name
+        }
         CpsCoursePage.RESOURCES -> CpsExperienceResources(academic, onBack = { pageName = CpsCoursePage.HOME.name })
         CpsCoursePage.ROUTINE -> CpsExperienceRoutine(academic, onBack = { pageName = CpsCoursePage.HOME.name })
         CpsCoursePage.TOPICS -> CpsExperienceTopics(state, courseId, academic, onBack = { pageName = CpsCoursePage.HOME.name })
@@ -140,22 +156,18 @@ private fun CpsExperienceHome(
                 Column {
                     if (course.thumbnailUrl.isNotBlank()) AsyncImage(course.thumbnailUrl, course.title, Modifier.fillMaxWidth().aspectRatio(16f / 7f), contentScale = ContentScale.Crop)
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            CpsExperienceChip("CPS")
-                            CpsExperienceChip("LIVE + INSTANT")
-                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { CpsExperienceChip("CPS"); CpsExperienceChip("LIVE + INSTANT") }
                         Text(course.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
                         if (course.description.isNotBlank()) Text(course.description, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (access) Icons.Default.CheckCircle else Icons.Default.Lock, null, Modifier.size(18.dp), tint = if (access) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (access) "Access active" else "Preview mode", fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(6.dp)); Text(if (access) "Access active" else "Preview mode", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
         }
-        item { CpsExperienceTile("Live Classes", "Part-wise live, upcoming and recorded classes", Icons.Default.LiveTv) { onPage(CpsCoursePage.LIVE) } }
+        item { CpsExperienceTile("Live Classes", "Live schedule, recorded LIVE chapters and archives", Icons.Default.LiveTv) { onPage(CpsCoursePage.LIVE) } }
         item { CpsExperienceTile("Exams", "Timed exams, answers and saved results", Icons.Default.Quiz) { onPage(CpsCoursePage.EXAMS) } }
         item { CpsExperienceTile("Slides & Practice Sheet", "Chapter-wise notes, slides and practice resources", Icons.Default.Description) { onPage(CpsCoursePage.RESOURCES) } }
         item { CpsExperienceTile("Routine", "Calendar for live classes, exams and routine", Icons.Default.CalendarMonth) { onPage(CpsCoursePage.ROUTINE) } }
@@ -165,41 +177,138 @@ private fun CpsExperienceHome(
 }
 
 @Composable
-private fun CpsExperienceLiveGroups(bundle: NativeCpsAcademicBundle?, onBack: () -> Unit, onGroup: (String) -> Unit) {
-    val groups = bundle?.liveClasses.orEmpty().groupBy { it.playlistId.ifBlank { it.playlistTitle } }
+private fun CpsExperienceLiveHub(
+    bundle: NativeCpsAcademicBundle?,
+    onBack: () -> Unit,
+    onLiveGroup: (String) -> Unit,
+    onPlaylist: (String) -> Unit,
+    onArchives: () -> Unit,
+) {
+    val scheduledGroups = bundle?.liveClasses.orEmpty().groupBy { it.playlistId.ifBlank { it.playlistTitle } }
+    val recordedLive = bundle?.playlists.orEmpty().filter { it.type.equals("LIVE", true) && it.classes.isNotEmpty() }
+    val archives = bundle?.playlists.orEmpty().filter { it.type.equals("ARCHIVE", true) && it.classes.isNotEmpty() }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, "Live Classes") }
-        if (groups.isEmpty()) item { CpsExperienceMessage("No live class group is available yet.") }
-        groups.forEach { (groupId, classes) ->
+
+        item { CpsExperienceSection("Live / Scheduled Classes") }
+        if (scheduledGroups.isEmpty()) item { CpsExperienceMessage("No scheduled live class is available right now.") }
+        scheduledGroups.forEach { (groupId, classes) ->
             val title = classes.firstOrNull()?.playlistTitle?.ifBlank { "Live Classes" } ?: "Live Classes"
             val running = classes.any { it.cpsRunning() }
-            item(key = "experience-group-$groupId") {
-                Card(Modifier.fillMaxWidth().clickable { onGroup(groupId) }, shape = CpsExperienceCard, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Surface(shape = RoundedCornerShape(14.dp), color = if (running) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer) {
-                            Icon(Icons.Default.LiveTv, null, Modifier.padding(11.dp).size(23.dp))
-                        }
+            item(key = "experience-live-group-$groupId") {
+                CpsPlaylistCard(title = title, count = classes.size, live = running, archive = false) { onLiveGroup(groupId) }
+            }
+        }
+
+        item { CpsExperienceSection("Recorded LIVE Classes") }
+        if (recordedLive.isEmpty()) item { CpsExperienceMessage("No recorded LIVE chapter is available yet.") }
+        items(recordedLive, key = { "recorded-live-${it.id}" }) { playlist ->
+            CpsPlaylistCard(title = playlist.title, count = playlist.classes.size, live = false, archive = false) { onPlaylist(playlist.id) }
+        }
+
+        if (archives.isNotEmpty()) {
+            item { CpsExperienceSection("Archive") }
+            item {
+                Card(Modifier.fillMaxWidth().clickable(onClick = onArchives), shape = CpsExperienceCard, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.tertiaryContainer) { Icon(Icons.Default.Folder, null, Modifier.padding(11.dp).size(23.dp)) }
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                if (running) CpsExperienceStatus("LIVE")
-                            }
-                            Text("${classes.size} class${if (classes.size == 1) "" else "es"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Archives", fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
+                            Text("${archives.size} archive${if (archives.size == 1) "" else "s"} • ${archives.sumOf { it.classes.size }} classes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Icon(Icons.Default.ArrowForward, null)
                     }
                 }
             }
         }
+        item { Spacer(Modifier.height(12.dp)) }
+    }
+}
+
+@Composable
+private fun CpsPlaylistCard(title: String, count: Int, live: Boolean, archive: Boolean, onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = CpsExperienceCard, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(14.dp), color = when { live -> MaterialTheme.colorScheme.errorContainer; archive -> MaterialTheme.colorScheme.tertiaryContainer; else -> MaterialTheme.colorScheme.secondaryContainer }) {
+                Icon(if (archive) Icons.Default.Folder else Icons.Default.LiveTv, null, Modifier.padding(11.dp).size(23.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (live) CpsExperienceStatus("LIVE")
+                }
+                Text("$count class${if (count == 1) "" else "es"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.Default.ArrowForward, null)
+        }
+    }
+}
+
+@Composable
+private fun CpsExperienceArchives(bundle: NativeCpsAcademicBundle?, onBack: () -> Unit, onPlaylist: (String) -> Unit) {
+    val archives = bundle?.playlists.orEmpty().filter { it.type.equals("ARCHIVE", true) && it.classes.isNotEmpty() }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+        item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, "Archives") }
+        if (archives.isEmpty()) item { CpsExperienceMessage("No archive is available yet.") }
+        items(archives, key = { "archive-playlist-${it.id}" }) { playlist ->
+            CpsPlaylistCard(playlist.title, playlist.classes.size, live = false, archive = true) { onPlaylist(playlist.id) }
+        }
+    }
+}
+
+@Composable
+private fun CpsExperiencePlaylist(
+    state: NativeUiState,
+    courseId: String,
+    bundle: NativeCpsAcademicBundle?,
+    playlistId: String,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val playlist = bundle?.playlists.orEmpty().firstOrNull { it.id == playlistId }
+    val contentClasses = state.courseContent[courseId]?.classes.orEmpty().associateBy { it.id }
+    val title = playlist?.title ?: "Classes"
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, title) }
+        if (playlist == null || playlist.classes.isEmpty()) item { CpsExperienceMessage("No class is available in this section yet.") }
+        playlist?.let { group ->
+            items(group.classes, key = { "playlist-class-${group.id}-${it.id}" }) { classItem ->
+                val fallback = contentClasses[classItem.id]?.sourceUrl.orEmpty()
+                val source = classItem.videoUrl.ifBlank { fallback }
+                val playable = classItem.hasAccess && source.isNotBlank()
+                Card(
+                    Modifier.fillMaxWidth().clickable(enabled = playable) {
+                        NativeCpsLivePlayerActivity.openRecording(context, classItem.title, source, classItem.id)
+                    },
+                    shape = CpsExperienceSmall,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                            Icon(if (playable) Icons.Default.PlayArrow else Icons.Default.Lock, null, Modifier.padding(10.dp).size(21.dp))
+                        }
+                        Spacer(Modifier.width(11.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(classItem.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            val meta = listOf(classItem.cdnType, if (classItem.timestamps.isNotBlank()) "Topics available" else "").filter { it.isNotBlank() }.joinToString(" • ")
+                            if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Default.ArrowForward, null)
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(12.dp)) }
     }
 }
 
 @Composable
 private fun CpsExperienceLiveGroup(bundle: NativeCpsAcademicBundle?, groupId: String, onBack: () -> Unit) {
     val context = LocalContext.current
-    val list = bundle?.liveClasses.orEmpty().filter { it.playlistId == groupId || (it.playlistId.isBlank() && it.playlistTitle == groupId) }
-        .sortedByDescending { cpsTimeMillis(it.startTime) ?: 0L }
+    val list = bundle?.liveClasses.orEmpty().filter { it.playlistId == groupId || (it.playlistId.isBlank() && it.playlistTitle == groupId) }.sortedByDescending { cpsTimeMillis(it.startTime) ?: 0L }
     val title = list.firstOrNull()?.playlistTitle ?: "Live Classes"
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, title) }
@@ -208,9 +317,7 @@ private fun CpsExperienceLiveGroup(bundle: NativeCpsAcademicBundle?, groupId: St
             Card(shape = CpsExperienceSmall, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Row(verticalAlignment = Alignment.Top) {
-                        Surface(shape = CircleShape, color = if (live.cpsRunning()) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                            Icon(Icons.Default.LiveTv, null, Modifier.padding(9.dp).size(20.dp))
-                        }
+                        Surface(shape = CircleShape, color = if (live.cpsRunning()) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant) { Icon(Icons.Default.LiveTv, null, Modifier.padding(9.dp).size(20.dp)) }
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(live.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -218,13 +325,15 @@ private fun CpsExperienceLiveGroup(bundle: NativeCpsAcademicBundle?, groupId: St
                             if (meta.isNotBlank()) Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    if (live.cpsRunning() && live.hasAccess && live.url.isNotBlank()) {
-                        Button(onClick = { NativeCpsLivePlayerActivity.openLive(context, live.title, live.url, live.id) }, modifier = Modifier.fillMaxWidth(), shape = CpsExperiencePill) {
+                    when {
+                        live.cpsRunning() && live.hasAccess && live.url.isNotBlank() -> Button(onClick = { NativeCpsLivePlayerActivity.openLive(context, live.title, live.url, live.id) }, modifier = Modifier.fillMaxWidth(), shape = CpsExperiencePill) {
                             Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Watch Live")
                         }
-                    } else if (live.status.lowercase(Locale.getDefault()) in setOf("upcoming", "scheduled")) {
-                        OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth(), shape = CpsExperiencePill) {
+                        live.cpsUpcoming() -> OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth(), shape = CpsExperiencePill) {
                             Icon(Icons.Default.Schedule, null); Spacer(Modifier.width(6.dp)); Text("Upcoming")
+                        }
+                        live.cpsEnded() && live.hasAccess && live.url.isNotBlank() -> Button(onClick = { NativeCpsLivePlayerActivity.openRecording(context, live.title, live.url, live.id) }, modifier = Modifier.fillMaxWidth(), shape = CpsExperiencePill) {
+                            Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Play class")
                         }
                     }
                     if (live.recordings.isNotEmpty()) {
@@ -236,8 +345,7 @@ private fun CpsExperienceLiveGroup(bundle: NativeCpsAcademicBundle?, groupId: St
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = CpsExperiencePill,
                             ) {
-                                Icon(if (recording.url.isNotBlank()) Icons.Default.PlayArrow else Icons.Default.Lock, null)
-                                Spacer(Modifier.width(6.dp)); Text(recording.title)
+                                Icon(if (recording.url.isNotBlank()) Icons.Default.PlayArrow else Icons.Default.Lock, null); Spacer(Modifier.width(6.dp)); Text(recording.title)
                             }
                         }
                     }
@@ -257,19 +365,11 @@ private fun CpsExperienceResources(bundle: NativeCpsAcademicBundle?, onBack: () 
         grouped.forEach { (chapter, resources) ->
             item(key = "experience-resource-title-$chapter") { CpsExperienceSection(chapter) }
             items(resources, key = { it.id }) { resource ->
-                Card(
-                    Modifier.fillMaxWidth().clickable(enabled = !resource.locked && resource.url.isNotBlank()) { NativeResourceViewerActivity.open(context, resource.title, resource.url) },
-                    shape = CpsExperienceSmall,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
+                Card(Modifier.fillMaxWidth().clickable(enabled = !resource.locked && resource.url.isNotBlank()) { NativeResourceViewerActivity.open(context, resource.title, resource.url) }, shape = CpsExperienceSmall, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Icon(Icons.Default.Description, null, Modifier.padding(9.dp).size(21.dp)) }
                         Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(resource.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(resource.kind.replace('-', ' ').ifBlank { "resource" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                        Column(Modifier.weight(1f)) { Text(resource.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis); Text(resource.kind.replace('-', ' ').ifBlank { "resource" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         Icon(if (resource.locked || resource.url.isBlank()) Icons.Default.Lock else Icons.Default.ArrowForward, null)
                     }
                 }
@@ -294,21 +394,15 @@ private fun CpsExperienceRoutine(bundle: NativeCpsAcademicBundle?, onBack: () ->
                         Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy")), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
                         IconButton(onClick = { monthText = month.plusMonths(1).toString() }) { Text("›", style = MaterialTheme.typography.headlineSmall) }
                     }
-                    Row(Modifier.fillMaxWidth()) { listOf("Su","Mo","Tu","We","Th","Fr","Sa").forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) } }
+                    Row(Modifier.fillMaxWidth()) { listOf("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa").forEach { Text(it, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) } }
                     val offset = month.atDay(1).dayOfWeek.value % 7
-                    val cells = buildList<LocalDate?> {
-                        repeat(offset) { add(null) }
-                        for (day in 1..month.lengthOfMonth()) add(month.atDay(day))
-                        while (size % 7 != 0) add(null)
-                    }
+                    val cells = buildList<LocalDate?> { repeat(offset) { add(null) }; for (day in 1..month.lengthOfMonth()) add(month.atDay(day)); while (size % 7 != 0) add(null) }
                     cells.chunked(7).forEach { week ->
                         Row(Modifier.fillMaxWidth()) {
                             week.forEach { date ->
                                 val marked = date != null && byDate[date].orEmpty().isNotEmpty()
                                 Box(Modifier.weight(1f).height(44.dp), contentAlignment = Alignment.Center) {
-                                    if (date != null) Surface(shape = CircleShape, color = if (marked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface) {
-                                        Text(date.dayOfMonth.toString(), Modifier.padding(9.dp), fontWeight = if (marked) FontWeight.ExtraBold else FontWeight.Normal)
-                                    }
+                                    if (date != null) Surface(shape = CircleShape, color = if (marked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface) { Text(date.dayOfMonth.toString(), Modifier.padding(9.dp), fontWeight = if (marked) FontWeight.ExtraBold else FontWeight.Normal) }
                                 }
                             }
                         }
@@ -321,11 +415,7 @@ private fun CpsExperienceRoutine(bundle: NativeCpsAcademicBundle?, onBack: () ->
             item { CpsExperienceSection("Schedule") }
             items(monthEvents, key = { it.id }) { event ->
                 Card(shape = CpsExperienceSmall, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (event.kind == "live") Icons.Default.LiveTv else Icons.Default.Event, null)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) { Text(event.title, fontWeight = FontWeight.SemiBold); Text(cpsDateTime(event.startTime), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
+                    Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Icon(if (event.kind == "live") Icons.Default.LiveTv else Icons.Default.Event, null); Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(event.title, fontWeight = FontWeight.SemiBold); Text(cpsDateTime(event.startTime), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 }
             }
         }
@@ -337,18 +427,18 @@ private fun CpsExperienceRoutine(bundle: NativeCpsAcademicBundle?, onBack: () ->
 private fun CpsExperienceTopics(state: NativeUiState, courseId: String, bundle: NativeCpsAcademicBundle?, onBack: () -> Unit) {
     val context = LocalContext.current
     val grouped = bundle?.topics.orEmpty().groupBy { it.chapter.ifBlank { "Topics" } }
-    val classes = state.courseContent[courseId]?.classes.orEmpty()
+    val contentClasses = state.courseContent[courseId]?.classes.orEmpty().associateBy { it.id }
+    val academicClasses = bundle?.playlists.orEmpty().flatMap { it.classes }.associateBy { it.id }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, "All Topics") }
         if (grouped.isEmpty()) item { CpsExperienceMessage("No timestamped topics are available yet.") }
         grouped.forEach { (chapter, topics) ->
             item(key = "experience-topic-title-$chapter") { CpsExperienceSection(chapter) }
             items(topics, key = { it.id }) { topic ->
-                val classItem = classes.firstOrNull { it.id == topic.classId }
-                val playable = topic.canOpen && classItem?.sourceUrl?.isNotBlank() == true
+                val source = academicClasses[topic.classId]?.videoUrl.orEmpty().ifBlank { contentClasses[topic.classId]?.sourceUrl.orEmpty() }
+                val playable = topic.canOpen && source.isNotBlank()
                 Card(
                     Modifier.fillMaxWidth().clickable(enabled = playable) {
-                        val source = classItem?.sourceUrl.orEmpty()
                         if (source.isBlank()) Toast.makeText(context, "Pull to refresh and retry.", Toast.LENGTH_SHORT).show()
                         else NativeCpsLivePlayerActivity.openRecording(context, topic.title, source, topic.classId, topic.videoTimestamp.toLong() * 1000L)
                     },
@@ -375,12 +465,7 @@ private fun CpsExperienceExams(nav: NavHostController, state: NativeUiState, cou
         item { Spacer(Modifier.height(4.dp)); CpsExperienceBack(onBack, "Exams") }
         if (exams.isEmpty()) item { CpsExperienceMessage("No exam is available for this course yet.") }
         items(exams, key = { it.id }) { exam ->
-            Card(
-                Modifier.fillMaxWidth().clickable { nav.navigate("cps-exam/${Uri.encode(courseId)}/${Uri.encode(exam.id)}") },
-                shape = CpsExperienceSmall,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
+            Card(Modifier.fillMaxWidth().clickable { nav.navigate("cps-exam/${Uri.encode(courseId)}/${Uri.encode(exam.id)}") }, shape = CpsExperienceSmall, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Icon(Icons.Default.Quiz, null, Modifier.padding(9.dp).size(21.dp)) }
                     Spacer(Modifier.width(10.dp))
@@ -400,24 +485,22 @@ private fun CpsExperienceTile(title: String, subtitle: String, icon: androidx.co
     Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = CpsExperienceCard, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.primaryContainer) { Icon(icon, null, Modifier.padding(12.dp).size(24.dp)) }
-            Spacer(Modifier.width(13.dp))
-            Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-            Icon(Icons.Default.ArrowForward, null)
+            Spacer(Modifier.width(13.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Icon(Icons.Default.ArrowForward, null)
         }
     }
 }
 
 @Composable private fun CpsExperienceBack(nav: NavHostController, title: String) = CpsExperienceBack({ nav.popBackStack() }, title)
-@Composable private fun CpsExperienceBack(onBack: () -> Unit, title: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }; Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-}
+@Composable private fun CpsExperienceBack(onBack: () -> Unit, title: String) { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }; Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis) } }
 @Composable private fun CpsExperienceSection(title: String) { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold) }
 @Composable private fun CpsExperienceChip(text: String) { Surface(shape = CpsExperiencePill, color = MaterialTheme.colorScheme.primaryContainer) { Text(text, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) } }
 @Composable private fun CpsExperienceStatus(text: String) { Surface(shape = CpsExperiencePill, color = MaterialTheme.colorScheme.errorContainer) { Text(text, Modifier.padding(horizontal = 8.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.ExtraBold) } }
 @Composable private fun CpsExperienceMessage(text: String) { Card(shape = CpsExperienceSmall, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Text(text, Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 
 private fun NativeCpsAcademicLive.cpsRunning() = status.lowercase(Locale.getDefault()) in setOf("live", "running", "ongoing", "started", "live now")
-private fun cpsTimestamp(seconds: Int): String { val safe = seconds.coerceAtLeast(0); val h = safe / 3600; val m = safe % 3600 / 60; val s = safe % 60; return if (h > 0) "%d:%02d:%02d".format(h,m,s) else "%d:%02d".format(m,s) }
+private fun NativeCpsAcademicLive.cpsUpcoming() = status.lowercase(Locale.getDefault()) in setOf("upcoming", "scheduled")
+private fun NativeCpsAcademicLive.cpsEnded() = status.lowercase(Locale.getDefault()) in setOf("ended", "past", "completed", "complete")
+private fun cpsTimestamp(seconds: Int): String { val safe = seconds.coerceAtLeast(0); val h = safe / 3600; val m = safe % 3600 / 60; val s = safe % 60; return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s) }
 private fun cpsTimeMillis(value: String): Long? { val raw = value.trim(); if (raw.isBlank()) return null; raw.toLongOrNull()?.let { return if (it < 10_000_000_000L) it * 1000L else it }; return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull() ?: runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }.getOrNull() ?: runCatching { java.time.LocalDateTime.parse(raw).atZone(CpsDhakaZone).toInstant().toEpochMilli() }.getOrNull() }
 private fun cpsDate(value: String): LocalDate? { cpsTimeMillis(value)?.let { return Instant.ofEpochMilli(it).atZone(CpsDhakaZone).toLocalDate() }; return runCatching { LocalDate.parse(value.trim().take(10)) }.getOrNull() }
 private fun cpsDateTime(value: String): String { val ms = cpsTimeMillis(value) ?: return value; return DateTimeFormatter.ofPattern("dd MMM • h:mm a").format(Instant.ofEpochMilli(ms).atZone(CpsDhakaZone)) }

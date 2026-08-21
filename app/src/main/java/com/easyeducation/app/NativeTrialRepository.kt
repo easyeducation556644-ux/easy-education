@@ -19,7 +19,6 @@ import java.util.concurrent.TimeUnit
 private const val TRIAL_API = "https://easy-education.vercel.app/api/trials"
 private const val TRIAL_PREFS = "native_trial_offers_v1"
 
-
 data class NativeTrialCourseTarget(
     val source: String,
     val courseId: String,
@@ -198,6 +197,10 @@ object NativeTrialStore {
 
     fun dismissModalForSession() {
         _state.value = _state.value.copy(modalDismissedForSession = true)
+    }
+
+    fun showModalForSession() {
+        _state.value = _state.value.copy(modalDismissedForSession = false)
     }
 
     fun reset() {

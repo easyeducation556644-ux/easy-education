@@ -1,6 +1,7 @@
 package com.easyeducation.app
 
 import android.content.Context
+import android.net.Uri
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -102,15 +103,11 @@ class NativeCpsRepository(context: Context) {
 
     suspend fun browse(): NativeCpsCatalog {
         val payload = get("browse")
-        withContext(Dispatchers.IO) {
-            cache.putDoc(CPS_CATALOG_CACHE, "current", sanitizeCatalogForCache(payload))
-        }
+        withContext(Dispatchers.IO) { cache.putDoc(CPS_CATALOG_CACHE, "current", sanitizeCatalogForCache(payload)) }
         return parseCatalog(payload)
     }
 
-    suspend fun myCourses(): List<NativeCourse> = browse().courses
-        .filter { it.hasAccess }
-        .map { it.course }
+    suspend fun myCourses(): List<NativeCourse> = browse().courses.filter { it.hasAccess }.map { it.course }
 
     fun cachedCourse(courseId: String): NativeCpsCourseBundle? {
         val payload = cache.getDoc(CPS_COURSE_CACHE, rawCourseId(courseId)) ?: return null
@@ -120,27 +117,29 @@ class NativeCpsRepository(context: Context) {
     suspend fun refreshCourse(courseId: String): NativeCpsCourseBundle {
         val rawCourseId = rawCourseId(courseId)
         val payload = get("preview", mapOf("courseId" to rawCourseId))
-        withContext(Dispatchers.IO) {
-            cache.putDoc(CPS_COURSE_CACHE, rawCourseId, sanitizeCourseForCache(payload))
-        }
+        withContext(Dispatchers.IO) { cache.putDoc(CPS_COURSE_CACHE, rawCourseId, sanitizeCourseForCache(payload)) }
         return parseCoursePayload(payload)
     }
 
     suspend fun loadCourse(courseId: String): NativeCpsCourseBundle = refreshCourse(courseId)
 
     suspend fun loadExam(courseId: String, examId: String): NativeCpsExamPayload {
+        val resolvedExamId = Uri.decode(examId).trim()
+        if (resolvedExamId.isBlank()) error("Exam id is missing")
         val payload = get(
             "exam",
             mapOf(
-                "courseId" to rawCourseId(courseId),
-                "examId" to examId,
+                "courseId" to rawCourseId(Uri.decode(courseId)),
+                "examId" to resolvedExamId,
             ),
         )
-        val exam = payload.optJSONObject("exam")?.let(::examSummary)
-            ?: error("CPS exam data was empty")
-        val questions = payload.optJSONArray("questions").objects().map { item ->
+        val exam = payload.optJSONObject("exam")?.let(::examSummary) ?: error("CPS exam data was empty")
+        val questions = payload.optJSONArray("questions").objects().mapIndexed { index, item ->
+            val sourceId = item.optString("id").trim().ifBlank { "question" }
             NativeCpsQuestion(
-                id = item.optString("id"),
+                // Compose lazy lists require unique keys. Some CPS question documents expose blank
+                // or repeated ids, so append the response index defensively.
+                id = "$sourceId:$index",
                 question = item.optString("question"),
                 questionImageUrl = item.optString("questionImageUrl"),
                 options = item.optJSONArray("options").strings(),
@@ -173,12 +172,8 @@ class NativeCpsRepository(context: Context) {
     }
 
     private fun parseCoursePayload(payload: JSONObject): NativeCpsCourseBundle {
-        val course = payload.optJSONObject("course")?.let(NativeCourse::from)
-            ?: error("CPS course data was empty")
-        val classes = payload.optJSONArray("classes").objects()
-            .map(NativeClassItem::from)
-            .sortedWith(compareBy<NativeClassItem> { it.order }.thenBy { it.title })
-
+        val course = payload.optJSONObject("course")?.let(NativeCourse::from) ?: error("CPS course data was empty")
+        val classes = payload.optJSONArray("classes").objects().map(NativeClassItem::from).sortedWith(compareBy<NativeClassItem> { it.order }.thenBy { it.title })
         val subjects = classes
             .flatMap { it.subjects }
             .filter { it.isNotBlank() && !it.equals("archive", true) }
@@ -191,14 +186,8 @@ class NativeCpsRepository(context: Context) {
                     order = index,
                 )
             }
-
         return NativeCpsCourseBundle(
-            content = NativeCourseContent(
-                course = course,
-                subjects = subjects,
-                chapters = emptyList(),
-                classes = classes,
-            ),
+            content = NativeCourseContent(course = course, subjects = subjects, chapters = emptyList(), classes = classes),
             extras = NativeCpsCourseExtras(
                 liveClasses = payload.optJSONArray("liveClasses").objects().map(::liveClass),
                 exams = payload.optJSONArray("exams").objects().map(::examSummary),
@@ -224,67 +213,39 @@ class NativeCpsRepository(context: Context) {
         hasAccess = item.optBoolean("hasAccess", false),
     )
 
-    /**
-     * Catalog metadata is safe to keep offline. Crucially, entitlement state is also cached so a
-     * course never flashes "locked" while the same already-verified access is being revalidated.
-     * Protected destinations are still removed from disk.
-     */
     private fun sanitizeCatalogForCache(source: JSONObject): JSONObject {
         val safe = JSONObject(source.toString())
         safe.optJSONArray("courses")?.let { array ->
-            for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.put("telegramLink", "")
-            }
+            for (index in 0 until array.length()) array.optJSONObject(index)?.put("telegramLink", "")
         }
         safe.optJSONArray("liveHighlights")?.let { array ->
-            for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.put("url", "")
-            }
+            for (index in 0 until array.length()) array.optJSONObject(index)?.put("url", "")
         }
         return safe
     }
 
-    /**
-     * Keep the last verified access bit/expiry in cache, but never persist playable media, live
-     * destinations or protected resource links. A fresh online bundle supplies those when needed.
-     */
     private fun sanitizeCourseForCache(source: JSONObject): JSONObject {
         val safe = JSONObject(source.toString())
         safe.optJSONObject("course")?.put("telegramLink", "")
         safe.optJSONArray("classes")?.let { array ->
             for (index in 0 until array.length()) {
                 array.optJSONObject(index)?.apply {
-                    listOf(
-                        "hlsLink",
-                        "videoURL",
-                        "videoUrl",
-                        "youtubeLink",
-                        "rumbleLink",
-                        "driveLink",
-                        "dailymotionLink",
-                    ).forEach { key -> put(key, "") }
+                    listOf("hlsLink", "videoURL", "videoUrl", "youtubeLink", "rumbleLink", "driveLink", "dailymotionLink").forEach { key -> put(key, "") }
                     put("resourceLinks", JSONArray())
-                    // Metadata can stay unlocked, but cached rows never pretend they contain a
-                    // playable URL. The screen will hydrate the media source silently online.
                     put("locked", true)
                 }
             }
         }
         safe.optJSONArray("liveClasses")?.let { array ->
-            for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.put("url", "")
-            }
+            for (index in 0 until array.length()) array.optJSONObject(index)?.put("url", "")
         }
         return safe
     }
 
     private suspend fun get(action: String, params: Map<String, String> = emptyMap()): JSONObject {
         val user = auth.currentUser ?: error("Sign in to open CPS courses")
-        val easyEducationToken = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() }
-            ?: error("Could not verify your Easy Education session")
-        val cpsToken = runCatching {
-            CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = action == "exam")
-        }.getOrNull()
+        val easyEducationToken = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() } ?: error("Could not verify your Easy Education session")
+        val cpsToken = runCatching { CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = action == "exam") }.getOrNull()
         val query = buildList {
             add("action=${encode(action)}")
             params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
@@ -294,17 +255,14 @@ class NativeCpsRepository(context: Context) {
             .header("Authorization", "Bearer $easyEducationToken")
             .header("Accept", "application/json")
             .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
-            .apply {
-                if (!cpsToken.isNullOrBlank()) header("X-CPS-Firebase-Token", cpsToken)
-            }
+            .apply { if (!cpsToken.isNullOrBlank()) header("X-CPS-Firebase-Token", cpsToken) }
             .get()
             .build()
         return withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val message = runCatching { JSONObject(body).optString("error") }.getOrNull()
-                        ?.takeIf { it.isNotBlank() }
+                    val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
                         ?: when (response.code) {
                             401 -> "Your session expired. Sign in again and retry."
                             403 -> "This CPS item is locked or needs CPS verification."
@@ -318,7 +276,6 @@ class NativeCpsRepository(context: Context) {
     }
 
     private fun rawCourseId(courseId: String): String = courseId.removePrefix(CPS_PREFIX).trim()
-
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private fun examSummary(item: JSONObject) = NativeCpsExamSummary(
@@ -329,27 +286,20 @@ class NativeCpsRepository(context: Context) {
         date = item.optString("date"),
         startTime = item.optString("startTime"),
         endTime = item.optString("endTime"),
-        duration = item.optInt("duration", 0),
-        questionsCount = item.optInt("questionsCount", 0),
-        maxScore = item.optDouble("maxScore", 0.0),
-        negativeMarks = item.optDouble("negativeMarks", 0.0),
+        duration = item.optInt("duration", 0).coerceIn(0, 24 * 60),
+        questionsCount = item.optInt("questionsCount", 0).coerceAtLeast(0),
+        maxScore = item.optDouble("maxScore", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
+        negativeMarks = item.optDouble("negativeMarks", 0.0).takeIf { it.isFinite() && it >= 0.0 } ?: 0.0,
     )
 
     private fun JSONArray?.objects(): List<JSONObject> {
         if (this == null) return emptyList()
-        return buildList {
-            for (index in 0 until length()) optJSONObject(index)?.let(::add)
-        }
+        return buildList { for (index in 0 until length()) optJSONObject(index)?.let(::add) }
     }
 
     private fun JSONArray?.strings(): List<String> {
         if (this == null) return emptyList()
-        return buildList {
-            for (index in 0 until length()) {
-                val value = optString(index).trim()
-                if (value.isNotBlank()) add(value)
-            }
-        }
+        return buildList { for (index in 0 until length()) { val value = optString(index).trim(); if (value.isNotBlank()) add(value) } }
     }
 
     private fun stableTextId(value: String): String {

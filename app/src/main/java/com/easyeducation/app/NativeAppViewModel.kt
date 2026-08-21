@@ -158,7 +158,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val activeCps = cpsCatalog.courses
             .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }
             .map { it.course }
-        return (easyEducationCourses + trialOurCourseCards() + activeCps).distinctBy { it.id }
+        // CPS access is intentionally first in My Courses. Description is presentation-only there,
+        // so keep the shared course cards compact and title-focused.
+        return (activeCps + easyEducationCourses + trialOurCourseCards())
+            .distinctBy { it.id }
+            .map { it.copy(description = "") }
     }
 
     private fun loadUser(uid: String) {
@@ -203,8 +207,6 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _state.value = _state.value.copy(syncing = true, error = null)
             runCatching {
-                // Trial status is an Easy Education entitlement source. Failure here must not block
-                // permanent courses, so the last cached offer state remains usable.
                 runCatching { NativeTrialStore.refresh(getApplication(), uid, online = true) }
                 val profile = repository.refreshProfile(
                     uid = uid,
@@ -286,9 +288,6 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                     val now = System.currentTimeMillis()
                     val verifiedAt = cpsCourseVerifiedAt[courseId] ?: 0L
                     val hydratedRecently = verifiedAt > 0L && now - verifiedAt < CPS_COURSE_REVALIDATE_MS
-                    // Opening the same CPS page repeatedly must not cause a visible access check.
-                    // Cached entitlement is authoritative for UI; protected URLs are still checked
-                    // server-side when hydrated. Manual/global refresh clears verifiedAt.
                     if (hydratedRecently) return@launch
 
                     runCatching { cpsRepository.refreshCourse(courseId) }
