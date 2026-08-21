@@ -61,17 +61,19 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           source = Path('server/cps-readonly-v2.js').read_text()
+          # Guard executable source, not words that merely appear inside // documentation comments.
+          executable = '\n'.join(line.split('//', 1)[0] for line in source.splitlines())
           forbidden = [
               'documents:commit', 'batchWrite', 'createDocument',
               'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"',
               "method: 'PATCH'", "method: 'PUT'", "method: 'DELETE'",
           ]
-          hits = [needle for needle in forbidden if needle in source]
+          hits = [needle for needle in forbidden if needle in executable]
           if hits:
               raise SystemExit('Forbidden CPS upstream mutation capability found: ' + ', '.join(hits))
-          if ':runQuery' not in source or 'method: "POST"' not in source:
+          if ':runQuery' not in executable or 'method: "POST"' not in executable:
               raise SystemExit('CPS Firestore runQuery read transport is missing')
-          if 'authenticated.db.collection(ENTITLEMENTS)' not in source:
+          if 'authenticated.db.collection(ENTITLEMENTS)' not in executable:
               raise SystemExit('Easy Education entitlement storage is missing')
           print('PASS: CPS upstream uses Firestore runQuery reads only; access writes stay in Easy Education Firestore')
           PY
