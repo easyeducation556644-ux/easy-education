@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.11 verification is running",
-              "context": "Easy Education final release 2.10.11",
+              "description": "Web + CPS + signed Android 2.10.12 verification is running",
+              "context": "Easy Education final release 2.10.12",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -98,9 +98,11 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.11"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.12"' native/app/build.gradle.kts
           grep -q 'NativeExamHistoryScreen' native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
           grep -q 'NativeCpsLivePlayerActivity' native/app/src/main/AndroidManifest.xml
+          grep -q 'Recorded LIVE Classes' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperience.kt
+          grep -q 'NativeTrialHomeBanner' native/app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
           ! grep -q 'Latest in your courses' native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
 
       - uses: actions/setup-java@v4
@@ -142,7 +144,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.11-release-apk
+          name: easy-education-2.10.12-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -159,8 +161,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.11 verified",
-              "context": "Easy Education final release 2.10.11",
+              "description": "Web, Vercel budget and signed Android 2.10.12 verified",
+              "context": "Easy Education final release 2.10.12",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \

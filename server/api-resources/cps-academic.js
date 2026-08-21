@@ -176,31 +176,45 @@ function lectureNoteResources(notes, courseId, classIndex, allowed) {
     })
 }
 
-function academicTopics(videoDoubts, classIndex, allowed) {
-  const seen = new Set()
-  return videoDoubts.flatMap((entry) => {
-    const rawVideoId = text(entry?.videoId).replace(/^cps-class:/, "")
-    const classMeta = classIndex.get(rawVideoId)
-    const seconds = Number(entry?.videoTimestamp)
-    const title = text(entry?.topic, entry?.title, entry?.text)
-    if (!classMeta || !Number.isFinite(seconds) || seconds < 0 || !title) return []
-    const key = `${rawVideoId}:${Math.floor(seconds)}:${title.toLowerCase()}`
-    if (seen.has(key)) return []
-    seen.add(key)
-    return [{
-      id: `topic:${entry.id || key}`,
-      classId: `cps-class:${rawVideoId}`,
-      classTitle: classMeta.classTitle,
-      playlistId: classMeta.playlistId,
-      chapter: classMeta.chapter,
-      title,
-      videoTimestamp: Math.floor(seconds),
-      canOpen: allowed,
-    }]
-  }).sort((a, b) => a.chapter.localeCompare(b.chapter) || a.videoTimestamp - b.videoTimestamp)
+function parseTimestampSeconds(rawValue) {
+  const parts = String(rawValue || "").trim().split(":").map((part) => Number(part))
+  if (parts.length < 2 || parts.length > 3 || parts.some((part) => !Number.isFinite(part) || part < 0)) return null
+  if (parts.length === 2) return Math.floor(parts[0] * 60 + parts[1])
+  return Math.floor(parts[0] * 3600 + parts[1] * 60 + parts[2])
 }
 
-function buildCourseIndex(course) {
+function topicsFromCourseTimestamps(course, allowed) {
+  const topics = []
+  asArray(course?.playlists).forEach((playlist, playlistIndex) => {
+    const playlistId = text(playlist?.id) || `playlist-${playlistIndex}`
+    const chapter = text(playlist?.title, playlist?.name) || `Part ${playlistIndex + 1}`
+    asArray(playlist?.classes).forEach((item, classIndex) => {
+      const rawClassId = text(item?.id) || `${playlistId}-${classIndex}`
+      const classTitle = text(item?.title, item?.topic) || `Class ${classIndex + 1}`
+      const rawTimestamps = typeof item?.timestamps === "string" ? item.timestamps : ""
+      rawTimestamps.split(/\r?\n/).forEach((line, lineIndex) => {
+        const match = line.match(/^\s*(\d{1,3}(?::\d{1,2}){1,2})\s*[-–—]\s*(.+?)\s*$/)
+        if (!match) return
+        const seconds = parseTimestampSeconds(match[1])
+        const title = text(match[2])
+        if (seconds == null || !title) return
+        topics.push({
+          id: `topic:${rawClassId}:${seconds}:${lineIndex}`,
+          classId: `cps-class:${rawClassId}`,
+          classTitle,
+          playlistId,
+          chapter,
+          title,
+          videoTimestamp: seconds,
+          canOpen: allowed,
+        })
+      })
+    })
+  })
+  return topics.sort((a, b) => a.chapter.localeCompare(b.chapter) || a.classTitle.localeCompare(b.classTitle) || a.videoTimestamp - b.videoTimestamp)
+}
+
+function buildCourseIndex(course, allowed) {
   const playlistIndex = new Map()
   const classIndex = new Map()
   const playlists = asArray(course?.playlists).map((playlist, playlistIndexNumber) => {
@@ -208,17 +222,25 @@ function buildCourseIndex(course) {
     const title = text(playlist?.title, playlist?.name) || `Part ${playlistIndexNumber + 1}`
     const type = text(playlist?.type)
     const order = Number(playlist?.order ?? playlistIndexNumber)
-    const classIds = []
-    asArray(playlist?.classes).forEach((item, classIndexNumber) => {
+    const classes = asArray(playlist?.classes).map((item, classIndexNumber) => {
       const rawClassId = text(item?.id) || `${id}-${classIndexNumber}`
-      classIds.push(`cps-class:${rawClassId}`)
-      classIndex.set(rawClassId, {
-        playlistId: id,
-        chapter: title,
-        classTitle: text(item?.title, item?.topic) || `Class ${classIndexNumber + 1}`,
-      })
-    })
-    const mapped = { id, title, type, order, classIds }
+      const normalizedId = `cps-class:${rawClassId}`
+      const classTitle = text(item?.title, item?.topic) || `Class ${classIndexNumber + 1}`
+      classIndex.set(rawClassId, { playlistId: id, chapter: title, classTitle })
+      return {
+        id: normalizedId,
+        rawId: rawClassId,
+        title: classTitle,
+        description: text(item?.description),
+        cdnType: text(item?.cdnType),
+        videoUrl: safeLink(item?.videoUrl || item?.videoURL || item?.url, allowed),
+        thumbnailUrl: text(item?.thumbnailUrl, item?.thumbnail),
+        order: Number(item?.order ?? classIndexNumber),
+        timestamps: typeof item?.timestamps === "string" ? item.timestamps : "",
+        hasAccess: allowed,
+      }
+    }).sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
+    const mapped = { id, title, type, order, classIds: classes.map((item) => item.id), classes }
     playlistIndex.set(id, mapped)
     return mapped
   }).sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
@@ -239,17 +261,16 @@ export default async function handler(req, res) {
     const courseId = normalizeCourseId(req.query?.courseId)
     if (!courseId) throw httpError(400, "courseId is required")
     const token = sourceToken(req)
-    const [courses, liveClasses, exams, lectureNotes, videoDoubts] = await Promise.all([
+    const [courses, liveClasses, exams, lectureNotes] = await Promise.all([
       readCollection("courses", token),
       readCollection("live_classes", token, true),
       readCollection("exams", token, true),
       readCollection("lectureNotes", token, true),
-      readCollection("videoDoubts", token, true),
     ])
     const course = courses.find((item) => String(item.id) === courseId && item.isDeleted !== true && item.hidden !== true && item.bin !== true)
     if (!course) throw httpError(404, "CPS course was not found")
     const access = await courseAccess(authenticated, courseId)
-    const { playlists, playlistIndex, classIndex } = buildCourseIndex(course)
+    const { playlists, playlistIndex, classIndex } = buildCourseIndex(course, access.active)
 
     const courseLive = liveClasses
       .filter((item) => normalizeCourseId(item?.courseId) === courseId)
@@ -278,7 +299,7 @@ export default async function handler(req, res) {
       ...classResources(course, access.active),
       ...lectureNoteResources(lectureNotes, courseId, classIndex, access.active),
     ]
-    const topics = academicTopics(videoDoubts, classIndex, access.active)
+    const topics = topicsFromCourseTimestamps(course, access.active)
     const courseExams = exams.filter((item) => normalizeCourseId(item?.courseId) === courseId)
 
     res.status(200).json({
