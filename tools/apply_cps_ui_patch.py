@@ -132,4 +132,17 @@ if old_sections not in text:
 text = text.replace(old_sections, new_sections, 1)
 
 path.write_text(text)
-print("CPS UI patch applied")
+
+api_path = Path("api/cps.js")
+api = api_path.read_text()
+old_comment = '''  // IMPORTANT: CPS is an upstream READ-ONLY source. This bridge intentionally has no Firestore
+  // commit, batchWrite, createDocument, PATCH, PUT or DELETE code path for the CPS project.
+'''
+new_comment = '''  // IMPORTANT: CPS is an upstream READ-ONLY source. Every upstream request is a GET.
+  // Administrative grants and revocations are stored only in Easy Education Firestore below.
+'''
+if old_comment not in api:
+    raise SystemExit("CPS read-only comment anchor not found")
+api_path.write_text(api.replace(old_comment, new_comment, 1))
+
+print("CPS UI and read-only source patch applied")
