@@ -42,7 +42,10 @@ class MainActivity : ComponentActivity() {
     private var deviceListener: ListenerRegistration? = null
 
     private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
-        observeDeviceSession(auth.currentUser)
+        val user = auth.currentUser
+        observeDeviceSession(user)
+        NativeCapturePolicy.applyCached(this, user)
+        NativeCapturePolicy.refreshNow(this, user)
     }
 
     private val googleLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -66,6 +69,8 @@ class MainActivity : ComponentActivity() {
             .addOnSuccessListener { result ->
                 loginBusy = false
                 Toast.makeText(this, "Login successful", Toast.LENGTH_SHORT).show()
+                NativeCapturePolicy.applyCached(this, result.user)
+                NativeCapturePolicy.refreshNow(this, result.user)
                 lifecycleScope.launch(Dispatchers.IO) {
                     // Mirror the supplied CPS HTML auth flow with an isolated secondary Firebase
                     // session. Failure here never blocks the Easy Education account.
@@ -86,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Secure by default before auth/cache is available; cached admin policy is applied below.
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
         runCatching { LegacyDownloadCleanup.runOnce(this) }
@@ -107,6 +113,9 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST)
         }
 
+        val existingUser = FirebaseAuth.getInstance().currentUser
+        NativeCapturePolicy.applyCached(this, existingUser)
+        NativeCapturePolicy.refreshNow(this, existingUser)
         FirebaseAuth.getInstance().addAuthStateListener(authStateListener)
 
         setContent {
@@ -122,16 +131,25 @@ class MainActivity : ComponentActivity() {
         }
 
         runCatching { SecureDownloadCoordinator.resumePending(this) }
-        if (FirebaseAuth.getInstance().currentUser != null) {
+        if (existingUser != null) {
             lifecycleScope.launch(Dispatchers.IO) {
-                FirebaseAuth.getInstance().currentUser?.let { user ->
-                    runCatching { NativeDeviceSession.ensureCurrentDevice(this@MainActivity, user) }
-                }
+                runCatching { NativeDeviceSession.ensureCurrentDevice(this@MainActivity, existingUser) }
                 runCatching { NativePushRegistrar.register(this@MainActivity) }
                 // Existing sessions can reuse the last Google credential to establish CPS auth.
                 runCatching { CpsFirebaseSession.sourceIdToken(this@MainActivity, forceRefresh = false) }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val user = FirebaseAuth.getInstance().currentUser
+        NativeCapturePolicy.applyCached(this, user)
+        NativeCapturePolicy.refreshNow(this, user)
+    }
+
+    fun refreshScreenCapturePolicy() {
+        NativeCapturePolicy.refreshNow(this, FirebaseAuth.getInstance().currentUser)
     }
 
     private fun launchGoogleSignIn() {
@@ -147,6 +165,8 @@ class MainActivity : ComponentActivity() {
         deviceListener = null
         if (user == null) {
             activeDevices = emptyList()
+            NativeCapturePolicy.applyCached(this, null)
+            NativeTrialStore.reset()
             CpsFirebaseSession.signOut(this)
             NativeFullscreenOverlay.dismiss(immediate = true)
             NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
@@ -160,6 +180,8 @@ class MainActivity : ComponentActivity() {
             onDevices = { devices -> activeDevices = devices },
             onForcedOut = { message ->
                 activeDevices = emptyList()
+                NativeCapturePolicy.applyCached(this, null)
+                NativeTrialStore.reset()
                 CpsFirebaseSession.signOut(this)
                 NativeFullscreenOverlay.dismiss(immediate = true)
                 NativeMiniPlayerOverlay.dismiss(releasePlayer = true)

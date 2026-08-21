@@ -14,27 +14,21 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 /**
- * Screen capture is denied by default. A Full Admin / permitted moderator can explicitly opt a
- * user out of FLAG_SECURE from the website Users panel. The result is cached per UID for 24 hours
- * so normal app launches do not create a Firestore read every time.
+ * Screen capture is denied by default. The last verified policy is applied instantly, then a
+ * foreground/server refresh propagates admin changes without waiting for the old 24-hour TTL.
+ * Cached policy remains only as an offline/startup fallback.
  */
 object NativeCapturePolicy {
-    private const val PREFS = "native_capture_policy_v1"
-    private const val CACHE_TTL_MS = 24L * 60L * 60L * 1000L
+    private const val PREFS = "native_capture_policy_v2"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun applyCached(activity: Activity, user: FirebaseUser?) {
         apply(activity, user?.uid)
     }
 
-    fun refreshIfDue(activity: Activity, user: FirebaseUser?) {
+    fun refreshNow(activity: Activity, user: FirebaseUser?) {
         applyCached(activity, user)
         val uid = user?.uid?.takeIf { it.isNotBlank() } ?: return
-        val prefs = activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val lastChecked = prefs.getLong("checked:$uid", 0L)
-        val now = System.currentTimeMillis()
-        if (lastChecked > 0L && now - lastChecked < CACHE_TTL_MS) return
-
         scope.launch {
             val snapshot = runCatching {
                 FirebaseFirestore.getInstance().collection("users").document(uid).get(Source.SERVER).await()
@@ -42,7 +36,8 @@ object NativeCapturePolicy {
             if (!snapshot.exists()) return@launch
 
             val allowed = snapshot.getBoolean("allowScreenCapture") == true
-            prefs.edit()
+            activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
                 .putBoolean("allow:$uid", allowed)
                 .putLong("checked:$uid", System.currentTimeMillis())
                 .apply()
@@ -53,17 +48,23 @@ object NativeCapturePolicy {
         }
     }
 
+    /** Backward-compatible call site; it now refreshes immediately instead of waiting a day. */
+    fun refreshIfDue(activity: Activity, user: FirebaseUser?) = refreshNow(activity, user)
+
+    fun clearUser(activity: Activity, uid: String?) {
+        if (!uid.isNullOrBlank()) {
+            activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().remove("allow:$uid").remove("checked:$uid").apply()
+        }
+        activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
     private fun apply(activity: Activity, uid: String?) {
         val allow = if (uid.isNullOrBlank()) false else {
-            val prefs = activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val checkedAt = prefs.getLong("checked:$uid", 0L)
-            val fresh = checkedAt > 0L && System.currentTimeMillis() - checkedAt < CACHE_TTL_MS
-            fresh && prefs.getBoolean("allow:$uid", false)
+            activity.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean("allow:$uid", false)
         }
-        if (allow) {
-            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        } else {
-            activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
+        if (allow) activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val CPS_COURSE_REVALIDATE_MS = 2 * 60_000L
 
 data class NativeUiState(
     val authReady: Boolean = false,
@@ -47,13 +48,13 @@ private data class NativeSyncResult(
 class NativeAppViewModel(application: Application) : AndroidViewModel(application) {
     private val auth = FirebaseAuth.getInstance()
 
-    // Keep storage/network helpers lazy so a dependency or stale local database problem cannot
-    // abort construction of the launcher ViewModel before Compose can render a recoverable screen.
     private val repository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeRepository(application) }
     private val cpsRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeCpsRepository(application) }
     private val downloads by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SecureMediaStore(application) }
     private val qualityResolver by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { DownloadQualityResolver(application) }
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    private val cpsCourseVerifiedAt = mutableMapOf<String, Long>()
+    private val cpsCourseLoading = mutableSetOf<String>()
     private val _state = MutableStateFlow(
         NativeUiState(
             online = isOnlineNow(),
@@ -67,6 +68,9 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val user = firebaseAuth.currentUser
         _state.value = _state.value.copy(user = user, authReady = true, error = null)
         if (user == null) {
+            cpsCourseVerifiedAt.clear()
+            cpsCourseLoading.clear()
+            NativeTrialStore.reset()
             _state.value = _state.value.copy(
                 profile = null,
                 restrictionMessage = null,
@@ -111,9 +115,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val wifiOnly = _state.value.wifiOnlyDownloads
         _state.value = _state.value.copy(online = online, onWifi = onWifi)
 
-        if (wifiOnly && wasOnWifi && !onWifi) {
-            pauseActiveDownloadsForNetworkPolicy()
-        }
+        if (wifiOnly && wasOnWifi && !onWifi) pauseActiveDownloadsForNetworkPolicy()
         if (online && wasOffline) {
             auth.currentUser?.uid?.let(::refreshOnline)
             runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
@@ -136,8 +138,32 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }.getOrDefault(false)
 
+    private fun trialOurCourseCards(): List<NativeCourse> = NativeTrialStore.state.value.active
+        .flatMap { it.courseTargets }
+        .filter { it.source == "our" }
+        .distinctBy { it.courseId }
+        .map { target ->
+            NativeCourse(
+                id = target.courseId,
+                title = target.title,
+                description = "Trial access",
+                thumbnailUrl = "",
+                price = 0.0,
+                courseFormat = "trial",
+            )
+        }
+
+    private fun mergeMyCourses(easyEducationCourses: List<NativeCourse>, cpsCatalog: NativeCpsCatalog): List<NativeCourse> {
+        val now = System.currentTimeMillis()
+        val activeCps = cpsCatalog.courses
+            .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }
+            .map { it.course }
+        return (easyEducationCourses + trialOurCourseCards() + activeCps).distinctBy { it.id }
+    }
+
     private fun loadUser(uid: String) {
         viewModelScope.launch {
+            NativeTrialStore.loadCached(getApplication(), uid)
             val cached = runCatching {
                 val cachedProfile = repository.cachedProfile(uid)
                 val cachedCourses = repository.cachedCourses(uid)
@@ -149,19 +175,17 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 _state.value = _state.value.copy(
                     profile = cachedProfile,
                     restrictionMessage = cachedProfile.restrictionMessage(),
-                    courses = cachedCourses,
+                    courses = mergeMyCourses(cachedCourses, cachedCps),
                     cpsCourses = cachedCps.courses,
                     cpsLiveHighlights = cachedCps.liveHighlights,
                     downloads = cachedDownloads,
                     authReady = true,
                 )
             }.onFailure {
-                // A damaged old cache should degrade to an empty local view, not terminate the app.
-                // If online, the authoritative refresh below will rebuild the cache.
                 _state.value = _state.value.copy(
                     profile = null,
                     restrictionMessage = null,
-                    courses = emptyList(),
+                    courses = mergeMyCourses(emptyList(), cachedCps),
                     cpsCourses = cachedCps.courses,
                     cpsLiveHighlights = cachedCps.liveHighlights,
                     downloads = emptyList(),
@@ -179,6 +203,9 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _state.value = _state.value.copy(syncing = true, error = null)
             runCatching {
+                // Trial status is an Easy Education entitlement source. Failure here must not block
+                // permanent courses, so the last cached offer state remains usable.
+                runCatching { NativeTrialStore.refresh(getApplication(), uid, online = true) }
                 val profile = repository.refreshProfile(
                     uid = uid,
                     fallbackName = firebaseUser.displayName.orEmpty(),
@@ -198,13 +225,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 val finalCourses = repository.cachedCourses(uid)
                 val easyEducationCourses = if (finalCourses.isNotEmpty() || courses.isEmpty()) finalCourses else courses
 
-                // CPS upstream remains read-only. browse() returns every visible CPS course plus an
-                // Easy Education entitlement flag; failure never blocks ordinary course syncing.
                 val cpsCatalog = runCatching { cpsRepository.browse() }
                     .getOrElse { cpsRepository.cachedCatalog() }
                 NativeSyncResult(
                     profile = profile,
-                    courses = easyEducationCourses.distinctBy { it.id },
+                    courses = mergeMyCourses(easyEducationCourses, cpsCatalog),
                     cpsCatalog = cpsCatalog,
                     restriction = null,
                 )
@@ -226,52 +251,74 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun refreshAll() {
+        val uid = auth.currentUser?.uid ?: return
+        cpsCourseVerifiedAt.clear()
+        refreshOnline(uid)
+        refreshDownloads()
+    }
+
     fun loadCourse(courseId: String, force: Boolean = false) {
         if (courseId.isBlank() || _state.value.restrictionMessage != null) return
 
         if (cpsRepository.isCpsCourse(courseId)) {
+            if (!cpsCourseLoading.add(courseId)) return
             viewModelScope.launch {
-                val cached = runCatching { cpsRepository.cachedCourse(courseId) }.getOrNull()
-                val catalogCourse = _state.value.cpsCourses.firstOrNull { it.course.id == courseId }?.course
-                val placeholder = NativeCourseContent(
-                    course = catalogCourse,
-                    subjects = emptyList(),
-                    chapters = emptyList(),
-                    classes = emptyList(),
-                )
-                if (cached != null) {
-                    _state.value = _state.value.copy(
-                        courseContent = _state.value.courseContent + (courseId to cached.content),
-                        cpsCourseExtras = _state.value.cpsCourseExtras + (courseId to cached.extras),
+                try {
+                    val cached = runCatching { cpsRepository.cachedCourse(courseId) }.getOrNull()
+                    val catalogCourse = _state.value.cpsCourses.firstOrNull { it.course.id == courseId }?.course
+                    val placeholder = NativeCourseContent(
+                        course = catalogCourse,
+                        subjects = emptyList(),
+                        chapters = emptyList(),
+                        classes = emptyList(),
                     )
-                } else if (_state.value.courseContent[courseId] == null) {
-                    _state.value = _state.value.copy(
-                        courseContent = _state.value.courseContent + (courseId to placeholder),
-                    )
-                }
-                if (!_state.value.online) return@launch
+                    if (cached != null) {
+                        _state.value = _state.value.copy(
+                            courseContent = _state.value.courseContent + (courseId to cached.content),
+                            cpsCourseExtras = _state.value.cpsCourseExtras + (courseId to cached.extras),
+                        )
+                    } else if (_state.value.courseContent[courseId] == null) {
+                        _state.value = _state.value.copy(courseContent = _state.value.courseContent + (courseId to placeholder))
+                    }
+                    if (!_state.value.online) return@launch
 
-                runCatching { cpsRepository.refreshCourse(courseId) }
-                    .onSuccess { bundle ->
-                        val updatedCatalog = _state.value.cpsCourses.map { entry ->
-                            if (entry.course.id != courseId) entry
-                            else entry.copy(
-                                course = bundle.content.course ?: entry.course,
-                                hasAccess = bundle.extras.hasAccess,
-                                accessExpiresAtMs = bundle.extras.accessExpiresAtMs,
+                    val now = System.currentTimeMillis()
+                    val verifiedAt = cpsCourseVerifiedAt[courseId] ?: 0L
+                    val hydratedRecently = verifiedAt > 0L && now - verifiedAt < CPS_COURSE_REVALIDATE_MS
+                    // Opening the same CPS page repeatedly must not cause a visible access check.
+                    // Cached entitlement is authoritative for UI; protected URLs are still checked
+                    // server-side when hydrated. Manual/global refresh clears verifiedAt.
+                    if (hydratedRecently) return@launch
+
+                    runCatching { cpsRepository.refreshCourse(courseId) }
+                        .onSuccess { bundle ->
+                            cpsCourseVerifiedAt[courseId] = System.currentTimeMillis()
+                            val updatedCatalog = _state.value.cpsCourses.map { entry ->
+                                if (entry.course.id != courseId) entry
+                                else entry.copy(
+                                    course = bundle.content.course ?: entry.course,
+                                    hasAccess = bundle.extras.hasAccess,
+                                    accessExpiresAtMs = bundle.extras.accessExpiresAtMs,
+                                )
+                            }
+                            val easyOnly = _state.value.courses.filterNot { cpsRepository.isCpsCourse(it.id) }
+                            val updatedCps = NativeCpsCatalog(updatedCatalog, _state.value.cpsLiveHighlights)
+                            _state.value = _state.value.copy(
+                                cpsCourses = updatedCatalog,
+                                courses = mergeMyCourses(easyOnly, updatedCps),
+                                courseContent = _state.value.courseContent + (courseId to bundle.content),
+                                cpsCourseExtras = _state.value.cpsCourseExtras + (courseId to bundle.extras),
                             )
                         }
-                        _state.value = _state.value.copy(
-                            cpsCourses = updatedCatalog,
-                            courseContent = _state.value.courseContent + (courseId to bundle.content),
-                            cpsCourseExtras = _state.value.cpsCourseExtras + (courseId to bundle.extras),
-                        )
-                    }
-                    .onFailure { error ->
-                        if (cached == null || cached.content.classes.isEmpty()) {
-                            _state.value = _state.value.copy(error = error.message ?: "CPS course could not be loaded")
+                        .onFailure { error ->
+                            if (cached == null || cached.content.classes.isEmpty()) {
+                                _state.value = _state.value.copy(error = error.message ?: "CPS course could not be loaded")
+                            }
                         }
-                    }
+                } finally {
+                    cpsCourseLoading.remove(courseId)
+                }
             }
             return
         }
@@ -286,27 +333,19 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                         classes = emptyList(),
                     )
                 }
-            _state.value = _state.value.copy(
-                courseContent = _state.value.courseContent + (courseId to cached),
-            )
+            _state.value = _state.value.copy(courseContent = _state.value.courseContent + (courseId to cached))
             if (_state.value.online) {
                 runCatching { repository.ensureCourseContent(courseId, force) }
-                    .onSuccess { fresh ->
-                        _state.value = _state.value.copy(
-                            courseContent = _state.value.courseContent + (courseId to fresh),
-                        )
-                    }
+                    .onSuccess { fresh -> _state.value = _state.value.copy(courseContent = _state.value.courseContent + (courseId to fresh)) }
                     .onFailure { error ->
-                        if (cached.classes.isEmpty()) {
-                            _state.value = _state.value.copy(error = error.message ?: "Course content could not be loaded")
-                        }
+                        if (cached.classes.isEmpty()) _state.value = _state.value.copy(error = error.message ?: "Course content could not be loaded")
                     }
             }
         }
     }
 
     fun hasCpsAccess(courseId: String, now: Long = System.currentTimeMillis()): Boolean {
-        if (!_state.value.online || !cpsRepository.isCpsCourse(courseId)) return false
+        if (!cpsRepository.isCpsCourse(courseId)) return false
         val extras = _state.value.cpsCourseExtras[courseId]
         if (cpsRepository.isAccessActive(extras, now)) return true
         val entry = _state.value.cpsCourses.firstOrNull { it.course.id == courseId } ?: return false
@@ -330,9 +369,9 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun refreshDownloads() {
-        val uid = auth.currentUser?.uid ?: return
+        val uid = auth.currentUser ?: return
         viewModelScope.launch {
-            runCatching { refreshDownloadsNow(uid) }
+            runCatching { refreshDownloadsNow(uid.uid) }
                 .onFailure { error -> _state.value = _state.value.copy(error = error.message ?: "Downloads could not be read") }
         }
     }
@@ -372,19 +411,16 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         if (_state.value.qualityLoadingClassId == item.id) return
         _state.value = _state.value.copy(qualityLoadingClassId = item.id, error = null)
         viewModelScope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) { qualityResolver.resolve(item.id, item.downloadUrl) }
-            }.onSuccess { options ->
-                _state.value = _state.value.copy(
-                    qualityLoadingClassId = null,
-                    qualityOptions = _state.value.qualityOptions + (item.id to options),
-                )
-            }.onFailure { error ->
-                _state.value = _state.value.copy(
-                    qualityLoadingClassId = null,
-                    error = error.message ?: "Could not load video qualities",
-                )
-            }
+            runCatching { withContext(Dispatchers.IO) { qualityResolver.resolve(item.id, item.downloadUrl) } }
+                .onSuccess { options ->
+                    _state.value = _state.value.copy(
+                        qualityLoadingClassId = null,
+                        qualityOptions = _state.value.qualityOptions + (item.id to options),
+                    )
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(qualityLoadingClassId = null, error = error.message ?: "Could not load video qualities")
+                }
         }
     }
 
@@ -392,12 +428,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         _state.value = _state.value.copy(qualityOptions = _state.value.qualityOptions - classId)
     }
 
-    fun startDownload(
-        context: Context,
-        course: NativeCourse,
-        item: NativeClassItem,
-        option: DownloadQualityOption,
-    ) {
+    fun startDownload(context: Context, course: NativeCourse, item: NativeClassItem, option: DownloadQualityOption) {
         val uid = auth.currentUser?.uid ?: return
         if (cpsRepository.isCpsCourse(course.id)) {
             _state.value = _state.value.copy(error = "CPS classes are online-only; access is verified before every playable session")
@@ -422,8 +453,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         }
         val id = SecureMediaStore.downloadId(uid, item.id)
         val existing = downloads.get(id)
-        val sameSource = existing?.sourceUrl == item.downloadUrl &&
-            existing.height == option.height && existing.sourceKind == option.kind
+        val sameSource = existing?.sourceUrl == item.downloadUrl && existing.height == option.height && existing.sourceKind == option.kind
         val task = SecureDownloadTask(
             id = id,
             userId = uid,
@@ -476,11 +506,8 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     fun setWifiOnlyDownloads(enabled: Boolean) {
         runCatching { DownloadPreferences.setWifiOnly(getApplication(), enabled) }
         _state.value = _state.value.copy(wifiOnlyDownloads = enabled)
-        if (enabled && !_state.value.onWifi) {
-            pauseActiveDownloadsForNetworkPolicy()
-        } else if (!enabled && _state.value.online) {
-            runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
-        }
+        if (enabled && !_state.value.onWifi) pauseActiveDownloadsForNetworkPolicy()
+        else if (!enabled && _state.value.online) runCatching { SecureDownloadCoordinator.resumePending(getApplication()) }
     }
 
     fun clearError() {
@@ -488,6 +515,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun signOut() {
+        NativeTrialStore.reset()
         auth.signOut()
     }
 

@@ -57,13 +57,25 @@ fun EasyEducationSecureRoot(
         }
     } else {
         Box(Modifier.fillMaxSize()) {
-            EasyEducationNativeAppV2(
-                viewModel = viewModel,
-                onGoogleSignIn = onGoogleSignIn,
-                loginBusy = loginBusy,
-                activeDevices = activeDevices,
-                initialPath = initialPath,
-            )
+            if (state.authReady && state.user != null) {
+                NativeGlobalPullRefresh(viewModel = viewModel, state = state) {
+                    EasyEducationNativeAppV2(
+                        viewModel = viewModel,
+                        onGoogleSignIn = onGoogleSignIn,
+                        loginBusy = loginBusy,
+                        activeDevices = activeDevices,
+                        initialPath = initialPath,
+                    )
+                }
+            } else {
+                EasyEducationNativeAppV2(
+                    viewModel = viewModel,
+                    onGoogleSignIn = onGoogleSignIn,
+                    loginBusy = loginBusy,
+                    activeDevices = activeDevices,
+                    initialPath = initialPath,
+                )
+            }
             if (state.authReady && state.user != null) {
                 NativeTrialOverlayHost(viewModel = viewModel, state = state)
             }
