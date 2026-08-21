@@ -56,12 +56,17 @@ fun EasyEducationSecureRoot(
             }
         }
     } else {
-        EasyEducationNativeAppV2(
-            viewModel = viewModel,
-            onGoogleSignIn = onGoogleSignIn,
-            loginBusy = loginBusy,
-            activeDevices = activeDevices,
-            initialPath = initialPath,
-        )
+        Box(Modifier.fillMaxSize()) {
+            EasyEducationNativeAppV2(
+                viewModel = viewModel,
+                onGoogleSignIn = onGoogleSignIn,
+                loginBusy = loginBusy,
+                activeDevices = activeDevices,
+                initialPath = initialPath,
+            )
+            if (state.authReady && state.user != null) {
+                NativeTrialOverlayHost(viewModel = viewModel, state = state)
+            }
+        }
     }
 }

@@ -224,37 +224,33 @@ class NativeCpsRepository(context: Context) {
         hasAccess = item.optBoolean("hasAccess", false),
     )
 
+    /**
+     * Catalog metadata is safe to keep offline. Crucially, entitlement state is also cached so a
+     * course never flashes "locked" while the same already-verified access is being revalidated.
+     * Protected destinations are still removed from disk.
+     */
     private fun sanitizeCatalogForCache(source: JSONObject): JSONObject {
         val safe = JSONObject(source.toString())
         safe.optJSONArray("courses")?.let { array ->
             for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.apply {
-                    put("hasAccess", false)
-                    put("accessExpiresAtMs", 0L)
-                    put("telegramLink", "")
-                }
+                array.optJSONObject(index)?.put("telegramLink", "")
             }
         }
         safe.optJSONArray("liveHighlights")?.let { array ->
             for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.apply {
-                    put("url", "")
-                    put("hasAccess", false)
-                }
+                array.optJSONObject(index)?.put("url", "")
             }
         }
         return safe
     }
 
+    /**
+     * Keep the last verified access bit/expiry in cache, but never persist playable media, live
+     * destinations or protected resource links. A fresh online bundle supplies those when needed.
+     */
     private fun sanitizeCourseForCache(source: JSONObject): JSONObject {
         val safe = JSONObject(source.toString())
-        safe.put("hasAccess", false)
-        safe.put("accessExpiresAtMs", 0L)
-        safe.optJSONObject("course")?.apply {
-            put("hasAccess", false)
-            put("accessExpiresAtMs", 0L)
-            put("telegramLink", "")
-        }
+        safe.optJSONObject("course")?.put("telegramLink", "")
         safe.optJSONArray("classes")?.let { array ->
             for (index in 0 until array.length()) {
                 array.optJSONObject(index)?.apply {
@@ -268,16 +264,15 @@ class NativeCpsRepository(context: Context) {
                         "dailymotionLink",
                     ).forEach { key -> put(key, "") }
                     put("resourceLinks", JSONArray())
+                    // Metadata can stay unlocked, but cached rows never pretend they contain a
+                    // playable URL. The screen will hydrate the media source silently online.
                     put("locked", true)
                 }
             }
         }
         safe.optJSONArray("liveClasses")?.let { array ->
             for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.apply {
-                    put("url", "")
-                    put("hasAccess", false)
-                }
+                array.optJSONObject(index)?.put("url", "")
             }
         }
         return safe
