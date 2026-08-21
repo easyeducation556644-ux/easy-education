@@ -56,8 +56,8 @@ function cpsHeaders() {
 }
 
 async function cpsRead(url) {
-  // IMPORTANT: CPS is an upstream READ-ONLY source. This bridge intentionally has no Firestore
-  // commit, batchWrite, createDocument, PATCH, PUT or DELETE code path for the CPS project.
+  // IMPORTANT: CPS is an upstream READ-ONLY source. Every upstream request is a GET.
+  // Administrative grants and revocations are stored only in Easy Education Firestore below.
   const response = await fetch(url, { method: "GET", headers: cpsHeaders(), redirect: "follow" })
   if (!response.ok) {
     const text = await response.text().catch(() => "")

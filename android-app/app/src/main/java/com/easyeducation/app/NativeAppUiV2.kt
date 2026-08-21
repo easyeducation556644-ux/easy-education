@@ -336,7 +336,7 @@ private fun NavHostController.navigateHome(currentRoute: String) {
 
 private fun String.inCourseRoutes(): Boolean =
     startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
-        startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes")
+        startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
 
 private fun nativeStartRoute(initialPath: String?): String {
     val path = initialPath?.trim().orEmpty()
@@ -529,6 +529,16 @@ private fun V2NavHost(
                 state = state,
                 courseId = entry.arguments?.getString("courseId").orEmpty(),
                 classId = entry.arguments?.getString("classId").orEmpty(),
+            )
+        }
+        composable(
+            "cps-exam/{courseId}/{examId}",
+            listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("examId") { type = NavType.StringType }),
+        ) { entry ->
+            NativeCpsExamScreen(
+                nav = nav,
+                courseId = entry.arguments?.getString("courseId").orEmpty(),
+                examId = entry.arguments?.getString("examId").orEmpty(),
             )
         }
     }
@@ -1157,6 +1167,7 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
     val course = content.course ?: state.courses.firstOrNull { it.id == courseId }
     val regularClasses = content.classes.filterNot { it.isArchived }
     val hasArchive = content.classes.any { it.isArchived }
+    val cpsExtras = state.cpsCourseExtras[courseId]
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { Spacer(Modifier.height(4.dp)); V2Back(nav, course?.title ?: "Course") }
@@ -1168,6 +1179,47 @@ private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, stat
         }
         if (hasArchive) {
             item { NativeArchiveEntryCard { nav.navigate("archive/$courseId") } }
+        }
+        cpsExtras?.let { extras ->
+            if (extras.accessExpiresAtMs > 0L) {
+                item {
+                    V2OutlinedCard {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("CPS trial access", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Available until ${SimpleDateFormat("dd MMM yyyy, h:mm a", Locale.getDefault()).format(Date(extras.accessExpiresAtMs))}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            if (extras.routines.isNotBlank()) {
+                item {
+                    V2OutlinedCard {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("Routine", fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(5.dp))
+                            Text(extras.routines, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            if (extras.liveClasses.isNotEmpty()) {
+                item { V2Section("Live classes") }
+                items(extras.liveClasses, key = { "cps-live-${it.id}" }) { live ->
+                    NativeCpsLiveClassCard(live)
+                }
+            }
+            if (extras.exams.isNotEmpty()) {
+                item { V2Section("Exams") }
+                items(extras.exams, key = { "cps-exam-${it.id}" }) { exam ->
+                    NativeCpsExamCard(exam) {
+                        nav.navigate("cps-exam/$courseId/${Uri.encode(exam.id)}")
+                    }
+                }
+            }
         }
         when {
             content.subjects.isNotEmpty() -> {

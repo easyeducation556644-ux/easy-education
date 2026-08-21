@@ -1,19 +1,27 @@
-name: CPS native final verification
+name: Android signed APK
 
 on:
   push:
-    branches: ["agent/cps-native-final-verification"]
+    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download"]
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
+  pull_request:
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   statuses: write
 
 jobs:
-  cps-final-verify:
-    if: startsWith(github.event.head_commit.message, '[cps-final-verify]')
+  build:
     runs-on: ubuntu-latest
+    env:
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
     steps:
-      - name: Publish CPS verification pending
+      - name: Publish Android verification pending status
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -22,89 +30,57 @@ jobs:
         run: |
           python - <<'PY' > "$RUNNER_TEMP/status.json"
           import json, os
-          print(json.dumps({"state":"pending","target_url":os.environ["RUN_URL"],"description":"CPS guard + web build + Kotlin compile","context":"CPS native final verification"}))
+          print(json.dumps({
+              "state": "pending",
+              "target_url": os.environ["RUN_URL"],
+              "description": "Native Android 2.10.9 signed APK verification is running",
+              "context": "Android native 2.10.9 signed APK",
+          }))
           PY
-          curl --fail-with-body --silent --show-error -X POST \
+          curl --fail-with-body --silent --show-error \
+            -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" \
             --data-binary @"$RUNNER_TEMP/status.json"
-
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Apply deterministic CPS UI wiring
-        run: python tools/apply_cps_ui_patch.py
-
-      - name: Verify CPS upstream is read-only
-        shell: bash
-        run: |
-          node --check api/cps.js
-          python - <<'PY'
-          from pathlib import Path
-          source = Path('api/cps.js').read_text()
-          forbidden = [
-              'documents:commit', 'batchWrite', 'createDocument',
-              'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"',
-              "method: 'PATCH'", "method: 'PUT'", "method: 'DELETE'",
-          ]
-          hits = [needle for needle in forbidden if needle in source]
-          if hits:
-              raise SystemExit('Forbidden CPS mutation capability found: ' + ', '.join(hits))
-          if 'fetch(url, { method: "GET"' not in source:
-              raise SystemExit('CPS GET-only transport guard missing')
-          if 'authenticated.db.collection(ENTITLEMENTS)' not in source:
-              raise SystemExit('Own-database entitlement storage missing')
-          print('PASS: CPS transport exposes GET only; grants/revokes target Easy Education db')
-          PY
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Verify production web build
-        run: |
-          npm ci
-          npm run build
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
-
-      - name: Verify native Kotlin compile
-        run: gradle :app:compileReleaseKotlin
-        working-directory: android-app
-
-      - name: Commit clean verified source tree
+      - name: Restore release keystore
+        shell: bash
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+      - name: Verify signing certificate
         shell: bash
         run: |
-          git checkout da745783cf709a57164f87f82a8481c3d3880961 -- .github/workflows/android-debug-apk.yml
-          rm -f tools/apply_cps_ui_patch.py
-          git config user.name "easy-education-cps-bot"
-          git config user.email "easyeducation556644@gmail.com"
-          git reset
-          git add \
-            api/cps.js \
-            android-app/app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt \
-            android-app/app/src/main/java/com/easyeducation/app/NativeCpsScreens.kt \
-            android-app/app/src/main/java/com/easyeducation/app/NativeAppViewModel.kt \
-            android-app/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt \
-            .github/workflows/android-debug-apk.yml \
-            tools/apply_cps_ui_patch.py
-          git diff --cached --check
-          git diff --cached --name-only
-          git commit -m "Add read-only CPS courses live classes exams and own-db trials"
-          git push origin HEAD:${GITHUB_REF_NAME}
-
-      - name: Publish CPS verification final status
+          keytool -list -v \
+            -keystore "$EE_KEYSTORE_PATH" \
+            -alias "$EE_KEY_ALIAS" \
+            -storepass "$EE_KEYSTORE_PASSWORD" \
+            | grep -E 'SHA1:|SHA256:'
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+        working-directory: android-app
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs android-app/app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-release-apk
+          path: android-app/app/build/outputs/apk/release/app-release.apk
+      - name: Publish Android verification final status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -115,9 +91,15 @@ jobs:
         run: |
           python - <<'PY' > "$RUNNER_TEMP/status.json"
           import json, os
-          print(json.dumps({"state":os.environ["STATE"],"target_url":os.environ["RUN_URL"],"description":"CPS read-only integration verification finished","context":"CPS native final verification"}))
+          print(json.dumps({
+              "state": os.environ["STATE"],
+              "target_url": os.environ["RUN_URL"],
+              "description": "Native Android 2.10.9 release build and APK signature verification",
+              "context": "Android native 2.10.9 signed APK",
+          }))
           PY
-          curl --fail-with-body --silent --show-error -X POST \
+          curl --fail-with-body --silent --show-error \
+            -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
