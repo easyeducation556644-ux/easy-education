@@ -1,11 +1,16 @@
-name: Android signed APK
+name: Final web + Android release verification
 
 on:
   push:
-    branches: ["main", "agent/native-2.10.9-rumble-download-from-2.10.8", "agent/native-2.10.9-rumble-player-concurrent-download"]
-    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml", "tools/apply_cps_home_release_patch.py"]
-  pull_request:
-    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml", "tools/apply_cps_home_release_patch.py"]
+    branches: ["main"]
+    paths:
+      - "android-app/**"
+      - "api/**"
+      - "server/**"
+      - "src/**"
+      - "vercel.json"
+      - ".github/workflows/android-debug-apk.yml"
+      - "tools/apply_cps_home_release_patch.py"
   workflow_dispatch:
 
 permissions:
@@ -13,7 +18,7 @@ permissions:
   statuses: write
 
 jobs:
-  build:
+  verify-and-build:
     runs-on: ubuntu-latest
     env:
       EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
@@ -21,7 +26,7 @@ jobs:
       EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
       EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
     steps:
-      - name: Publish Android verification pending status
+      - name: Publish release verification pending status
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -33,26 +38,29 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Native Android 2.10.9 signed APK verification is running",
-              "context": "Android native 2.10.9 signed APK",
+              "description": "Web + CPS + signed Android 2.10.10 verification is running",
+              "context": "Easy Education final release 2.10.10",
           }))
           PY
-          curl --fail-with-body --silent --show-error \
-            -X POST \
+          curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" \
             --data-binary @"$RUNNER_TEMP/status.json"
+
       - uses: actions/checkout@v4
-      - name: Apply final CPS Home wiring
+
+      - name: Verify committed CPS Home wiring
         run: python tools/apply_cps_home_release_patch.py
-      - name: Verify CPS upstream remains read-only
+
+      - name: Verify CPS source is read-only
         shell: bash
         run: |
+          node --check server/cps-readonly-v2.js
           python - <<'PY'
           from pathlib import Path
-          source = Path('server/cps-readonly.js').read_text()
+          source = Path('server/cps-readonly-v2.js').read_text()
           forbidden = [
               'documents:commit', 'batchWrite', 'createDocument',
               'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"',
@@ -61,19 +69,43 @@ jobs:
           hits = [needle for needle in forbidden if needle in source]
           if hits:
               raise SystemExit('Forbidden CPS upstream mutation capability found: ' + ', '.join(hits))
-          if 'fetch(url, { method: "GET"' not in source:
-              raise SystemExit('CPS GET-only transport guard missing')
+          if ':runQuery' not in source or 'method: "POST"' not in source:
+              raise SystemExit('CPS Firestore runQuery read transport is missing')
           if 'authenticated.db.collection(ENTITLEMENTS)' not in source:
-              raise SystemExit('Easy Education entitlement storage missing')
-          print('PASS: CPS upstream GET-only; grants/revokes target Easy Education Firestore')
+              raise SystemExit('Easy Education entitlement storage is missing')
+          print('PASS: CPS upstream uses Firestore runQuery reads only; access writes stay in Easy Education Firestore')
           PY
+
+      - name: Verify Vercel Hobby function budget
+        shell: bash
+        run: |
+          count=$(find api -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.ts' \) | wc -l | tr -d ' ')
+          echo "Deployable Vercel function files: $count / 12"
+          test "$count" -le 12
+          test ! -f api/cps.js
+          test ! -f api/create-payment.js
+          test ! -f api/verify-payment.js
+          test ! -f api/upload-image.js
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Verify production web build
+        run: |
+          npm ci
+          npm run build
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+
       - name: Restore release keystore
         shell: bash
         env:
@@ -82,6 +114,7 @@ jobs:
           test -n "$EE_KEYSTORE_BASE64"
           printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
           test -s "$EE_KEYSTORE_PATH"
+
       - name: Verify signing certificate
         shell: bash
         run: |
@@ -90,19 +123,23 @@ jobs:
             -alias "$EE_KEY_ALIAS" \
             -storepass "$EE_KEYSTORE_PASSWORD" \
             | grep -E 'SHA1:|SHA256:'
+
       - name: Build signed release APK
         run: gradle :app:assembleRelease
         working-directory: android-app
+
       - name: Verify APK signature
         shell: bash
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs android-app/app/build/outputs/apk/release/app-release.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-release-apk
+          name: easy-education-2.10.10-release-apk
           path: android-app/app/build/outputs/apk/release/app-release.apk
-      - name: Publish Android verification final status
+
+      - name: Publish release verification final status
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,12 +153,11 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Native Android 2.10.9 release build and APK signature verification",
-              "context": "Android native 2.10.9 signed APK",
+              "description": "Web, CPS read-only bridge, Vercel budget and signed Android 2.10.10 verified",
+              "context": "Easy Education final release 2.10.10",
           }))
           PY
-          curl --fail-with-body --silent --show-error \
-            -X POST \
+          curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \

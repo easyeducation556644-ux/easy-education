@@ -13,8 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2100900
-        versionName = "2.10.9"
+        versionCode = 2101000
+        versionName = "2.10.10"
     }
 
     buildFeatures {

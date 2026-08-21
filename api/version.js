@@ -1,38 +1,28 @@
-import firestoreReadUsageHandler from './_firestore-read-usage.js'
+import firestoreReadUsageHandler from '../server/api-resources/firestore-read-usage.js'
 import syncEventHandler from './_sync-event.js'
-import learningPushHandler from './_learning-push.js'
-import rumbleEmbedHandler from './_rumble-embed.js'
-import cpsHandler from '../server/cps-readonly.js'
+import learningPushHandler from '../server/api-resources/learning-push.js'
+import rumbleEmbedHandler from '../server/api-resources/rumble-embed.js'
+import cpsHandler from '../server/cps-readonly-v2.js'
+import createPaymentHandler from '../server/api-resources/create-payment.js'
+import verifyPaymentHandler from '../server/api-resources/verify-payment.js'
+import uploadImageHandler from '../server/api-resources/upload-image.js'
 
-const APP_VERSION = 'v9.0';
+const APP_VERSION = 'v9.1'
 
 export default async function versionHandler(req, res) {
-  if (req.query?.resource === 'firestore-read-usage') {
-    return firestoreReadUsageHandler(req, res)
-  }
+  const resource = String(req.query?.resource || '').trim()
 
-  if (req.query?.resource === 'sync-event') {
-    return syncEventHandler(req, res)
-  }
+  if (resource === 'firestore-read-usage') return firestoreReadUsageHandler(req, res)
+  if (resource === 'sync-event') return syncEventHandler(req, res)
+  if (resource === 'learning-push') return learningPushHandler(req, res)
+  if (resource === 'rumble-embed') return rumbleEmbedHandler(req, res)
+  if (resource === 'cps') return cpsHandler(req, res)
+  if (resource === 'create-payment') return createPaymentHandler(req, res)
+  if (resource === 'verify-payment') return verifyPaymentHandler(req, res)
+  if (resource === 'upload-image') return uploadImageHandler(req, res)
 
-  if (req.query?.resource === 'learning-push') {
-    return learningPushHandler(req, res)
-  }
-
-  if (req.query?.resource === 'rumble-embed') {
-    return rumbleEmbedHandler(req, res)
-  }
-
-  if (req.query?.resource === 'cps') {
-    return cpsHandler(req, res)
-  }
-
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  
-  res.json({
-    version: APP_VERSION,
-    timestamp: new Date().toISOString()
-  });
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
+  return res.json({ version: APP_VERSION, timestamp: new Date().toISOString() })
 }
