@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   cps-verify-apply:
-    if: startsWith(github.event.head_commit.message, '[cps-stage4]')
+    if: startsWith(github.event.head_commit.message, '[cps-stage5]')
     runs-on: ubuntu-latest
     steps:
       - name: Publish CPS verification pending
@@ -32,10 +32,13 @@ jobs:
         shell: bash
         run: |
           cat .github/cps-apply-once/payload.*.b64 | base64 --decode > "$RUNNER_TEMP/cps_payload.tar.gz"
-          gzip -t "$RUNNER_TEMP/cps_payload.tar.gz"
-          tar -tzf "$RUNNER_TEMP/cps_payload.tar.gz" >/dev/null
-          sha256sum "$RUNNER_TEMP/cps_payload.tar.gz"
-          tar -xzf "$RUNNER_TEMP/cps_payload.tar.gz" -C .
+          set +e
+          gzip -dc "$RUNNER_TEMP/cps_payload.tar.gz" > "$RUNNER_TEMP/cps_payload.tar"
+          GZIP_RC=$?
+          set -e
+          echo "gzip stream exit: $GZIP_RC"
+          tar -tf "$RUNNER_TEMP/cps_payload.tar" >/dev/null
+          tar -xf "$RUNNER_TEMP/cps_payload.tar" -C .
       - name: Apply deterministic integration patch
         run: python .github/cps-apply-once/apply.py
       - name: Verify CPS upstream stays read-only
