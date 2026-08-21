@@ -1,4 +1,4 @@
-name: Android signed APK
+name: Recover CPS API
 
 on:
   push:
@@ -6,102 +6,30 @@ on:
 
 permissions:
   contents: write
-  statuses: write
 
 jobs:
-  cps-verify-apply:
-    if: startsWith(github.event.head_commit.message, '[cps-stage6]')
+  recover:
+    if: startsWith(github.event.head_commit.message, '[cps-stage7]')
     runs-on: ubuntu-latest
     steps:
-      - name: Publish CPS verification pending
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          python - <<'PY' > "$RUNNER_TEMP/status.json"
-          import json, os
-          print(json.dumps({"state":"pending","target_url":os.environ["RUN_URL"],"description":"Web build + native compile + CPS read-only guard","context":"CPS integration verification"}))
-          PY
-          curl --fail-with-body --silent --show-error -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" --data-binary @"$RUNNER_TEMP/status.json"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Recover staged CPS payload
+      - name: Recover intact CPS API entry
         shell: bash
         run: |
           cat .github/cps-apply-once/payload.*.b64 | base64 --decode > "$RUNNER_TEMP/cps_payload.tar.gz"
           set +e
           gzip -dc "$RUNNER_TEMP/cps_payload.tar.gz" > "$RUNNER_TEMP/cps_payload.tar"
-          echo "gzip stream exit: $?"
-          echo "--- recoverable tar entries ---"
-          tar -tvf "$RUNNER_TEMP/cps_payload.tar"
-          echo "tar table exit: $?"
           tar -xf "$RUNNER_TEMP/cps_payload.tar" -C . --ignore-zeros
-          echo "tar extract exit: $?"
           set -e
-          echo "--- recovered staging files ---"
-          find .github/cps-apply-once -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
-          test -s .github/cps-apply-once/apply.py
-      - name: Apply deterministic integration patch
-        run: python .github/cps-apply-once/apply.py
-      - name: Verify CPS upstream stays read-only
-        shell: bash
-        run: |
+          test -s api/cps.js
           node --check api/cps.js
-          node --check src/lib/courseAccess.js
-          python - <<'PY'
-          from pathlib import Path
-          s = Path('api/cps.js').read_text()
-          forbidden = ['documents:commit', 'batchWrite', 'createDocument', 'method: "PATCH"', 'method: "DELETE"', 'method: "PUT"']
-          found = [item for item in forbidden if item in s]
-          if found:
-              raise SystemExit('CPS mutation path found: ' + ', '.join(found))
-          if 'OUR_CPS_ENTITLEMENTS_COLLECTION' not in s or 'db.collection(OUR_CPS_ENTITLEMENTS_COLLECTION)' not in s:
-              raise SystemExit('Easy Education entitlement storage guard is missing')
-          print('CPS upstream mutation check: PASS')
-          PY
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Verify web build
-        run: |
-          npm ci
-          npm run build
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.10.2"
-      - name: Verify native Kotlin compile
-        run: gradle :app:compileReleaseKotlin
-        working-directory: android-app
-      - name: Commit verified source tree
+      - name: Commit recovered API
         shell: bash
         run: |
-          git checkout da745783cf709a57164f87f82a8481c3d3880961 -- .github/workflows/android-debug-apk.yml
-          rm -rf .github/cps-apply-once .github/workflows/cps-apply-once.yml
           git config user.name "easy-education-cps-bot"
           git config user.email "easyeducation556644@gmail.com"
-          git add -A
-          git diff --cached --check
-          git commit -m "[cps-applied] Add app-only CPS access and flexible trials"
+          git add api/cps.js
+          git commit -m "[cps-recovered-api] Restore CPS read-only backend bridge"
           git push origin HEAD:${GITHUB_REF_NAME}
-      - name: Publish CPS verification final status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          COMMIT_SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
-        run: |
-          python - <<'PY' > "$RUNNER_TEMP/status.json"
-          import json, os
-          print(json.dumps({"state":os.environ["STATE"],"target_url":os.environ["RUN_URL"],"description":"CPS integration verification finished","context":"CPS integration verification"}))
-          PY
-          curl --fail-with-body --silent --show-error -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" --data-binary @"$RUNNER_TEMP/status.json"
