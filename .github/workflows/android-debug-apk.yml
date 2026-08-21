@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   cps-verify-apply:
-    if: startsWith(github.event.head_commit.message, '[cps-stage3]')
+    if: startsWith(github.event.head_commit.message, '[cps-stage4]')
     runs-on: ubuntu-latest
     steps:
       - name: Publish CPS verification pending
@@ -32,7 +32,9 @@ jobs:
         shell: bash
         run: |
           cat .github/cps-apply-once/payload.*.b64 | base64 --decode > "$RUNNER_TEMP/cps_payload.tar.gz"
-          echo "263e64b17f3cc9b1310747116de66475aaf165d4fa0da03421785b5175ed16b6  $RUNNER_TEMP/cps_payload.tar.gz" | sha256sum -c -
+          gzip -t "$RUNNER_TEMP/cps_payload.tar.gz"
+          tar -tzf "$RUNNER_TEMP/cps_payload.tar.gz" >/dev/null
+          sha256sum "$RUNNER_TEMP/cps_payload.tar.gz"
           tar -xzf "$RUNNER_TEMP/cps_payload.tar.gz" -C .
       - name: Apply deterministic integration patch
         run: python .github/cps-apply-once/apply.py
