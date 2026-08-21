@@ -14,7 +14,9 @@ function SelectRow({ checked, title, subtitle, badge, onClick }) {
   return (
     <button type="button" onClick={onClick} className={`w-full rounded-xl border p-3 text-left transition ${checked ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40"}`}>
       <div className="flex items-start gap-3">
-        <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${checked ? "border-primary bg-primary" : "border-muted-foreground/30"}`}>{checked && <Check className="h-4 w-4 text-primary-foreground" />}</span>
+        <span className={`mt-0.5 flex h-5 w-5 items-center justify-center rounded border ${checked ? "border-primary bg-primary" : "border-muted-foreground/30"}`}>
+          {checked && <Check className="h-4 w-4 text-primary-foreground" />}
+        </span>
         <div className="min-w-0 flex-1">
           <div className="font-semibold text-sm">{title}</div>
           {subtitle && <div className="mt-0.5 text-xs text-muted-foreground">{subtitle}</div>}
@@ -38,14 +40,8 @@ function Collapsed({ title, count, open, onToggle, children }) {
   )
 }
 
-function fmtDuration(campaign) {
-  return `${campaign.durationValue} ${campaign.durationUnit}`
-}
-
-function fmtDate(ms) {
-  if (!Number(ms)) return "—"
-  return new Date(Number(ms)).toLocaleString()
-}
+const fmtDuration = (campaign) => `${campaign.durationValue} ${campaign.durationUnit}`
+const fmtDate = (ms) => Number(ms) ? new Date(Number(ms)).toLocaleString() : "—"
 
 export default function ManageTrials() {
   const { currentUser } = useAuth()
@@ -97,7 +93,9 @@ export default function ManageTrials() {
       await loadHistory()
     } catch (error) {
       toast({ variant: "error", title: "Trials", description: error.message || "Could not load trial management." })
-    } finally { setLoading(false) }
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { load() }, [])
@@ -118,11 +116,18 @@ export default function ManageTrials() {
     return ourCourses.filter((item) => !q || `${item.title || ""} ${item.description || ""}`.toLowerCase().includes(q))
   }, [ourCourses, courseSearch])
 
+  const allCourseKeys = useMemo(
+    () => [...cpsCourses.map((course) => keyOf("cps", course.id)), ...ourCourses.map((course) => keyOf("our", course.id))],
+    [cpsCourses, ourCourses],
+  )
+  const allCoursesSelected = allCourseKeys.length > 0 && allCourseKeys.every((key) => selectedCourses.includes(key))
+
   const toggleUser = (id) => setSelectedUsers((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
   const toggleCourse = (source, id) => {
     const key = keyOf(source, id)
     setSelectedCourses((current) => current.includes(key) ? current.filter((value) => value !== key) : [...current, key])
   }
+  const toggleAllCourses = () => setSelectedCourses(allCoursesSelected ? [] : allCourseKeys)
 
   const createTrial = async () => {
     if ((!allUsers && selectedUsers.length === 0) || selectedCourses.length === 0) return
@@ -150,7 +155,9 @@ export default function ManageTrials() {
       await loadHistory()
     } catch (error) {
       toast({ variant: "error", title: "Trial failed", description: error.message || "Could not send trial." })
-    } finally { setBusy(false) }
+    } finally {
+      setBusy(false)
+    }
   }
 
   const resend = async (responseItem) => {
@@ -168,7 +175,9 @@ export default function ManageTrials() {
       await loadHistory()
     } catch (error) {
       toast({ variant: "error", title: "Resend failed", description: error.message })
-    } finally { setBusy(false) }
+    } finally {
+      setBusy(false)
+    }
   }
 
   const responseByCampaign = useMemo(() => {
@@ -210,6 +219,11 @@ export default function ManageTrials() {
         </div>
 
         <div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><input value={courseSearch} onChange={(event) => setCourseSearch(event.target.value)} placeholder="Search CPS or our courses..." className="w-full rounded-xl border border-border bg-background py-2.5 pl-9 pr-3" /></div>
+        <button type="button" onClick={toggleAllCourses} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left ${allCoursesSelected ? "border-primary bg-primary/5" : "border-border"}`}>
+          <span className={`flex h-5 w-5 items-center justify-center rounded border ${allCoursesSelected ? "border-primary bg-primary" : "border-muted-foreground/30"}`}>{allCoursesSelected && <Check className="h-4 w-4 text-primary-foreground" />}</span>
+          <span className="font-semibold">All Courses</span>
+          <span className="ml-auto text-xs text-muted-foreground">{allCourseKeys.length} total</span>
+        </button>
         <Collapsed title="CPS Courses" count={selectedCourses.filter((item) => item.startsWith("cps:")).length} open={openCps} onToggle={() => setOpenCps((value) => !value)}>
           <div className="grid gap-2 sm:grid-cols-2">{filteredCps.map((course) => <SelectRow key={course.id} checked={selectedCourses.includes(keyOf("cps", course.id))} title={course.title} badge="with live class & instant class" onClick={() => toggleCourse("cps", course.id)} />)}</div>
         </Collapsed>

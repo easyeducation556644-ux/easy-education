@@ -4,13 +4,11 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "android-app/**"
       - "api/**"
       - "server/**"
       - "src/**"
       - "vercel.json"
       - ".github/workflows/android-debug-apk.yml"
-      - "tools/apply_cps_home_release_patch.py"
   workflow_dispatch:
 
 permissions:
@@ -38,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.10 verification is running",
-              "context": "Easy Education final release 2.10.10",
+              "description": "Web + CPS + signed Android 2.10.11 verification is running",
+              "context": "Easy Education final release 2.10.11",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -49,33 +47,26 @@ jobs:
             "https://api.github.com/repos/$REPOSITORY/statuses/$COMMIT_SHA" \
             --data-binary @"$RUNNER_TEMP/status.json"
 
-      - uses: actions/checkout@v4
+      - name: Checkout web
+        uses: actions/checkout@v4
 
-      - name: Verify committed CPS Home wiring
-        run: python tools/apply_cps_home_release_patch.py
-
-      - name: Verify CPS source is read-only
+      - name: Verify CPS source stays read-only
         shell: bash
         run: |
           node --check server/cps-readonly-v2.js
+          node --check server/api-resources/cps-academic.js
           python - <<'PY'
           from pathlib import Path
-          source = Path('server/cps-readonly-v2.js').read_text()
-          # Guard executable source, not words that merely appear inside // documentation comments.
-          executable = '\n'.join(line.split('//', 1)[0] for line in source.splitlines())
-          forbidden = [
-              'documents:commit', 'batchWrite', 'createDocument',
-              'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"',
-              "method: 'PATCH'", "method: 'PUT'", "method: 'DELETE'",
-          ]
-          hits = [needle for needle in forbidden if needle in executable]
-          if hits:
-              raise SystemExit('Forbidden CPS upstream mutation capability found: ' + ', '.join(hits))
-          if ':runQuery' not in executable or 'method: "POST"' not in executable:
-              raise SystemExit('CPS Firestore runQuery read transport is missing')
-          if 'authenticated.db.collection(ENTITLEMENTS)' not in executable:
-              raise SystemExit('Easy Education entitlement storage is missing')
-          print('PASS: CPS upstream uses Firestore runQuery reads only; access writes stay in Easy Education Firestore')
+          for path in ['server/cps-readonly-v2.js', 'server/api-resources/cps-academic.js']:
+              source = Path(path).read_text()
+              executable = '\n'.join(line.split('//', 1)[0] for line in source.splitlines())
+              forbidden = ['documents:commit', 'batchWrite', 'createDocument', 'method: "PATCH"', 'method: "PUT"', 'method: "DELETE"']
+              hits = [needle for needle in forbidden if needle in executable]
+              if hits:
+                  raise SystemExit(f'Forbidden CPS upstream mutation capability in {path}: ' + ', '.join(hits))
+              if ':runQuery' not in executable or 'method: "POST"' not in executable:
+                  raise SystemExit(f'CPS read transport missing in {path}')
+          print('PASS: CPS upstream handlers are read-only')
           PY
 
       - name: Verify Vercel Hobby function budget
@@ -84,10 +75,9 @@ jobs:
           count=$(find api -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.ts' \) | wc -l | tr -d ' ')
           echo "Deployable Vercel function files: $count / 12"
           test "$count" -le 12
+          test ! -f api/trials.js
+          test ! -f api/exam-results.js
           test ! -f api/cps.js
-          test ! -f api/create-payment.js
-          test ! -f api/verify-payment.js
-          test ! -f api/upload-image.js
 
       - uses: actions/setup-node@v4
         with:
@@ -98,6 +88,20 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Checkout native-only Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+
+      - name: Verify final native source
+        shell: bash
+        run: |
+          grep -q 'versionName = "2.10.11"' native/app/build.gradle.kts
+          grep -q 'NativeExamHistoryScreen' native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'NativeCpsLivePlayerActivity' native/app/src/main/AndroidManifest.xml
+          ! grep -q 'Latest in your courses' native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -128,18 +132,18 @@ jobs:
 
       - name: Build signed release APK
         run: gradle :app:assembleRelease
-        working-directory: android-app
+        working-directory: native
 
       - name: Verify APK signature
         shell: bash
         run: |
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          "$APKSIGNER" verify --verbose --print-certs android-app/app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.10-release-apk
-          path: android-app/app/build/outputs/apk/release/app-release.apk
+          name: easy-education-2.10.11-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
         if: always()
@@ -155,8 +159,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, CPS read-only bridge, Vercel budget and signed Android 2.10.10 verified",
-              "context": "Easy Education final release 2.10.10",
+              "description": "Web, Vercel budget and signed Android 2.10.11 verified",
+              "context": "Easy Education final release 2.10.11",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \

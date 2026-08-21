@@ -7,7 +7,7 @@ const EVENTS = "trialEvents"
 const CPS_ENTITLEMENTS = "cpsEntitlements"
 const TRIAL_ACCESS = "trialCourseAccess"
 const MAX_SELECTED_USERS = 500
-const MAX_SELECTED_COURSES = 100
+const MAX_SELECTED_COURSES = 1000
 
 function httpError(statusCode, message, code = "TRIAL_ERROR") {
   const error = new Error(message)
@@ -83,17 +83,9 @@ function serializeDoc(snapshot) {
   }
 }
 
-function responseId(campaignId, uid) {
-  return `${campaignId}_${uid}`
-}
-
-function cpsEntitlementId(uid, courseId) {
-  return `${uid}_${courseId}`
-}
-
-function trialAccessId(uid, source, courseId) {
-  return `${uid}_${source}_${courseId}`
-}
+function responseId(campaignId, uid) { return `${campaignId}_${uid}` }
+function cpsEntitlementId(uid, courseId) { return `${uid}_${courseId}` }
+function trialAccessId(uid, source, courseId) { return `${uid}_${source}_${courseId}` }
 
 function isCampaignAudience(campaign, uid, profile) {
   if (!campaign || campaign.status === "cancelled") return false
@@ -262,8 +254,7 @@ async function handleCancel(authenticated, req, res) {
       for (const target of campaign.courseTargets || []) {
         transaction.set(db.collection(TRIAL_ACCESS).doc(trialAccessId(uid, target.source, target.courseId)), { status: "revoked", updatedAtMs: now, revokedAtMs: now }, { merge: true })
         if (target.source === "cps") {
-          const entitlementRef = db.collection(CPS_ENTITLEMENTS).doc(cpsEntitlementId(uid, target.courseId))
-          transaction.set(entitlementRef, { status: "revoked", updatedAtMs: now, revokedAtMs: now }, { merge: true })
+          transaction.set(db.collection(CPS_ENTITLEMENTS).doc(cpsEntitlementId(uid, target.courseId)), { status: "revoked", updatedAtMs: now, revokedAtMs: now }, { merge: true })
         }
       }
     }
@@ -304,7 +295,7 @@ async function handleAdminCreate(authenticated, req, res) {
     updatedAtMs: now,
   }
   await ref.set(payload)
-  await appendEvent(authenticated.db, { campaignId: ref.id, userId: "", action: "created", allUsers, userCount: userIds.length })
+  await appendEvent(authenticated.db, { campaignId: ref.id, userId: "", action: "created", allUsers, userCount: userIds.length, courseCount: courseTargets.length })
   res.status(200).json({ ok: true, campaign: { id: ref.id, ...payload } })
 }
 
