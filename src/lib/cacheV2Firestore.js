@@ -1,4 +1,5 @@
 import { deleteDoc as rawDeleteDoc } from "firebase/firestore"
+import { getAuth } from "firebase/auth"
 import * as tracked from "./trackedFirestore.js"
 
 export * from "./trackedFirestore.js"
@@ -6,6 +7,7 @@ export * from "./trackedFirestore.js"
 const CACHE_SCHEMA = "v4"
 const CACHE_EVENT = "easy-education-cache-updated"
 const SYNC_QUEUE_KEY = "ee_targeted_sync_queue_v1"
+const LEARNING_PUSH_EVENT = "easy-education-learning-push-result"
 
 export const CACHE_V2_PUBLIC_COLLECTIONS = new Set([
   "courses",
@@ -54,6 +56,46 @@ function collectionName(ref) {
     // Fall through.
   }
   return ""
+}
+
+function isArchivedClassData(data) {
+  if (data?.isArchived === true) return true
+  const subjects = Array.isArray(data?.subject) ? data.subject : [data?.subject]
+  const chapters = Array.isArray(data?.chapter) ? data.chapter : [data?.chapter]
+  return subjects.includes("archive") || chapters.includes("archive")
+}
+
+function emitLearningPush(detail) {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent(LEARNING_PUSH_EVENT, { detail }))
+}
+
+async function notifyCreatedClass(classId) {
+  if (typeof window === "undefined") return null
+  const user = getAuth().currentUser
+  if (!user) return null
+  try {
+    const token = await user.getIdToken()
+    const response = await fetch("/api/learning-push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action: "class-created", classId }),
+      keepalive: true,
+    })
+    const body = await response.json().catch(() => null)
+    if (!response.ok || !body?.success) {
+      throw new Error(body?.error || `Class notification failed: ${response.status}`)
+    }
+    emitLearningPush({ ok: true, classId, ...body })
+    return body
+  } catch (error) {
+    console.warn("Class was created, but enrolled-user push notification failed:", error)
+    emitLearningPush({ ok: false, classId, error: error?.message || "Notification failed" })
+    return null
+  }
 }
 
 function canonicalField(field) {
@@ -389,6 +431,9 @@ export function onSnapshot(ref, ...args) {
 export async function addDoc(collectionRef, data) {
   const result = await tracked.addDoc(collectionRef, data)
   emitCacheUpdated(result, "changed", { local: true })
+  if (collectionName(collectionRef) === "classes" && !isArchivedClassData(data)) {
+    notifyCreatedClass(result.id).catch(() => {})
+  }
   return result
 }
 
