@@ -4,6 +4,7 @@
     {"source":"/api/sync-event","destination":"/api/version?resource=sync-event"},
     {"source":"/api/learning-push","destination":"/api/version?resource=learning-push"},
     {"source":"/api/cps","destination":"/api/version?resource=cps"},
+    {"source":"/api/trials","destination":"/api/version?resource=trials"},
     {"source":"/api/create-payment","destination":"/api/version?resource=create-payment"},
     {"source":"/api/verify-payment","destination":"/api/version?resource=verify-payment"},
     {"source":"/api/upload-image","destination":"/api/version?resource=upload-image"},

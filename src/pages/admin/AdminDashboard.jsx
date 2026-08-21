@@ -25,6 +25,7 @@ import {
   MessageSquare,
   ShieldCheck,
   ShieldAlert,
+  Gift,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -32,6 +33,7 @@ import { db } from "../../lib/firebase"
 import AdminOverview from "./AdminOverview"
 import ReadUsage from "./ReadUsage"
 import ManageUsers from "./ManageUsers"
+import ManageTrials from "./ManageTrials"
 import ManageCourses from "./ManageCourses"
 import ManageClasses from "./ManageClasses"
 import ManageAnnouncements from "./ManageAnnouncements"
@@ -134,14 +136,17 @@ export default function AdminDashboard() {
     return onSnapshot(banNotificationsQuery, (snapshot) => setUnreadBanCount(snapshot.size))
   }, [canReadBanAlerts])
 
-  const navItems = ADMIN_PAGE_CATALOG.map((page) => ({
-    ...page,
-    name: page.label,
-    icon: ICON_BY_PERMISSION[page.id] || LayoutDashboard,
-  }))
+  const navItems = [
+    ...ADMIN_PAGE_CATALOG.map((page) => ({
+      ...page,
+      name: page.label,
+      icon: ICON_BY_PERMISSION[page.id] || LayoutDashboard,
+    })),
+    ...(fullAdmin ? [{ id: "__trials", label: "Trials", name: "Trials", path: "/admin/trials", description: "Create and manage claim-first trials.", icon: Gift, fullAdminOnly: true }] : []),
+  ]
 
   const visibleNavItems = navItems.filter((item) =>
-    item.fullAdminOnly ? fullAdmin : hasAdminPermission(userProfile, item.id),
+    item.id === "__trials" ? fullAdmin : item.fullAdminOnly ? fullAdmin : hasAdminPermission(userProfile, item.id),
   )
   const currentPage =
     visibleNavItems
@@ -207,6 +212,7 @@ export default function AdminDashboard() {
               <Route path="ban-notifications" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_ALERTS}><BannedNotifications /></AdminRoute>} />
               <Route path="ban-management" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_MANAGEMENT}><BanManagement /></AdminRoute>} />
               <Route path="users" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.USERS}><ManageUsers /></AdminRoute>} />
+              <Route path="trials" element={<AdminRoute fullOnly><ManageTrials /></AdminRoute>} />
               <Route path="categories" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CATEGORIES}><ManageCategories /></AdminRoute>} />
               <Route path="courses" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.COURSES}><ManageCourses /></AdminRoute>} />
               <Route path="subjects" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SUBJECTS}><ManageSubjects /></AdminRoute>} />

@@ -3,11 +3,12 @@ import syncEventHandler from './_sync-event.js'
 import learningPushHandler from '../server/api-resources/learning-push.js'
 import rumbleEmbedHandler from '../server/api-resources/rumble-embed.js'
 import cpsHandler from '../server/cps-readonly-v2.js'
+import trialsHandler from '../server/api-resources/trials.js'
 import createPaymentHandler from '../server/api-resources/create-payment.js'
 import verifyPaymentHandler from '../server/api-resources/verify-payment.js'
 import uploadImageHandler from '../server/api-resources/upload-image.js'
 
-const APP_VERSION = 'v9.1'
+const APP_VERSION = 'v9.2'
 
 export default async function versionHandler(req, res) {
   const resource = String(req.query?.resource || '').trim()
@@ -17,6 +18,7 @@ export default async function versionHandler(req, res) {
   if (resource === 'learning-push') return learningPushHandler(req, res)
   if (resource === 'rumble-embed') return rumbleEmbedHandler(req, res)
   if (resource === 'cps') return cpsHandler(req, res)
+  if (resource === 'trials') return trialsHandler(req, res)
   if (resource === 'create-payment') return createPaymentHandler(req, res)
   if (resource === 'verify-payment') return verifyPaymentHandler(req, res)
   if (resource === 'upload-image') return uploadImageHandler(req, res)
