@@ -18,11 +18,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Fullscreen presentation of the same native player surface. Shared-session launches reuse the
- * process-local ExoPlayer, including buffer, speed and chapter queue. The surface itself handles a
- * continuous downward drag and calls back here only after the exit threshold is committed.
- */
 @UnstableApi
 class NativePlayerActivity : AppCompatActivity() {
     private var player: ExoPlayer? = null
@@ -34,6 +29,7 @@ class NativePlayerActivity : AppCompatActivity() {
     private var currentClassId: String = ""
     private var currentSourceUrl: String = ""
     private var currentHeight: Int = 480
+    private var requestedStartPositionMs: Long = 0L
     private var finishingAnimated = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +37,8 @@ class NativePlayerActivity : AppCompatActivity() {
         @Suppress("DEPRECATION")
         overridePendingTransition(R.anim.ee_player_fullscreen_enter, R.anim.ee_player_background_hold)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        NativeCapturePolicy.applyCached(this, FirebaseAuth.getInstance().currentUser)
+        NativeCapturePolicy.refreshNow(this, FirebaseAuth.getInstance().currentUser)
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
         enterImmersiveMode()
@@ -49,6 +47,7 @@ class NativePlayerActivity : AppCompatActivity() {
         currentClassId = intent.getStringExtra(EXTRA_CLASS_ID).orEmpty()
         currentSourceUrl = intent.getStringExtra(EXTRA_SOURCE_URL).orEmpty()
         currentHeight = intent.getIntExtra(EXTRA_HEIGHT, 480)
+        requestedStartPositionMs = intent.getLongExtra(EXTRA_START_POSITION_MS, 0L).coerceAtLeast(0L)
         progressKey = "class:$currentClassId"
         sharedSession = intent.getBooleanExtra(EXTRA_SHARED_SESSION, false)
 
@@ -72,12 +71,21 @@ class NativePlayerActivity : AppCompatActivity() {
                 player = exo
                 playerView.setLoading(false)
                 playerView.bindPlayer(exo)
+                if (requestedStartPositionMs > 0L) {
+                    exo.seekTo(requestedStartPositionMs)
+                    requestedStartPositionMs = 0L
+                }
                 exo.playWhenReady = true
                 bindSharedNavigation()
             }
             currentSourceUrl.isNotBlank() -> playOnline(currentClassId, currentSourceUrl, currentHeight)
             else -> fail("Video source is unavailable")
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        NativeCapturePolicy.refreshNow(this, FirebaseAuth.getInstance().currentUser)
     }
 
     private fun playOffline(downloadId: String) {
@@ -127,6 +135,10 @@ class NativePlayerActivity : AppCompatActivity() {
                     player = exo
                     playerView.setLoading(false)
                     playerView.bindPlayer(exo)
+                    if (requestedStartPositionMs > 0L) {
+                        exo.seekTo(requestedStartPositionMs)
+                        requestedStartPositionMs = 0L
+                    }
                     bindSharedNavigation()
                 }.onFailure { error ->
                     playerView.setLoading(false)
@@ -191,11 +203,7 @@ class NativePlayerActivity : AppCompatActivity() {
                 bindSharedNavigation()
             }.onFailure { error ->
                 playerView.setLoading(false)
-                Toast.makeText(
-                    this@NativePlayerActivity,
-                    friendlyMessage(error.message ?: "Could not open this class video"),
-                    Toast.LENGTH_LONG,
-                ).show()
+                Toast.makeText(this@NativePlayerActivity, friendlyMessage(error.message ?: "Could not open this class video"), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -209,7 +217,9 @@ class NativePlayerActivity : AppCompatActivity() {
         exo.setMediaSource(mediaSource)
         val saved = getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE).getLong(progressKey, 0L)
         exo.prepare()
-        if (saved > 0L) exo.seekTo(saved)
+        val start = requestedStartPositionMs.takeIf { it > 0L } ?: saved
+        requestedStartPositionMs = 0L
+        if (start > 0L) exo.seekTo(start)
         exo.playWhenReady = true
     }
 
@@ -257,23 +267,18 @@ class NativePlayerActivity : AppCompatActivity() {
 
     private fun savePosition(position: Long) {
         if (progressKey.isBlank() || position <= 0L) return
-        getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE)
-            .edit().putLong(progressKey, position).apply()
+        getSharedPreferences(PLAYER_PREFS, MODE_PRIVATE).edit().putLong(progressKey, position).apply()
     }
 
     private fun enterImmersiveMode() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            )
+            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        )
     }
 
     private fun friendlyMessage(raw: String): String = when {
-        raw.contains("Unable to resolve host", true) ||
-            raw.contains("Failed to connect", true) ||
-            raw.contains("timeout", true) -> "Network problem. Check your connection and try again."
+        raw.contains("Unable to resolve host", true) || raw.contains("Failed to connect", true) || raw.contains("timeout", true) -> "Network problem. Check your connection and try again."
         raw.contains("403", true) -> "Video access expired. Reopen the class to refresh the stream."
         else -> raw
     }
@@ -285,6 +290,7 @@ class NativePlayerActivity : AppCompatActivity() {
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SHARED_SESSION = "shared_player_session"
+        const val EXTRA_START_POSITION_MS = "start_position_ms"
         private const val PLAYER_PREFS = "native_player_positions_v2"
     }
 }

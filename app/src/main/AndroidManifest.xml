@@ -26,6 +26,11 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
         <activity
+            android:name=".NativeCpsLivePlayerActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:configChanges="keyboardHidden|orientation|screenSize" />
+        <activity
             android:name=".NativePlayerActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
