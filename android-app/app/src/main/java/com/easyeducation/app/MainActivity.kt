@@ -67,6 +67,9 @@ class MainActivity : ComponentActivity() {
                 loginBusy = false
                 Toast.makeText(this, "Login successful", Toast.LENGTH_SHORT).show()
                 lifecycleScope.launch(Dispatchers.IO) {
+                    // Mirror the supplied CPS HTML auth flow with an isolated secondary Firebase
+                    // session. Failure here never blocks the Easy Education account.
+                    runCatching { CpsFirebaseSession.signInWithGoogle(this@MainActivity, idToken) }
                     runCatching { NativeDeviceSession.registerFreshLogin(this@MainActivity, result.user!!) }
                     runCatching { NativePushRegistrar.register(this@MainActivity) }
                     withContext(Dispatchers.Main) {
@@ -125,6 +128,8 @@ class MainActivity : ComponentActivity() {
                     runCatching { NativeDeviceSession.ensureCurrentDevice(this@MainActivity, user) }
                 }
                 runCatching { NativePushRegistrar.register(this@MainActivity) }
+                // Existing sessions can reuse the last Google credential to establish CPS auth.
+                runCatching { CpsFirebaseSession.sourceIdToken(this@MainActivity, forceRefresh = false) }
             }
         }
     }
@@ -142,6 +147,7 @@ class MainActivity : ComponentActivity() {
         deviceListener = null
         if (user == null) {
             activeDevices = emptyList()
+            CpsFirebaseSession.signOut(this)
             NativeFullscreenOverlay.dismiss(immediate = true)
             NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
             NativePlayerMediaSession.release()
@@ -154,6 +160,7 @@ class MainActivity : ComponentActivity() {
             onDevices = { devices -> activeDevices = devices },
             onForcedOut = { message ->
                 activeDevices = emptyList()
+                CpsFirebaseSession.signOut(this)
                 NativeFullscreenOverlay.dismiss(immediate = true)
                 NativeMiniPlayerOverlay.dismiss(releasePlayer = true)
                 NativePlayerMediaSession.release()

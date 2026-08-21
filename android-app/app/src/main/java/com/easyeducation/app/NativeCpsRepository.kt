@@ -86,8 +86,9 @@ data class NativeCpsExamPayload(
 )
 
 class NativeCpsRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val auth = FirebaseAuth.getInstance()
-    private val cache = NativeCacheDb(context.applicationContext)
+    private val cache = NativeCacheDb(appContext)
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -284,17 +285,23 @@ class NativeCpsRepository(context: Context) {
 
     private suspend fun get(action: String, params: Map<String, String> = emptyMap()): JSONObject {
         val user = auth.currentUser ?: error("Sign in to open CPS courses")
-        val token = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() }
-            ?: error("Could not get an authentication token")
+        val easyEducationToken = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() }
+            ?: error("Could not verify your Easy Education session")
+        val cpsToken = runCatching {
+            CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = action == "exam")
+        }.getOrNull()
         val query = buildList {
             add("action=${encode(action)}")
             params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
         }.joinToString("&")
         val request = Request.Builder()
             .url("$CPS_API_ORIGIN/api/cps?$query")
-            .header("Authorization", "Bearer $token")
+            .header("Authorization", "Bearer $easyEducationToken")
             .header("Accept", "application/json")
             .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
+            .apply {
+                if (!cpsToken.isNullOrBlank()) header("X-CPS-Firebase-Token", cpsToken)
+            }
             .get()
             .build()
         return withContext(Dispatchers.IO) {
@@ -303,7 +310,11 @@ class NativeCpsRepository(context: Context) {
                 if (!response.isSuccessful) {
                     val message = runCatching { JSONObject(body).optString("error") }.getOrNull()
                         ?.takeIf { it.isNotBlank() }
-                        ?: "CPS request failed (${response.code})"
+                        ?: when (response.code) {
+                            401 -> "Your session expired. Sign in again and retry."
+                            403 -> "This CPS item is locked or needs CPS verification."
+                            else -> "CPS is temporarily unavailable. Please retry."
+                        }
                     error(message)
                 }
                 JSONObject(body)
