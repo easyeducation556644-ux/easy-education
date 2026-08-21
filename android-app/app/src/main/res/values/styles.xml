@@ -1,6 +1,7 @@
 <resources>
     <style name="Theme.EasyEducation" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:fontFamily">sans</item>
+        <item name="fontFamily">@font/hind_siliguri</item>
+        <item name="android:fontFamily">@font/hind_siliguri</item>
         <item name="android:colorAccent">#3B82F6</item>
         <item name="android:windowBackground">#0B1020</item>
         <item name="android:navigationBarColor">#0B1020</item>
