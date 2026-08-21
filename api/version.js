@@ -2,6 +2,7 @@ import firestoreReadUsageHandler from './_firestore-read-usage.js'
 import syncEventHandler from './_sync-event.js'
 import learningPushHandler from './_learning-push.js'
 import rumbleEmbedHandler from './_rumble-embed.js'
+import cpsHandler from '../server/cps-readonly.js'
 
 const APP_VERSION = 'v9.0';
 
@@ -20,6 +21,10 @@ export default async function versionHandler(req, res) {
 
   if (req.query?.resource === 'rumble-embed') {
     return rumbleEmbedHandler(req, res)
+  }
+
+  if (req.query?.resource === 'cps') {
+    return cpsHandler(req, res)
   }
 
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

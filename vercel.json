@@ -13,6 +13,10 @@
       "destination": "/api/version?resource=learning-push"
     },
     {
+      "source": "/api/cps",
+      "destination": "/api/version?resource=cps"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/:path*"
     },

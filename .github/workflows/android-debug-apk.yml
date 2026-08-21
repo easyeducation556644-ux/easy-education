@@ -3,7 +3,7 @@ name: Android signed APK
 on:
   push:
     branches: ["main"]
-    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
+    paths: ["android-app/**", ".github/workflows/android-debug-apk.yml", "api/**", "server/**", "vercel.json"]
   pull_request:
     paths: ["android-app/**", ".github/workflows/android-debug-apk.yml"]
   workflow_dispatch:
@@ -18,6 +18,10 @@ jobs:
       EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The final CPS production commit carries [build-cps-native]. Only that push builds the
+          # already-verified native CPS branch; ordinary main/PR builds keep their normal SHA.
+          ref: ${{ github.event_name == 'push' && github.ref_name == 'main' && contains(github.event.head_commit.message, '[build-cps-native]') && 'agent/cps-native-final-verification' || github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
