@@ -1,14 +1,17 @@
-import { isFullAdminProfile, requireAuthenticatedUser } from "./utils/firebase-admin.js"
+import { getAdminServices, isFullAdminProfile, requireAuthenticatedUser } from "./utils/firebase-admin.js"
 
 const CPS_PROJECT_ID = "secure-sublime-cjkjx"
 const CPS_DATABASE_ID = "ai-studio-d5c98c37-dd8b-4acc-a17c-48f4f6244ec1"
 const CPS_API_KEY = process.env.CPS_FIREBASE_API_KEY || "AIzaSyBK3MFPCsxXCqu_hYSj5gZ7FrHhsPRxbXg"
 const CPS_ROOT = `https://firestore.googleapis.com/v1/projects/${CPS_PROJECT_ID}/databases/${CPS_DATABASE_ID}/documents`
 const ENTITLEMENTS = "cpsEntitlements"
-const PAGE_SIZE = 100
 const MAX_LIST_PAGES = 20
-const SOURCE_CACHE_TTL_MS = 60_000
-const sourceCache = new Map()
+const PAGE_SIZE = 100
+const WRITE_BATCH_SIZE = 400
+const MAX_BULK_TARGETS = 20_000
+
+const sharedCache = globalThis.__easyEducationCpsReadCache || new Map()
+globalThis.__easyEducationCpsReadCache = sharedCache
 
 function httpError(statusCode, message) {
   const error = new Error(message)
@@ -21,6 +24,7 @@ function setCors(res) {
   res.setHeader("Vary", "Origin")
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+  res.setHeader("Cache-Control", "private, no-store")
 }
 
 function docId(name = "") {
@@ -58,8 +62,8 @@ function cpsHeaders() {
 }
 
 async function cpsRead(url) {
-  // CPS is strictly upstream READ-ONLY. Every request to the CPS project is GET.
-  // All access grants/revocations are written only to Easy Education Firestore.
+  // CPS is an upstream READ-ONLY source. Every request to the CPS project is GET-only.
+  // Grants, trials and revocations are stored only in Easy Education Firestore.
   const response = await fetch(url, { method: "GET", headers: cpsHeaders(), redirect: "follow" })
   if (!response.ok) {
     const text = await response.text().catch(() => "")
@@ -72,7 +76,7 @@ async function cpsRead(url) {
 }
 
 function cpsUrl(path, params = {}) {
-  const suffix = String(path).split("/").filter(Boolean).map(encodeURIComponent).join("/")
+  const suffix = path.split("/").filter(Boolean).map(encodeURIComponent).join("/")
   const url = new URL(`${CPS_ROOT}/${suffix}`)
   url.searchParams.set("key", CPS_API_KEY)
   for (const [key, value] of Object.entries(params)) {
@@ -81,60 +85,43 @@ function cpsUrl(path, params = {}) {
   return url.toString()
 }
 
-async function cachedSource(key, loader) {
-  const now = Date.now()
-  const cached = sourceCache.get(key)
-  if (cached && now - cached.at < SOURCE_CACHE_TTL_MS) return cached.value
-  const value = await loader()
-  sourceCache.set(key, { at: now, value })
-  return value
+function cacheTtl(path) {
+  if (path === "courses") return 5 * 60_000
+  if (path === "live_classes") return 20_000
+  if (path === "exams") return 90_000
+  if (/^exams\/[^/]+\/questions$/.test(path)) return 60_000
+  return 60_000
 }
 
 async function readCpsDocument(collectionName, id, subcollection = "", subId = "") {
   const path = [collectionName, id, subcollection, subId].filter(Boolean).join("/")
-  return cachedSource(`doc:${path}`, async () => {
-    try {
-      return decodeDocument(await cpsRead(cpsUrl(path)))
-    } catch (error) {
-      if (error.statusCode === 404) return null
-      throw error
-    }
-  })
-}
-
-async function listCpsCollection(path) {
-  return cachedSource(`list:${path}`, async () => {
-    const docs = []
-    let pageToken = ""
-    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const payload = await cpsRead(cpsUrl(path, { pageSize: PAGE_SIZE, pageToken }))
-      for (const raw of payload.documents || []) {
-        const decoded = decodeDocument(raw)
-        if (decoded) docs.push(decoded)
-      }
-      pageToken = payload.nextPageToken || ""
-      if (!pageToken) break
-    }
-    return docs
-  })
-}
-
-function asArray(value) {
-  return Array.isArray(value) ? value : []
-}
-
-function firstText(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim()
+  try {
+    return decodeDocument(await cpsRead(cpsUrl(path)))
+  } catch (error) {
+    if (error.statusCode === 404) return null
+    throw error
   }
-  return ""
 }
 
-function instructorName(course) {
-  return asArray(course?.instructors)
-    .map((item) => firstText(item?.name, item?.title))
-    .filter(Boolean)
-    .join(", ") || "CPS"
+async function listCpsCollection(path, { force = false } = {}) {
+  const key = `list:${path}`
+  const cached = sharedCache.get(key)
+  const now = Date.now()
+  if (!force && cached && now - cached.at < cacheTtl(path)) return cached.value
+
+  const docs = []
+  let pageToken = ""
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const payload = await cpsRead(cpsUrl(path, { pageSize: PAGE_SIZE, pageToken }))
+    for (const raw of payload.documents || []) {
+      const decoded = decodeDocument(raw)
+      if (decoded) docs.push(decoded)
+    }
+    pageToken = payload.nextPageToken || ""
+    if (!pageToken) break
+  }
+  sharedCache.set(key, { at: now, value: docs })
+  return docs
 }
 
 function entitlementId(uid, courseId) {
@@ -151,61 +138,75 @@ function activeEntitlement(data, now = Date.now()) {
   return !expiresAtMs || expiresAtMs > now
 }
 
-async function entitlementMap(authenticated) {
-  if (isFullAdminProfile(authenticated.userProfile)) return { adminAll: true, map: new Map() }
-  const uid = authenticated.decodedToken.uid
-  const snapshot = await authenticated.db.collection(ENTITLEMENTS).where("userId", "==", uid).get()
-  const now = Date.now()
-  const map = new Map()
-  snapshot.docs.forEach((item) => {
-    const data = item.data() || {}
-    if (!activeEntitlement(data, now)) return
-    const courseId = normalizeCourseId(data.cpsCourseId || data.courseId)
-    if (courseId) map.set(courseId, { id: item.id, ...data })
-  })
-  return { adminAll: false, map }
+async function getEntitlement(db, uid, rawCourseId) {
+  const snapshot = await db.collection(ENTITLEMENTS).doc(entitlementId(uid, rawCourseId)).get()
+  if (!snapshot.exists) return null
+  return { id: snapshot.id, ...(snapshot.data() || {}) }
 }
 
-async function getEntitlement(authenticated, rawCourseId) {
-  if (isFullAdminProfile(authenticated.userProfile)) {
-    return { adminPreview: true, status: "active", accessType: "permanent", expiresAtMs: 0 }
-  }
-  const snapshot = await authenticated.db.collection(ENTITLEMENTS)
-    .doc(entitlementId(authenticated.decodedToken.uid, rawCourseId)).get()
-  if (!snapshot.exists) return null
-  const data = { id: snapshot.id, ...(snapshot.data() || {}) }
-  return activeEntitlement(data) ? data : null
+async function getActiveEntitlementMap(db, uid) {
+  const snapshot = await db.collection(ENTITLEMENTS).where("userId", "==", uid).get()
+  const now = Date.now()
+  const result = new Map()
+  snapshot.docs.forEach((entry) => {
+    const data = { id: entry.id, ...entry.data() }
+    if (!activeEntitlement(data, now)) return
+    const rawCourseId = normalizeCourseId(data.cpsCourseId || data.courseId)
+    if (rawCourseId) result.set(rawCourseId, data)
+  })
+  return result
+}
+
+async function optionalCourseAccess(authenticated, rawCourseId) {
+  if (isFullAdminProfile(authenticated.userProfile)) return { adminPreview: true, expiresAtMs: 0 }
+  const entitlement = await getEntitlement(authenticated.db, authenticated.decodedToken.uid, rawCourseId)
+  return activeEntitlement(entitlement) ? entitlement : null
 }
 
 async function requireCourseAccess(authenticated, rawCourseId) {
-  const entitlement = await getEntitlement(authenticated, rawCourseId)
-  if (!entitlement) throw httpError(403, "CPS course access is missing or expired")
-  return entitlement
+  const access = await optionalCourseAccess(authenticated, rawCourseId)
+  if (!access) throw httpError(403, "CPS course access is missing or expired")
+  return access
 }
 
-function mapCourseBase(rawCourseId, course, options = {}) {
-  const playlists = asArray(course?.playlists)
-  const classCount = playlists.reduce((sum, playlist) => sum + asArray(playlist?.classes).length, 0)
-  return {
-    id: `cps:${rawCourseId}`,
-    title: firstText(course?.title, course?.name) || "CPS Course",
-    description: firstText(course?.description),
-    thumbnail: firstText(course?.thumbnail, course?.thumbnailUrl),
-    price: Number(course?.price || 0),
-    courseFormat: "cps",
-    source: "cps",
-    playlistCount: playlists.length,
-    classCount,
-    hasInstantClass: classCount > 0,
-    hasLiveClass: Boolean(options.hasLiveClass),
-    hasAccess: Boolean(options.hasAccess),
-    accessExpiresAtMs: Number(options.accessExpiresAtMs || 0),
-    accessType: firstText(options.accessType),
-    ...(options.includeProtected ? { telegramLink: firstText(course?.groupLink) } : {}),
+function asArray(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim()
   }
+  return ""
 }
 
-function mapPreviewClass(rawCourseId, course, playlist, item, index) {
+function isVisibleCourse(course) {
+  return course && course.isDeleted !== true && course.bin !== true && course.hidden !== true
+}
+
+function instructorName(course) {
+  return asArray(course.instructors)
+    .map((item) => firstText(item?.name, item?.title))
+    .filter(Boolean)
+    .join(", ") || "CPS"
+}
+
+function resourceLinks(item) {
+  const links = []
+  const add = (label, url) => {
+    if (typeof url !== "string" || !/^https?:\/\//i.test(url.trim())) return
+    if (links.some((entry) => entry.url === url.trim())) return
+    links.push({ label, url: url.trim() })
+  }
+  add("Class resource", item?.resourceUrl)
+  asArray(item?.notes).forEach((note, index) => {
+    if (typeof note === "string") add(`Note ${index + 1}`, note)
+    else add(firstText(note?.title, note?.label, note?.name) || `Note ${index + 1}`, firstText(note?.url, note?.link, note?.href))
+  })
+  return links
+}
+
+function mapRecordedClass(rawCourseId, course, playlist, item, index, playable) {
   const rawId = firstText(item?.id) || `${playlist?.id || "playlist"}-${index}`
   const published = Date.parse(firstText(item?.createdAt))
   return {
@@ -217,37 +218,13 @@ function mapPreviewClass(rawCourseId, course, playlist, item, index) {
     chapter: [],
     order: Number(item?.order ?? index),
     duration: firstText(item?.duration, item?.durationSeconds ? `${item.durationSeconds}s` : ""),
+    videoURL: playable ? firstText(item?.videoUrl, item?.videoURL, item?.url) : "",
     teacherName: instructorName(course),
     imageURL: firstText(item?.thumbnailUrl, item?.thumbnail, course?.thumbnail),
-    hasVideo: Boolean(firstText(item?.videoUrl, item?.videoURL, item?.url)),
-    hasResource: Boolean(firstText(item?.resourceUrl)) || asArray(item?.notes).length > 0,
-    locked: true,
+    resourceLinks: playable ? resourceLinks(item) : [],
     createdAt: Number.isFinite(published) ? published : 0,
     cpsSource: true,
-  }
-}
-
-function resourceLinks(item) {
-  const links = []
-  const add = (label, url) => {
-    const value = firstText(url)
-    if (!/^https?:\/\//i.test(value)) return
-    if (!links.some((entry) => entry.url === value)) links.push({ label, url: value })
-  }
-  add("Class resource", item?.resourceUrl)
-  asArray(item?.notes).forEach((note, index) => {
-    if (typeof note === "string") add(`Note ${index + 1}`, note)
-    else add(firstText(note?.title, note?.label, note?.name) || `Note ${index + 1}`, firstText(note?.url, note?.link, note?.href))
-  })
-  return links
-}
-
-function mapFullClass(rawCourseId, course, playlist, item, index) {
-  return {
-    ...mapPreviewClass(rawCourseId, course, playlist, item, index),
-    videoURL: firstText(item?.videoUrl, item?.videoURL, item?.url),
-    resourceLinks: resourceLinks(item),
-    locked: false,
+    locked: !playable,
   }
 }
 
@@ -256,7 +233,7 @@ function recordingUrl(recording) {
   return firstText(recording?.url, recording?.videoUrl, recording?.videoURL, recording?.link)
 }
 
-function mapLiveRecording(rawCourseId, course, live, recording, index) {
+function mapLiveRecording(rawCourseId, course, live, recording, index, playable) {
   const url = recordingUrl(recording)
   if (!url) return null
   const baseId = firstText(live?.id) || "live"
@@ -269,167 +246,119 @@ function mapLiveRecording(rawCourseId, course, live, recording, index) {
     chapter: [],
     order: 50_000 + index,
     duration: "",
-    videoURL: url,
+    videoURL: playable ? url : "",
     teacherName: instructorName(course),
     imageURL: firstText(recording?.thumbnailUrl, live?.thumbnailUrl, course?.thumbnail),
     resourceLinks: [],
-    locked: false,
     createdAt: Date.parse(firstText(live?.startTime)) || 0,
     cpsSource: true,
+    locked: !playable,
   }
 }
 
-function mapLive(live, { courseTitle = "", hasAccess = false, includeUrl = false } = {}) {
+function mapCourse(rawCourseId, course, access = null) {
+  const hasAccess = Boolean(access)
   return {
-    id: String(live?.id || ""),
-    courseId: `cps:${normalizeCourseId(live?.courseId)}`,
-    courseTitle,
-    title: firstText(live?.title, live?.topic) || "Live class",
-    topic: firstText(live?.topic),
-    startTime: firstText(live?.startTime),
-    status: firstText(live?.status) || "upcoming",
-    platform: firstText(live?.platform),
-    thumbnailUrl: firstText(live?.thumbnailUrl),
+    id: `cps:${rawCourseId}`,
+    title: firstText(course?.title, course?.name) || "CPS Course",
+    description: firstText(course?.description),
+    thumbnail: firstText(course?.thumbnail, course?.thumbnailUrl),
+    price: Number(course?.price || 0),
+    courseFormat: "cps",
+    telegramLink: hasAccess ? firstText(course?.groupLink) : "",
+    source: "cps",
     hasAccess,
-    url: includeUrl ? firstText(live?.url) : "",
+    accessExpiresAtMs: hasAccess ? Number(access?.expiresAtMs || 0) : 0,
+  }
+}
+
+function mapLive(live, { access = null, courseTitle = "" } = {}) {
+  const hasAccess = Boolean(access)
+  return {
+    id: String(live.id || ""),
+    courseId: `cps:${String(live.courseId || "")}`,
+    courseTitle,
+    title: firstText(live.title, live.topic) || "Live class",
+    topic: firstText(live.topic),
+    startTime: firstText(live.startTime),
+    url: hasAccess ? firstText(live.url) : "",
+    status: firstText(live.status) || "upcoming",
+    platform: firstText(live.platform),
+    thumbnailUrl: firstText(live.thumbnailUrl),
+    hasAccess,
   }
 }
 
 function mapExam(exam) {
   return {
-    id: String(exam?.id || ""),
-    title: firstText(exam?.title) || "Exam",
-    description: firstText(exam?.description),
-    status: firstText(exam?.status),
-    date: firstText(exam?.date),
-    startTime: firstText(exam?.startTime),
-    endTime: firstText(exam?.endTime),
-    duration: Number(exam?.duration || 0),
-    questionsCount: Number(exam?.questionsCount || 0),
-    maxScore: Number(exam?.maxScore || 0),
-    negativeMarks: Number(exam?.negativeMarks || 0),
+    id: String(exam.id || ""),
+    title: firstText(exam.title) || "Exam",
+    description: firstText(exam.description),
+    status: firstText(exam.status),
+    date: firstText(exam.date),
+    startTime: firstText(exam.startTime),
+    endTime: firstText(exam.endTime),
+    duration: Number(exam.duration || 0),
+    questionsCount: Number(exam.questionsCount || 0),
+    maxScore: Number(exam.maxScore || 0),
+    negativeMarks: Number(exam.negativeMarks || 0),
   }
 }
 
-function dhakaDayKey(value) {
-  const date = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(date.getTime())) return ""
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Dhaka",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date)
-  const read = (type) => parts.find((part) => part.type === type)?.value || ""
-  return `${read("year")}-${read("month")}-${read("day")}`
-}
-
-function isRunningLive(live) {
-  return ["live", "running", "ongoing", "started"].includes(firstText(live?.status).toLowerCase())
-}
-
-function chooseFeaturedLive(liveClasses, courseById, accessInfo) {
-  const now = new Date()
-  const todayKey = dhakaDayKey(now)
-  const mapped = liveClasses.map((live) => {
-    const rawCourseId = normalizeCourseId(live?.courseId)
-    const course = courseById.get(rawCourseId)
-    const entitlement = accessInfo.adminAll ? { expiresAtMs: 0 } : accessInfo.map.get(rawCourseId)
-    return {
-      source: live,
-      value: mapLive(live, {
-        courseTitle: firstText(course?.title, course?.name) || "CPS",
-        hasAccess: accessInfo.adminAll || Boolean(entitlement),
-        includeUrl: false,
-      }),
-    }
-  })
-  const running = mapped.filter(({ source }) => isRunningLive(source))
-  if (running.length > 0) return running.sort((a, b) => (Date.parse(a.value.startTime) || 0) - (Date.parse(b.value.startTime) || 0))[0].value
-  const today = mapped.filter(({ value }) => dhakaDayKey(value.startTime) === todayKey)
-  if (today.length > 0) return today.sort((a, b) => (Date.parse(a.value.startTime) || Number.MAX_SAFE_INTEGER) - (Date.parse(b.value.startTime) || Number.MAX_SAFE_INTEGER))[0].value
-  return null
-}
-
-async function sourceCatalog(authenticated) {
-  const [courses, liveClasses, accessInfo] = await Promise.all([
-    listCpsCollection("courses"),
-    listCpsCollection("live_classes"),
-    entitlementMap(authenticated),
-  ])
-  const courseById = new Map(courses.map((course) => [String(course.id), course]))
-  const liveCourseIds = new Set(liveClasses.map((live) => normalizeCourseId(live.courseId)).filter(Boolean))
-  const mappedCourses = courses.map((course) => {
-    const entitlement = accessInfo.adminAll ? { expiresAtMs: 0, accessType: "permanent" } : accessInfo.map.get(String(course.id))
-    return mapCourseBase(String(course.id), course, {
-      hasLiveClass: liveCourseIds.has(String(course.id)),
-      hasAccess: accessInfo.adminAll || Boolean(entitlement),
-      accessExpiresAtMs: entitlement?.expiresAtMs || 0,
-      accessType: entitlement?.accessType || "",
-      includeProtected: false,
-    })
-  })
-  return {
-    courses: mappedCourses,
-    featuredLive: chooseFeaturedLive(liveClasses, courseById, accessInfo),
-    serverTimeMs: Date.now(),
-  }
-}
-
-async function coursePayload(authenticated, rawCourseId, previewOnly = false) {
+async function coursePayload(rawCourseId, access = null) {
   const course = await readCpsDocument("courses", rawCourseId)
-  if (!course) throw httpError(404, "CPS course was not found")
-  const entitlement = await getEntitlement(authenticated, rawCourseId)
-  const hasAccess = Boolean(entitlement)
-  if (!previewOnly && !hasAccess) throw httpError(403, "CPS course access is missing or expired")
+  if (!course || !isVisibleCourse(course)) throw httpError(404, "CPS course was not found")
+  const playable = Boolean(access)
 
   const [allLive, allExams] = await Promise.all([
     listCpsCollection("live_classes"),
     listCpsCollection("exams"),
   ])
-  const liveClasses = allLive.filter((item) => normalizeCourseId(item.courseId) === rawCourseId)
-  const exams = allExams.filter((item) => normalizeCourseId(item.courseId) === rawCourseId)
-  const classes = []
+  const liveClasses = allLive.filter((item) => String(item.courseId || "") === rawCourseId)
+  const exams = allExams.filter((item) => String(item.courseId || "") === rawCourseId)
 
+  const classes = []
   asArray(course.playlists).forEach((playlist, playlistIndex) => {
     asArray(playlist?.classes).forEach((item, index) => {
-      const playlistWithId = { ...playlist, id: playlist?.id || `p${playlistIndex}` }
-      classes.push(previewOnly
-        ? mapPreviewClass(rawCourseId, course, playlistWithId, item, index)
-        : mapFullClass(rawCourseId, course, playlistWithId, item, index))
+      classes.push(mapRecordedClass(rawCourseId, course, { ...playlist, id: playlist?.id || `p${playlistIndex}` }, item, index, playable))
+    })
+  })
+  liveClasses.forEach((live) => {
+    asArray(live.recordings).forEach((recording, index) => {
+      const mapped = mapLiveRecording(rawCourseId, course, live, recording, index, playable)
+      if (mapped) classes.push(mapped)
     })
   })
 
-  if (!previewOnly) {
-    liveClasses.forEach((live) => {
-      asArray(live.recordings).forEach((recording, index) => {
-        const mapped = mapLiveRecording(rawCourseId, course, live, recording, index)
-        if (mapped) classes.push(mapped)
-      })
-    })
-  }
-
   return {
-    preview: previewOnly,
-    hasAccess,
-    course: mapCourseBase(rawCourseId, course, {
-      hasLiveClass: liveClasses.length > 0,
-      hasAccess,
-      accessExpiresAtMs: entitlement?.expiresAtMs || 0,
-      accessType: entitlement?.accessType || "",
-      includeProtected: !previewOnly,
-    }),
+    course: mapCourse(rawCourseId, course, access),
     classes,
-    liveClasses: liveClasses.map((live) => mapLive(live, {
-      courseTitle: firstText(course.title, course.name) || "CPS",
-      hasAccess,
-      includeUrl: !previewOnly && hasAccess,
-    })),
+    liveClasses: liveClasses.map((live) => mapLive(live, { access, courseTitle: firstText(course.title, course.name) })),
     exams: exams.map(mapExam),
     routines: course.routines || "",
     updates: course.updates || "",
-    accessExpiresAtMs: Number(entitlement?.expiresAtMs || 0),
+    hasAccess: playable,
+    accessExpiresAtMs: playable ? Number(access?.expiresAtMs || 0) : 0,
   }
+}
+
+function dhakaDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+  return formatter.format(date)
+}
+
+function isTodayOrRunning(live, now = new Date()) {
+  if (String(live.status || "").toLowerCase() === "live") return true
+  const start = firstText(live.startTime)
+  if (!start) return false
+  return dhakaDateKey(start) !== "" && dhakaDateKey(start) === dhakaDateKey(now)
 }
 
 function durationMs(value, unit) {
@@ -451,29 +380,76 @@ function durationMs(value, unit) {
   return amount * multiplier
 }
 
-async function handleMine(authenticated, res) {
-  const catalog = await sourceCatalog(authenticated)
-  res.status(200).json({
-    courses: catalog.courses.filter((course) => course.hasAccess),
-    serverTimeMs: catalog.serverTimeMs,
-  })
+async function handleBrowse(authenticated, res) {
+  const uid = authenticated.decodedToken.uid
+  const [allCourses, allLive, entitlementMap] = await Promise.all([
+    listCpsCollection("courses"),
+    listCpsCollection("live_classes"),
+    isFullAdminProfile(authenticated.userProfile)
+      ? Promise.resolve(new Map())
+      : getActiveEntitlementMap(authenticated.db, uid),
+  ])
+  const visibleCourses = allCourses.filter(isVisibleCourse)
+  const sourceById = new Map(visibleCourses.map((course) => [String(course.id), course]))
+  const accessFor = (rawCourseId) => {
+    if (isFullAdminProfile(authenticated.userProfile)) return { adminPreview: true, expiresAtMs: 0 }
+    return entitlementMap.get(rawCourseId) || null
+  }
+
+  const courses = visibleCourses
+    .map((course) => mapCourse(String(course.id), course, accessFor(String(course.id))))
+    .sort((a, b) => a.title.localeCompare(b.title))
+
+  const liveHighlights = allLive
+    .filter((live) => sourceById.has(String(live.courseId || "")) && isTodayOrRunning(live))
+    .sort((a, b) => {
+      const aLive = String(a.status || "").toLowerCase() === "live" ? 0 : 1
+      const bLive = String(b.status || "").toLowerCase() === "live" ? 0 : 1
+      if (aLive !== bLive) return aLive - bLive
+      return (Date.parse(firstText(a.startTime)) || Number.MAX_SAFE_INTEGER) - (Date.parse(firstText(b.startTime)) || Number.MAX_SAFE_INTEGER)
+    })
+    .slice(0, 12)
+    .map((live) => {
+      const rawCourseId = String(live.courseId || "")
+      const course = sourceById.get(rawCourseId)
+      return mapLive(live, {
+        access: accessFor(rawCourseId),
+        courseTitle: firstText(course?.title, course?.name),
+      })
+    })
+
+  res.status(200).json({ courses, liveHighlights, serverTimeMs: Date.now() })
 }
 
-async function handleCatalog(authenticated, res) {
-  res.setHeader("Cache-Control", "private, max-age=0, must-revalidate")
-  res.status(200).json(await sourceCatalog(authenticated))
+async function handleMine(authenticated, res) {
+  const uid = authenticated.decodedToken.uid
+  const entitlementMap = isFullAdminProfile(authenticated.userProfile)
+    ? null
+    : await getActiveEntitlementMap(authenticated.db, uid)
+  const courses = []
+  const sourceCourses = (await listCpsCollection("courses")).filter(isVisibleCourse)
+  for (const source of sourceCourses) {
+    const rawCourseId = String(source.id)
+    const access = isFullAdminProfile(authenticated.userProfile)
+      ? { adminPreview: true, expiresAtMs: 0 }
+      : entitlementMap.get(rawCourseId)
+    if (access) courses.push(mapCourse(rawCourseId, source, access))
+  }
+  res.status(200).json({ courses, serverTimeMs: Date.now() })
 }
 
 async function handlePreview(authenticated, req, res) {
   const rawCourseId = normalizeCourseId(req.query.courseId)
   if (!rawCourseId) throw httpError(400, "courseId is required")
-  res.status(200).json(await coursePayload(authenticated, rawCourseId, true))
+  const access = await optionalCourseAccess(authenticated, rawCourseId)
+  res.status(200).json(await coursePayload(rawCourseId, access))
 }
 
 async function handleCourse(authenticated, req, res) {
   const rawCourseId = normalizeCourseId(req.query.courseId)
   if (!rawCourseId) throw httpError(400, "courseId is required")
-  res.status(200).json(await coursePayload(authenticated, rawCourseId, false))
+  const access = await requireCourseAccess(authenticated, rawCourseId)
+  res.status(200).json(await coursePayload(rawCourseId, access))
 }
 
 async function handleExam(authenticated, req, res) {
@@ -482,7 +458,7 @@ async function handleExam(authenticated, req, res) {
   if (!rawCourseId || !examId) throw httpError(400, "courseId and examId are required")
   await requireCourseAccess(authenticated, rawCourseId)
   const exam = await readCpsDocument("exams", examId)
-  if (!exam || normalizeCourseId(exam.courseId) !== rawCourseId) throw httpError(404, "Exam was not found for this course")
+  if (!exam || String(exam.courseId || "") !== rawCourseId) throw httpError(404, "Exam was not found for this course")
   const questions = await listCpsCollection(`exams/${examId}/questions`)
   res.status(200).json({
     exam: mapExam(exam),
@@ -499,144 +475,180 @@ async function handleExam(authenticated, req, res) {
   })
 }
 
-async function handleAdminCatalog(authenticated, res) {
+async function handleCatalog(authenticated, res) {
   if (!isFullAdminProfile(authenticated.userProfile)) throw httpError(403, "Full admin access is required")
-  const [courses, liveClasses] = await Promise.all([
-    listCpsCollection("courses"),
-    listCpsCollection("live_classes"),
-  ])
-  const liveCourseIds = new Set(liveClasses.map((item) => normalizeCourseId(item.courseId)).filter(Boolean))
+  const courses = (await listCpsCollection("courses")).filter(isVisibleCourse)
   res.status(200).json({
-    courses: courses.map((course) => mapCourseBase(String(course.id), course, {
-      hasLiveClass: liveCourseIds.has(String(course.id)),
-      includeProtected: false,
-    })),
+    courses: courses
+      .map((course) => ({
+        ...mapCourse(String(course.id), course, null),
+        hasActiveLiveClass: course.hasActiveLiveClass === true,
+        batch: firstText(course.batch),
+        category: firstText(course.category),
+      }))
+      .sort((a, b) => a.title.localeCompare(b.title)),
   })
 }
 
-async function grantOne(authenticated, { userId, rawCourseId, permanent, durationValue, durationUnit }) {
-  const course = await readCpsDocument("courses", rawCourseId)
-  if (!course) throw httpError(404, `CPS course was not found: ${rawCourseId}`)
-  const now = Date.now()
-  const expiresAtMs = permanent ? 0 : now + durationMs(durationValue, durationUnit)
-  const data = {
-    userId,
-    cpsCourseId: rawCourseId,
-    courseTitle: firstText(course.title, course.name) || "CPS Course",
-    source: "cps",
-    status: "active",
-    accessType: permanent ? "permanent" : "trial",
-    durationValue: permanent ? null : Number(durationValue),
-    durationUnit: permanent ? "permanent" : String(durationUnit || "").toLowerCase(),
-    grantedAtMs: now,
-    expiresAtMs,
-    grantedBy: authenticated.decodedToken.uid,
-    updatedAtMs: now,
+function normalizeIds(value, mapper = String) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.map((item) => mapper(item)).map((item) => String(item || "").trim()).filter(Boolean))]
+}
+
+async function resolveBulkTargets(authenticated, body) {
+  const allUsers = body?.allUsers === true
+  const allCourses = body?.allCourses === true
+  const userIds = allUsers
+    ? (await authenticated.db.collection("users").get()).docs.map((entry) => entry.id)
+    : normalizeIds(body?.userIds)
+  const visibleCourses = (await listCpsCollection("courses")).filter(isVisibleCourse)
+  const courseById = new Map(visibleCourses.map((course) => [String(course.id), course]))
+  const courseIds = allCourses
+    ? [...courseById.keys()]
+    : normalizeIds(body?.courseIds, normalizeCourseId).filter((id) => courseById.has(id))
+
+  if (userIds.length === 0) throw httpError(400, "Select at least one user")
+  if (courseIds.length === 0) throw httpError(400, "Select at least one CPS course")
+  if (userIds.length * courseIds.length > MAX_BULK_TARGETS) {
+    throw httpError(400, `Bulk grant is limited to ${MAX_BULK_TARGETS.toLocaleString()} user-course targets per request`)
   }
-  await authenticated.db.collection(ENTITLEMENTS).doc(entitlementId(userId, rawCourseId)).set(data, { merge: true })
-  return data
+  return { userIds, courseIds, courseById }
+}
+
+async function handleGrantBatch(authenticated, req, res) {
+  if (!isFullAdminProfile(authenticated.userProfile)) throw httpError(403, "Full admin access is required")
+  const { userIds, courseIds, courseById } = await resolveBulkTargets(authenticated, req.body || {})
+  const permanent = req.body?.permanent === true || String(req.body?.durationUnit || "").toLowerCase() === "permanent"
+  const now = Date.now()
+  const expiresAtMs = permanent ? 0 : now + durationMs(req.body?.durationValue, req.body?.durationUnit)
+  const batchId = `cps-grant-${now}-${authenticated.decodedToken.uid}`
+
+  let batch = authenticated.db.batch()
+  let batchCount = 0
+  let written = 0
+  const flush = async () => {
+    if (!batchCount) return
+    await batch.commit()
+    batch = authenticated.db.batch()
+    batchCount = 0
+  }
+
+  for (const userId of userIds) {
+    for (const rawCourseId of courseIds) {
+      const course = courseById.get(rawCourseId)
+      const data = {
+        userId,
+        cpsCourseId: rawCourseId,
+        courseTitle: firstText(course?.title, course?.name) || "CPS Course",
+        source: "cps",
+        status: "active",
+        accessType: permanent ? "permanent" : "trial",
+        durationValue: permanent ? null : Number(req.body.durationValue),
+        durationUnit: permanent ? "permanent" : String(req.body.durationUnit || "").toLowerCase(),
+        grantedAtMs: now,
+        expiresAtMs,
+        grantedBy: authenticated.decodedToken.uid,
+        updatedAtMs: now,
+        batchId,
+      }
+      const ref = authenticated.db.collection(ENTITLEMENTS).doc(entitlementId(userId, rawCourseId))
+      batch.set(ref, data, { merge: true })
+      batchCount += 1
+      written += 1
+      if (batchCount >= WRITE_BATCH_SIZE) await flush()
+    }
+  }
+  await flush()
+
+  res.status(200).json({
+    ok: true,
+    users: userIds.length,
+    courses: courseIds.length,
+    grants: written,
+    expiresAtMs,
+    accessType: permanent ? "permanent" : "trial",
+    batchId,
+  })
 }
 
 async function handleGrant(authenticated, req, res) {
-  if (!isFullAdminProfile(authenticated.userProfile)) throw httpError(403, "Full admin access is required")
-  const userId = String(req.body?.userId || "").trim()
-  const rawCourseId = normalizeCourseId(req.body?.courseId)
-  if (!userId || !rawCourseId) throw httpError(400, "userId and courseId are required")
-  const permanent = req.body?.permanent === true || String(req.body?.durationUnit || "").toLowerCase() === "permanent"
-  const entitlement = await grantOne(authenticated, {
-    userId,
-    rawCourseId,
-    permanent,
-    durationValue: req.body?.durationValue,
-    durationUnit: req.body?.durationUnit,
-  })
-  res.status(200).json({ ok: true, entitlement })
+  req.body = {
+    ...(req.body || {}),
+    userIds: [String(req.body?.userId || "").trim()].filter(Boolean),
+    courseIds: [normalizeCourseId(req.body?.courseId)].filter(Boolean),
+  }
+  return handleGrantBatch(authenticated, req, res)
 }
 
-async function handleGrantBulk(authenticated, req, res) {
+async function handleRevokeBatch(authenticated, req, res) {
   if (!isFullAdminProfile(authenticated.userProfile)) throw httpError(403, "Full admin access is required")
-  let userIds = asArray(req.body?.userIds).map(String).map((item) => item.trim()).filter(Boolean)
-  let courseIds = asArray(req.body?.courseIds).map(normalizeCourseId).filter(Boolean)
-  if (req.body?.allUsers === true) {
-    const users = await authenticated.db.collection("users").select().get()
-    userIds = users.docs.map((item) => item.id)
+  const { userIds, courseIds } = await resolveBulkTargets(authenticated, req.body || {})
+  const now = Date.now()
+  let batch = authenticated.db.batch()
+  let batchCount = 0
+  let written = 0
+  const flush = async () => {
+    if (!batchCount) return
+    await batch.commit()
+    batch = authenticated.db.batch()
+    batchCount = 0
   }
-  if (req.body?.allCourses === true) {
-    courseIds = (await listCpsCollection("courses")).map((item) => String(item.id))
-  }
-  userIds = [...new Set(userIds)]
-  courseIds = [...new Set(courseIds)]
-  if (userIds.length === 0 || courseIds.length === 0) throw httpError(400, "Select at least one user and one CPS course")
-  if (userIds.length * courseIds.length > 5000) throw httpError(400, "Bulk grant is limited to 5,000 user-course assignments per request")
-  const permanent = req.body?.permanent === true || String(req.body?.durationUnit || "").toLowerCase() === "permanent"
-  let granted = 0
-  for (const rawCourseId of courseIds) {
-    const course = await readCpsDocument("courses", rawCourseId)
-    if (!course) continue
-    const now = Date.now()
-    const expiresAtMs = permanent ? 0 : now + durationMs(req.body?.durationValue, req.body?.durationUnit)
-    for (let start = 0; start < userIds.length; start += 400) {
-      const batch = authenticated.db.batch()
-      for (const userId of userIds.slice(start, start + 400)) {
-        const ref = authenticated.db.collection(ENTITLEMENTS).doc(entitlementId(userId, rawCourseId))
-        batch.set(ref, {
-          userId,
-          cpsCourseId: rawCourseId,
-          courseTitle: firstText(course.title, course.name) || "CPS Course",
-          source: "cps",
-          status: "active",
-          accessType: permanent ? "permanent" : "trial",
-          durationValue: permanent ? null : Number(req.body?.durationValue),
-          durationUnit: permanent ? "permanent" : String(req.body?.durationUnit || "").toLowerCase(),
-          grantedAtMs: now,
-          expiresAtMs,
-          grantedBy: authenticated.decodedToken.uid,
-          updatedAtMs: now,
-        }, { merge: true })
-        granted += 1
-      }
-      await batch.commit()
+  for (const userId of userIds) {
+    for (const rawCourseId of courseIds) {
+      const ref = authenticated.db.collection(ENTITLEMENTS).doc(entitlementId(userId, rawCourseId))
+      batch.set(ref, {
+        status: "revoked",
+        revokedAtMs: now,
+        updatedAtMs: now,
+        revokedBy: authenticated.decodedToken.uid,
+      }, { merge: true })
+      batchCount += 1
+      written += 1
+      if (batchCount >= WRITE_BATCH_SIZE) await flush()
     }
   }
-  res.status(200).json({ ok: true, granted, users: userIds.length, courses: courseIds.length })
+  await flush()
+  res.status(200).json({ ok: true, revocations: written })
 }
 
 async function handleRevoke(authenticated, req, res) {
-  if (!isFullAdminProfile(authenticated.userProfile)) throw httpError(403, "Full admin access is required")
-  const userId = String(req.body?.userId || "").trim()
-  const rawCourseId = normalizeCourseId(req.body?.courseId)
-  if (!userId || !rawCourseId) throw httpError(400, "userId and courseId are required")
-  const now = Date.now()
-  await authenticated.db.collection(ENTITLEMENTS).doc(entitlementId(userId, rawCourseId)).set(
-    { status: "revoked", revokedAtMs: now, updatedAtMs: now, revokedBy: authenticated.decodedToken.uid },
-    { merge: true },
-  )
-  res.status(200).json({ ok: true })
+  req.body = {
+    ...(req.body || {}),
+    userIds: [String(req.body?.userId || "").trim()].filter(Boolean),
+    courseIds: [normalizeCourseId(req.body?.courseId)].filter(Boolean),
+  }
+  return handleRevokeBatch(authenticated, req, res)
 }
 
-export default async function cpsV2Handler(req, res) {
+export default async function handler(req, res) {
   setCors(res)
   if (req.method === "OPTIONS") return res.status(204).end()
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).json({ error: "Method not allowed" })
 
   try {
+    // getAdminServices is imported by the shared auth helper in this route family; keeping the
+    // import here also makes bundling of Firebase Admin deterministic in Vercel's function graph.
+    void getAdminServices
     const authenticated = await requireAuthenticatedUser(req)
     const action = String(req.query.action || req.body?.action || "mine").trim()
+
     if (req.method === "GET") {
+      if (action === "browse") return await handleBrowse(authenticated, res)
       if (action === "mine") return await handleMine(authenticated, res)
-      if (action === "catalog") return await handleCatalog(authenticated, res)
       if (action === "preview") return await handlePreview(authenticated, req, res)
       if (action === "course") return await handleCourse(authenticated, req, res)
       if (action === "exam") return await handleExam(authenticated, req, res)
-      if (action === "adminCatalog") return await handleAdminCatalog(authenticated, res)
+      if (action === "catalog") return await handleCatalog(authenticated, res)
       throw httpError(400, "Unknown CPS read action")
     }
+
     if (action === "grant") return await handleGrant(authenticated, req, res)
-    if (action === "grantBulk") return await handleGrantBulk(authenticated, req, res)
+    if (action === "grantBatch") return await handleGrantBatch(authenticated, req, res)
     if (action === "revoke") return await handleRevoke(authenticated, req, res)
+    if (action === "revokeBatch") return await handleRevokeBatch(authenticated, req, res)
     throw httpError(400, "Unknown CPS write action")
   } catch (error) {
-    console.error("CPS v2 bridge error:", error)
-    return res.status(Number(error?.statusCode) || 500).json({ error: error?.message || "CPS request failed" })
+    console.error("CPS bridge error:", error)
+    res.status(Number(error?.statusCode) || 500).json({ error: error?.message || "CPS request failed" })
   }
 }

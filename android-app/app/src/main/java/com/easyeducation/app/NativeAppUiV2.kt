@@ -335,7 +335,7 @@ private fun NavHostController.navigateHome(currentRoute: String) {
 }
 
 private fun String.inCourseRoutes(): Boolean =
-    startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
+    this == "cps" || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") ||
         startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
 
 private fun nativeStartRoute(initialPath: String?): String {
@@ -461,6 +461,7 @@ private fun V2NavHost(
         },
     ) {
         composable("home") { V2Home(nav, viewModel, state) }
+        composable("cps") { NativeCpsCatalogScreen(nav, state) }
         composable("courses") { V2Courses(nav, state) }
         composable("downloads") { V2Downloads(viewModel, state) }
         composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDevices) }
@@ -554,6 +555,7 @@ private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state:
     val cachedClasses = state.courseContent.values
         .flatMap { it.classes }
         .filterNot { it.isArchived }
+        .filterNot { it.courseId.startsWith("cps:") }
         .distinctBy { it.id }
     val latestClasses = cachedClasses
         .filter { it.courseId.isNotBlank() }
@@ -562,6 +564,7 @@ private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state:
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Spacer(Modifier.height(6.dp)) }
+        item { NativeCpsHomeBlock(nav, state) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -1159,6 +1162,10 @@ private fun V2CourseCard(course: NativeCourse, onClick: () -> Unit) {
 
 @Composable
 private fun V2Course(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, courseId: String) {
+    if (courseId.startsWith("cps:")) {
+        NativeCpsCourseScreen(nav, viewModel, state, courseId)
+        return
+    }
     val context = LocalContext.current
     LaunchedEffect(courseId) { viewModel.loadCourse(courseId) }
     val content = state.courseContent[courseId]

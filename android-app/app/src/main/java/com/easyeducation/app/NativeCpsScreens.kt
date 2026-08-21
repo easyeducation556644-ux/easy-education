@@ -50,7 +50,7 @@ import androidx.navigation.NavHostController
 @Composable
 fun NativeCpsLiveClassCard(item: NativeCpsLiveClass) {
     val context = LocalContext.current
-    val joinable = item.url.startsWith("http://") || item.url.startsWith("https://")
+    val joinable = item.hasAccess && (item.url.startsWith("http://") || item.url.startsWith("https://"))
     Card(
         modifier = Modifier.fillMaxWidth().clickable(enabled = joinable) {
             NativeResourceViewerActivity.open(context, item.title, item.url)
@@ -77,7 +77,7 @@ fun NativeCpsLiveClassCard(item: NativeCpsLiveClass) {
                     Text(item.topic, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Text(if (joinable) "Join" else "No link", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            Text(if (joinable) "Join" else "Locked", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -116,7 +116,8 @@ fun NativeCpsExamCard(item: NativeCpsExamSummary, onClick: () -> Unit) {
 
 @Composable
 fun NativeCpsExamScreen(nav: NavHostController, courseId: String, examId: String) {
-    val repository = remember { NativeCpsRepository() }
+    val context = LocalContext.current
+    val repository = remember(context) { NativeCpsRepository(context) }
     var payload by remember(courseId, examId) { mutableStateOf<NativeCpsExamPayload?>(null) }
     var loading by remember(courseId, examId) { mutableStateOf(true) }
     var error by remember(courseId, examId) { mutableStateOf<String?>(null) }
