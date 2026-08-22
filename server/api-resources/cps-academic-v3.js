@@ -6,6 +6,7 @@ const CPS_API_KEY = process.env.CPS_FIREBASE_API_KEY || "AIzaSyBK3MFPCsxXCqu_hYS
 const CPS_ROOT = `https://firestore.googleapis.com/v1/projects/${CPS_PROJECT_ID}/databases/${CPS_DATABASE_ID}/documents`
 const PAGE_SIZE = 100
 const MAX_PAGES = 20
+const MISSING_ORDER = 2147483647
 
 const asArray = (value) => Array.isArray(value) ? value : []
 const text = (...values) => values.find((value) => typeof value === "string" && value.trim())?.trim() || ""
@@ -214,6 +215,28 @@ function topicsFromCourseTimestamps(course, allowed) {
   return topics
 }
 
+function explicitOrder(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function sortTimeMs(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value < 100000000000 ? value * 1000 : value
+    const raw = String(value).trim()
+    if (!raw) continue
+    const numeric = Number(raw)
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 100000000000 ? numeric * 1000 : numeric
+    const idMillis = raw.match(/(?:^|[-_:])(\d{12,14})(?:$|[-_:])/)
+    if (idMillis) return Number(idMillis[1])
+    const parsed = Date.parse(raw)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return Number.MAX_SAFE_INTEGER
+}
+
 function buildCourseIndex(course, allowed) {
   const playlistIndex = new Map()
   const classIndex = new Map()
@@ -221,11 +244,20 @@ function buildCourseIndex(course, allowed) {
     const id = text(playlist?.id) || `playlist-${playlistIndexNumber}`
     const title = text(playlist?.title, playlist?.name) || `Part ${playlistIndexNumber + 1}`
     const type = text(playlist?.type)
-    const order = Number(playlist?.order ?? playlistIndexNumber)
+    const sourceOrder = explicitOrder(playlist?.order)
+    const playlistTime = sortTimeMs(
+      playlist?.createdAt,
+      playlist?.updatedAt,
+      id,
+      ...asArray(playlist?.classes).slice(0, 3).map((item) => item?.createdAt),
+    )
+    const order = sourceOrder ?? MISSING_ORDER
     const classes = asArray(playlist?.classes).map((item, classIndexNumber) => {
       const rawClassId = text(item?.id) || `${id}-${classIndexNumber}`
       const normalizedId = `cps-class:${rawClassId}`
       const classTitle = text(item?.title, item?.topic) || `Class ${classIndexNumber + 1}`
+      const classSourceOrder = explicitOrder(item?.order)
+      const classTime = sortTimeMs(item?.createdAt, item?.updatedAt, rawClassId)
       classIndex.set(rawClassId, { playlistId: id, chapter: title, classTitle })
       return {
         id: normalizedId,
@@ -235,15 +267,26 @@ function buildCourseIndex(course, allowed) {
         cdnType: text(item?.cdnType),
         videoUrl: safeLink(item?.videoUrl || item?.videoURL || item?.url, allowed),
         thumbnailUrl: text(item?.thumbnailUrl, item?.thumbnail),
-        order: Number(item?.order ?? classIndexNumber),
+        order: classSourceOrder ?? MISSING_ORDER,
+        orderExplicit: classSourceOrder !== null,
+        sortTimeMs: classTime,
         timestamps: typeof item?.timestamps === "string" ? item.timestamps : "",
         hasAccess: allowed,
       }
-    }).sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
-    const mapped = { id, title, type, order, classIds: classes.map((item) => item.id), classes }
+    }).sort((a, b) => a.order - b.order || a.sortTimeMs - b.sortTimeMs || a.title.localeCompare(b.title))
+    const mapped = {
+      id,
+      title,
+      type,
+      order,
+      orderExplicit: sourceOrder !== null,
+      sortTimeMs: playlistTime,
+      classIds: classes.map((item) => item.id),
+      classes,
+    }
     playlistIndex.set(id, mapped)
     return mapped
-  }).sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
+  }).sort((a, b) => a.order - b.order || a.sortTimeMs - b.sortTimeMs || a.title.localeCompare(b.title))
   return { playlists, playlistIndex, classIndex }
 }
 
