@@ -15,12 +15,10 @@ import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
-/**
- * One resolver for the native player. YouTube, Rumble and ordinary direct sources all end up as a
- * Media3 MediaSource so the UI/control layer never needs to know which provider is underneath it.
- */
+/** Every supported online provider resolves to a Media3 source. The watch UI never leaves the app. */
 sealed interface NativeOnlinePlaybackSource {
     data class Direct(
         val url: String,
@@ -45,20 +43,34 @@ object NativePlaybackSourceResolver {
     private const val APP_ORIGIN = "https://easy-education.vercel.app"
     private const val RUMBLE_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
+    private const val BUNNY_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
+
+    private val bunnyHttp = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
+        .build()
 
     fun resolveOnline(
         classId: String,
         sourceUrl: String,
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
+        val source = sourceUrl.trim()
+        require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }
         return when {
-            YoutubeDeviceResolver.isYoutubeUrl(sourceUrl) -> resolveYoutube(sourceUrl, requestedHeight)
-            RumbleDeviceResolver.isRumbleUrl(sourceUrl) -> resolveRumble(classId, sourceUrl, requestedHeight)
-            sourceUrl.contains(".m3u8", ignoreCase = true) -> NativeOnlinePlaybackSource.Direct(
-                url = sourceUrl,
+            YoutubeDeviceResolver.isYoutubeUrl(source) -> resolveYoutube(source, requestedHeight)
+            RumbleDeviceResolver.isRumbleUrl(source) -> resolveRumble(classId, source, requestedHeight)
+            isBunnyEmbed(source) -> resolveBunny(source)
+            source.contains(".m3u8", ignoreCase = true) -> NativeOnlinePlaybackSource.Direct(
+                url = source,
                 hls = true,
             )
-            else -> NativeOnlinePlaybackSource.Direct(sourceUrl)
+            else -> NativeOnlinePlaybackSource.Direct(source)
         }
     }
 
@@ -77,13 +89,71 @@ object NativePlaybackSourceResolver {
         }
         val video = selected.video
         val audio = selected.audio
-        if (video != null && audio != null) {
-            return NativeOnlinePlaybackSource.YoutubeAdaptive(video, audio)
-        }
+        if (video != null && audio != null) return NativeOnlinePlaybackSource.YoutubeAdaptive(video, audio)
         result.hlsUrl?.takeIf { it.isNotBlank() }?.let { hls ->
             return NativeOnlinePlaybackSource.Direct(hls, hls = true)
         }
         error("YouTube did not expose a playable stream for this video")
+    }
+
+    private fun isBunnyEmbed(value: String): Boolean = runCatching {
+        val host = URI(value).host?.lowercase().orEmpty()
+        host == "player.mediadelivery.net" || host == "iframe.mediadelivery.net" ||
+            host.endsWith(".mediadelivery.net")
+    }.getOrDefault(false)
+
+    private fun resolveBunny(embedUrl: String): NativeOnlinePlaybackSource {
+        val request = Request.Builder()
+            .url(embedUrl)
+            .header("User-Agent", BUNNY_USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.7")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .build()
+        val html = bunnyHttp.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("Bunny player could not be resolved (${response.code})")
+            response.body?.string().orEmpty()
+        }
+        if (html.isBlank()) error("Bunny player returned an empty response")
+
+        val normalized = html
+            .replace("\\/", "/")
+            .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\u003A", ":", ignoreCase = true)
+            .replace("\\u0026", "&", ignoreCase = true)
+            .replace("&amp;", "&", ignoreCase = true)
+        val decoded = runCatching { Uri.decode(normalized) }.getOrDefault(normalized)
+        val candidates = linkedSetOf<String>()
+
+        fun collect(text: String) {
+            Regex("""(?i)https?://[^\s\"'<>\\]+?\.m3u8(?:\?[^\s\"'<>\\]*)?""")
+                .findAll(text).forEach { candidates += it.value }
+            Regex("""(?i)(?<!:)//[A-Za-z0-9._-]+/[^\s\"'<>\\]+?\.m3u8(?:\?[^\s\"'<>\\]*)?""")
+                .findAll(text).forEach { candidates += "https:${it.value}" }
+        }
+        collect(normalized)
+        if (decoded != normalized) collect(decoded)
+
+        val hlsUrl = candidates
+            .map { it.trim().trimEnd(')', ']', '}', ',', ';') }
+            .firstOrNull { it.startsWith("https://", true) || it.startsWith("http://", true) }
+            ?: error("Bunny stream manifest was not exposed by the embedded player")
+
+        val origin = runCatching {
+            val parsed = URI(embedUrl)
+            "${parsed.scheme}://${parsed.host}"
+        }.getOrDefault("https://iframe.mediadelivery.net")
+
+        return NativeOnlinePlaybackSource.Direct(
+            url = hlsUrl,
+            hls = true,
+            requestHeaders = mapOf(
+                "User-Agent" to BUNNY_USER_AGENT,
+                "Accept" to "*/*",
+                "Accept-Encoding" to "identity",
+                "Referer" to embedUrl,
+                "Origin" to origin,
+            ),
+        )
     }
 
     fun toMediaSource(source: NativeOnlinePlaybackSource): MediaSource = when (source) {
@@ -93,10 +163,7 @@ object NativePlaybackSourceResolver {
                 .setDefaultRequestProperties(source.requestHeaders)
             if (source.hls) {
                 HlsMediaSource.Factory(factory).createMediaSource(
-                    MediaItem.Builder()
-                        .setUri(source.url)
-                        .setMimeType(MimeTypes.APPLICATION_M3U8)
-                        .build(),
+                    MediaItem.Builder().setUri(source.url).setMimeType(MimeTypes.APPLICATION_M3U8).build(),
                 )
             } else {
                 ProgressiveMediaSource.Factory(factory).createMediaSource(MediaItem.fromUri(source.url))
@@ -126,9 +193,7 @@ object NativePlaybackSourceResolver {
                     downloadToken = source.downloadToken,
                 ),
             ).createMediaSource(
-                MediaItem.fromUri(
-                    Uri.parse("rumble-proxy://easy-education/${source.classId}/${source.height}"),
-                ),
+                MediaItem.fromUri(Uri.parse("rumble-proxy://easy-education/${source.classId}/${source.height}")),
             )
         }
     }
@@ -146,9 +211,6 @@ object NativePlaybackSourceResolver {
         sourceUrl: String,
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
-        // Use the same HLS-first resolver that powers secure Rumble downloads. The older playback
-        // resolver preferred a reachable progressive MP4, but an HTTP-successful MP4 can still
-        // expose no usable Android video frames. HLS is Rumble's canonical adaptive playback path.
         runCatching {
             NativeRumbleDirectResolver().resolve(sourceUrl, requestedHeight)
         }.getOrNull()?.let { resolved ->
@@ -164,9 +226,6 @@ object NativePlaybackSourceResolver {
                 ),
             )
         }
-
-        // Compatibility fallback for unusual payloads. The server fallback also chooses HLS before
-        // the progressive range proxy, so a reachable-but-black MP4 is never preferred for playback.
         return resolveRumbleServerFallback(classId, sourceUrl, requestedHeight)
     }
 
@@ -188,11 +247,8 @@ object NativePlaybackSourceResolver {
             Request.Builder().url(url).header("Authorization", "Bearer $token").build(),
         ).execute().use { response ->
             if (!response.isSuccessful) {
-                val message = runCatching {
-                    JSONObject(response.body?.string().orEmpty()).optString("error")
-                }.getOrNull()
-                error(message?.takeIf { it.isNotBlank() }
-                    ?: "Video authorization failed (${response.code})")
+                val message = runCatching { JSONObject(response.body?.string().orEmpty()).optString("error") }.getOrNull()
+                error(message?.takeIf { it.isNotBlank() } ?: "Video authorization failed (${response.code})")
             }
             JSONObject(response.body?.string().orEmpty())
         }
@@ -207,12 +263,8 @@ object NativePlaybackSourceResolver {
             val height = item.optInt("height", 0)
             if (height <= 0) continue
             when (item.optString("kind")) {
-                "hls" -> item.optString("playlistUrl")
-                    .takeIf { it.isNotBlank() }
-                    ?.let { hls += HlsChoice(height, it) }
-                "mp4" -> item.optLong("contentLength", 0L)
-                    .takeIf { it > 0L }
-                    ?.let { mp4 += Mp4Choice(height, it) }
+                "hls" -> item.optString("playlistUrl").takeIf { it.isNotBlank() }?.let { hls += HlsChoice(height, it) }
+                "mp4" -> item.optLong("contentLength", 0L).takeIf { it > 0L }?.let { mp4 += Mp4Choice(height, it) }
             }
         }
 
@@ -245,7 +297,6 @@ object NativePlaybackSourceResolver {
                 downloadToken = downloadToken,
             )
         }
-
         error("No native Rumble stream is available")
     }
 }
