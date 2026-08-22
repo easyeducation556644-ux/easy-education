@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.18 verification is running",
-              "context": "Easy Education final release 2.10.18",
+              "description": "Web + CPS + signed Android 2.10.19 verification is running",
+              "context": "Easy Education final release 2.10.19",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -106,20 +106,22 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.18"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.19"' native/app/build.gradle.kts
           grep -q 'NativeCpsExamSafeActivity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
-          grep -q 'LoadedSafeExam' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
-          grep -q 'safeFormatCpsMath' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
+          grep -q 'CpsMathText' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
+          grep -q 'katexWebJar' native/app/build.gradle.kts
+          grep -q 'katex.min.js' native/app/src/main/assets/katex/render.html
           grep -q 'question.toSafe(index)' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'question.toFallback(index)' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
+          grep -q 'sourceKind.endsWith("-hls")' native/app/src/main/java/com/easyeducation/app/SecureDownloadCoordinator.kt
+          grep -q 'resolveFreshBunnyManifest' native/app/src/main/java/com/easyeducation/app/SecureHlsDownloadService.kt
+          grep -q 'resolvedUrl = embedUrl' native/app/src/main/java/com/easyeducation/app/DownloadQualityResolver.kt
           grep -q 'NativePlayerTopics.seek(context, classId, topic.videoTimestamp)' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'seekToTopic' native/app/src/main/java/com/easyeducation/app/PersistentNativePlayer.kt
           grep -q 'TOPIC_SEEK_PREFIX' native/app/src/main/java/com/easyeducation/app/PersistentNativePlayer.kt
           grep -q 'heightIn(max = 560.dp).verticalScroll' native/app/src/main/java/com/easyeducation/app/NativeClassTopics.kt
           grep -q 'getChildAt(1) as? FrameLayout' native/app/src/main/java/com/easyeducation/app/NativeClassTopics.kt
           grep -q 'NativeClassTopicsAction' native/app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt
-          grep -q 'bunny-hls' native/app/src/main/java/com/easyeducation/app/DownloadQualityResolver.kt
-          grep -q 'player.mediadelivery.net' native/app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -160,7 +162,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.18-release-apk
+          name: easy-education-2.10.19-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -177,8 +179,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.18 verified",
-              "context": "Easy Education final release 2.10.18",
+              "description": "Web, Vercel budget and signed Android 2.10.19 verified",
+              "context": "Easy Education final release 2.10.19",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
