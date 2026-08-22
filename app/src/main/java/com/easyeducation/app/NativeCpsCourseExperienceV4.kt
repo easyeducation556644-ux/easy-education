@@ -415,8 +415,7 @@ private fun Cps4TopicList(context: Context, bundle: NativeCpsAcademicBundle?, cl
         items(topics, key = { it.id }) { topic ->
             val open = accessActive && sourceReady
             Card(Modifier.fillMaxWidth().clickable(enabled = open) {
-                val ms = topic.videoTimestamp.toLong().coerceAtLeast(0L) * 1000L
-                context.getSharedPreferences("native_player_positions_v2", Context.MODE_PRIVATE).edit().putLong("class:$classId", ms).apply()
+                NativePlayerTopics.seek(context, classId, topic.videoTimestamp)
                 onClass(classId)
             }, shape = Cps4Small, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
