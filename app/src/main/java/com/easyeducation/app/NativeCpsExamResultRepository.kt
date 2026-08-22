@@ -79,8 +79,9 @@ class NativeCpsExamResultRepository(context: Context) {
     suspend fun refresh(): List<NativeCpsExamResult> {
         val uid = auth.currentUser?.uid ?: error("Sign in to view exam results")
         val payload = request("mine", null)
+        val parsed = parseResults(payload)
         prefs.edit().putString("results:$uid", payload.toString()).apply()
-        return parseResults(payload)
+        return parsed
     }
 
     suspend fun save(draft: NativeCpsExamResultDraft): NativeCpsExamResult {
@@ -143,13 +144,37 @@ class NativeCpsExamResultRepository(context: Context) {
         }
     }
 
+    /**
+     * Result ids from older server rows are not guaranteed to be present or unique. Compose
+     * LazyColumn requires unique keys; duplicate/blank ids used to crash Profile -> Exam Results.
+     * Normalize every row to a deterministic unique key before it reaches the UI and skip a single
+     * malformed row instead of taking down the whole history screen.
+     */
     private fun parseResults(payload: JSONObject): List<NativeCpsExamResult> {
         val array = payload.optJSONArray("results") ?: JSONArray()
-        return buildList {
+        val seen = HashSet<String>()
+        val parsed = buildList {
             for (index in 0 until array.length()) {
-                array.optJSONObject(index)?.let { add(parseResult(it)) }
+                val item = array.optJSONObject(index) ?: continue
+                val result = runCatching { parseResult(item) }.getOrNull() ?: continue
+                val seed = result.id.trim().ifBlank {
+                    listOf(
+                        result.examId.ifBlank { "exam" },
+                        result.submittedAtMs.toString(),
+                        result.startedAtMs.toString(),
+                        index.toString(),
+                    ).joinToString(":")
+                }
+                var unique = seed
+                var suffix = 1
+                while (!seen.add(unique)) {
+                    unique = "$seed:$suffix"
+                    suffix += 1
+                }
+                add(if (unique == result.id) result else result.copy(id = unique))
             }
-        }.sortedByDescending { it.submittedAtMs }
+        }
+        return parsed.sortedByDescending { it.submittedAtMs }
     }
 
     private fun parseResult(item: JSONObject) = NativeCpsExamResult(
@@ -165,9 +190,9 @@ class NativeCpsExamResultRepository(context: Context) {
         correct = item.optInt("correct", 0),
         wrong = item.optInt("wrong", 0),
         unanswered = item.optInt("unanswered", 0),
-        marks = item.optDouble("marks", 0.0),
-        maxScore = item.optDouble("maxScore", 0.0),
-        negativeMarks = item.optDouble("negativeMarks", 0.0),
+        marks = item.optDouble("marks", 0.0).takeIf { it.isFinite() } ?: 0.0,
+        maxScore = item.optDouble("maxScore", 0.0).takeIf { it.isFinite() } ?: 0.0,
+        negativeMarks = item.optDouble("negativeMarks", 0.0).takeIf { it.isFinite() } ?: 0.0,
         questionCount = item.optInt("questionCount", 0),
     )
 }
