@@ -86,7 +86,6 @@ object SecureDownloadCoordinator {
         store.get(id)?.let { store.save(it.copy(state = "deleting", phase = "deleting")) }
         purgeWorkingFiles(context, id)
         store.remove(id)
-        // Repeat after workers unwind so no stale app-private temp path survives deletion.
         purgeWorkingFiles(context, id)
         store.secureDir(id).deleteRecursively()
         DownloadNotifier(context).cancelAll(id)
@@ -106,7 +105,7 @@ object SecureDownloadCoordinator {
         val service = when {
             task.sourceKind == "youtube" || YoutubeDeviceResolver.isYoutubeUrl(task.sourceUrl) ->
                 SecureYoutubeDownloadService::class.java
-            task.sourceKind in setOf("hls", "rumble-hls") || isHlsSource(task.sourceUrl) ->
+            task.sourceKind == "hls" || task.sourceKind.endsWith("-hls") || isHlsSource(task.sourceUrl) ->
                 SecureHlsDownloadService::class.java
             else -> SecureDownloadService::class.java
         }
