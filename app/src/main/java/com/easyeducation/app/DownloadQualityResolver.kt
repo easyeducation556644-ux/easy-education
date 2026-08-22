@@ -19,8 +19,10 @@ data class DownloadQualityOption(
     val estimated: Boolean,
     val kind: String,
     val recommended: Boolean = false,
+    /** Direct media/manifest URL when resolving an embed provider such as Bunny. */
+    val resolvedUrl: String = "",
 ) {
-    val key: String get() = "$kind:$height:$sizeBytes"
+    val key: String get() = "$kind:$height:$sizeBytes:$resolvedUrl"
 }
 
 class DownloadQualityResolver(
@@ -38,6 +40,7 @@ class DownloadQualityResolver(
         val raw = when {
             YoutubeDeviceResolver.isYoutubeUrl(url) -> resolveYouTube(url)
             isRumblePage(url) -> resolveRumble(classId, url)
+            isBunnyEmbed(url) -> resolveBunny(classId, url)
             SecureDownloadCoordinator.isHlsSource(url) -> resolveHls(url)
             else -> resolveDirect(url)
         }
@@ -45,9 +48,8 @@ class DownloadQualityResolver(
         val unique = raw
             .groupBy { it.height }
             .map { (_, choices) ->
-                // Rumble HLS is preferred because it is the most stable direct CDN path across
-                // current uploads. Progressive Rumble remains a fallback for HLS-less videos.
-                choices.firstOrNull { it.kind == "rumble-hls" }
+                choices.firstOrNull { it.kind == "bunny-hls" }
+                    ?: choices.firstOrNull { it.kind == "rumble-hls" }
                     ?: choices.firstOrNull { it.kind == "rumble" }
                     ?: choices.firstOrNull { it.kind == "youtube" }
                     ?: choices.maxByOrNull { it.sizeBytes }
@@ -72,6 +74,22 @@ class DownloadQualityResolver(
         }
     }
 
+    private fun resolveBunny(classId: String, embedUrl: String): List<DownloadQualityOption> {
+        val resolved = NativePlaybackSourceResolver.resolveOnline(classId, embedUrl, 1080)
+        val direct = resolved as? NativeOnlinePlaybackSource.Direct
+            ?: error("Bunny did not expose a downloadable media source")
+        return if (direct.hls || SecureDownloadCoordinator.isHlsSource(direct.url)) {
+            resolveHls(direct.url).map { option ->
+                option.copy(
+                    kind = "bunny-hls",
+                    resolvedUrl = option.resolvedUrl.ifBlank { direct.url },
+                )
+            }
+        } else {
+            resolveDirect(direct.url).map { it.copy(kind = "bunny", resolvedUrl = direct.url) }
+        }
+    }
+
     private fun resolveRumble(classId: String, url: String): List<DownloadQualityOption> {
         val direct = runCatching {
             NativeRumbleDirectResolver(http).resolveAll(url)
@@ -93,8 +111,6 @@ class DownloadQualityResolver(
                 .distinctBy { "${it.kind}:${it.height}" }
             if (options.isNotEmpty()) return options
         }
-
-        // Compatibility fallback for unusual Rumble payloads that the server knows how to parse.
         return resolveRumbleServer(classId, url)
     }
 
@@ -121,24 +137,8 @@ class DownloadQualityResolver(
                 if (height <= 0) continue
                 val size = item.optLong("contentLength", 0L)
                 when (kind) {
-                    "mp4" -> add(
-                        DownloadQualityOption(
-                            height = height,
-                            label = "${height}p",
-                            sizeBytes = size,
-                            estimated = size <= 0L,
-                            kind = "rumble",
-                        ),
-                    )
-                    "hls" -> add(
-                        DownloadQualityOption(
-                            height = height,
-                            label = "${height}p",
-                            sizeBytes = size,
-                            estimated = true,
-                            kind = "rumble-hls",
-                        ),
-                    )
+                    "mp4" -> add(DownloadQualityOption(height, "${height}p", size, size <= 0L, "rumble"))
+                    "hls" -> add(DownloadQualityOption(height, "${height}p", size, true, "rumble-hls"))
                 }
             }
         }
@@ -164,17 +164,18 @@ class DownloadQualityResolver(
                 sizeBytes = size,
                 estimated = true,
                 kind = "hls",
+                resolvedUrl = variantUrl,
             )
         }
         if (variants.isNotEmpty()) return variants
         val size = estimateMediaPlaylistSize(lines, bandwidth = 0L)
-        return listOf(DownloadQualityOption(0, "Source quality", size, true, "hls"))
+        return listOf(DownloadQualityOption(0, "Source quality", size, true, "hls", resolvedUrl = url))
     }
 
     private fun resolveDirect(url: String): List<DownloadQualityOption> {
         val size = probeLength(url)
         require(size > 0) { "This video server does not support safe resumable offline downloads." }
-        return listOf(DownloadQualityOption(0, "Original quality", size, false, "direct"))
+        return listOf(DownloadQualityOption(0, "Original quality", size, false, "direct", resolvedUrl = url))
     }
 
     private fun estimateHlsSize(url: String, bandwidth: Long): Long = runCatching {
@@ -212,6 +213,11 @@ class DownloadQualityResolver(
     private fun isRumblePage(value: String): Boolean = runCatching {
         val host = URI(value).host?.lowercase().orEmpty()
         host == "rumble.com" || host.endsWith(".rumble.com")
+    }.getOrDefault(false)
+
+    private fun isBunnyEmbed(value: String): Boolean = runCatching {
+        val host = URI(value).host?.lowercase().orEmpty()
+        host == "player.mediadelivery.net" || host == "iframe.mediadelivery.net"
     }.getOrDefault(false)
 
     companion object {
