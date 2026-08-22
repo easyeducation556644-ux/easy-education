@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.21 verification is running",
-              "context": "Easy Education final release 2.10.21",
+              "description": "Web + CPS + signed Android 2.10.22 verification is running",
+              "context": "Easy Education final release 2.10.22",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -109,7 +109,7 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.21"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.22"' native/app/build.gradle.kts
           grep -q 'NativeCpsExamSafeActivity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'CpsExamAssetPreloader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'ExamFixedHeader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
@@ -119,6 +119,8 @@ jobs:
           grep -q 'normalizeCpsMathText' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
           grep -q 'imageWarmScope.launch' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
           ! grep -q 'api/version?resource=cps&action=math-svg' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
+          grep -q 'CPS_EXAM_CACHE_TTL_MS' native/app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt
+          grep -q 'cps_exam_payload_v1' native/app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt
           test ! -f native/app/src/main/java/com/easyeducation/app/CpsMathText.kt
           ! grep -q 'katexWebJar' native/app/build.gradle.kts
           grep -q 'bottomRow.addView' native/app/src/main/java/com/easyeducation/app/NativeClassTopics.kt
@@ -171,7 +173,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.21-release-apk
+          name: easy-education-2.10.22-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -188,8 +190,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.21 verified",
-              "context": "Easy Education final release 2.10.21",
+              "description": "Web, Vercel budget and signed Android 2.10.22 verified",
+              "context": "Easy Education final release 2.10.22",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
