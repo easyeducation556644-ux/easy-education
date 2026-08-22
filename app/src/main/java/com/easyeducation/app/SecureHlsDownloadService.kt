@@ -243,7 +243,12 @@ class SecureHlsDownloadService : Service() {
             return resolveRumblePlaylist(task)
         }
 
-        val originalUrl = task.sourceUrl
+        // New Bunny tasks persist the stable mediadelivery embed URL, not an expiring CDN URL.
+        // Resolve it on every start/resume so a process restart never reuses an expired manifest.
+        val originalUrl = if (task.sourceKind == "bunny-hls") {
+            resolveFreshBunnyManifest(task)
+        } else task.sourceUrl
+
         val originalLines = getText(task, originalUrl).lines()
         val master = originalLines.any { it.startsWith("#EXT-X-STREAM-INF:") }
         if (!master) {
@@ -281,8 +286,20 @@ class SecureHlsDownloadService : Service() {
         )
     }
 
+    private fun resolveFreshBunnyManifest(task: SecureDownloadTask): String {
+        // v2.10.19+ tasks store the embed URL. Legacy tasks may still contain a direct CDN m3u8;
+        // those remain usable until expiry but cannot be freshly re-resolved without the embed id.
+        if (!isBunnyEmbed(task.sourceUrl)) return task.sourceUrl
+        val resolved = NativePlaybackSourceResolver.resolveOnline(task.classId, task.sourceUrl, task.height)
+        val direct = resolved as? NativeOnlinePlaybackSource.Direct
+            ?: error("Bunny did not expose an HLS stream")
+        require(direct.hls || SecureDownloadCoordinator.isHlsSource(direct.url)) {
+            "Bunny did not expose an HLS stream"
+        }
+        return direct.url
+    }
+
     private fun resolveRumblePlaylist(task: SecureDownloadTask): SelectedPlaylist {
-        // Native direct resolution first: no dependency on the production web parser revision.
         runCatching {
             NativeRumbleDirectResolver(http).resolve(task.sourceUrl, task.height)
         }.getOrNull()?.takeIf { it.hls }?.let { stream ->
@@ -429,22 +446,40 @@ class SecureHlsDownloadService : Service() {
             response.body?.string() ?: error("HLS playlist was empty")
         }
 
+    /** One header policy for master playlists, variants, segments, EXT-X-KEY and EXT-X-MAP. */
     private fun mediaRequest(task: SecureDownloadTask, url: String): Request {
         val rumble = task.sourceKind == "rumble-hls" || isRumblePage(task.sourceUrl)
-        val builder = Request.Builder()
-            .url(url)
-            .header(
-                "User-Agent",
-                if (rumble) NativeRumbleDirectResolver.RUMBLE_USER_AGENT else MEDIA_USER_AGENT,
-            )
-        if (rumble) {
-            builder
+        val bunny = task.sourceKind == "bunny-hls"
+        val builder = Request.Builder().url(url)
+        when {
+            rumble -> builder
+                .header("User-Agent", NativeRumbleDirectResolver.RUMBLE_USER_AGENT)
+                .header("Accept", "*/*")
                 .header("Referer", task.sourceUrl)
                 .header("Origin", NativeRumbleDirectResolver.RUMBLE_ORIGIN)
                 .header("Accept-Encoding", "identity")
+            bunny -> builder
+                .header("User-Agent", BUNNY_USER_AGENT)
+                .header("Accept", "*/*")
+                .header("Accept-Encoding", "identity")
+                .header("Referer", task.sourceUrl)
+                .header("Origin", bunnyOrigin(task.sourceUrl))
+            else -> builder.header("User-Agent", MEDIA_USER_AGENT)
         }
         return builder.build()
     }
+
+    private fun bunnyOrigin(embedUrl: String): String = runCatching {
+        val uri = URI(embedUrl)
+        val scheme = uri.scheme?.takeIf { it.equals("http", true) || it.equals("https", true) } ?: "https"
+        val host = uri.host?.takeIf { it.isNotBlank() } ?: "player.mediadelivery.net"
+        "$scheme://$host"
+    }.getOrDefault("https://player.mediadelivery.net")
+
+    private fun isBunnyEmbed(value: String): Boolean = runCatching {
+        val host = URI(value).host?.lowercase().orEmpty()
+        host == "mediadelivery.net" || host.endsWith(".mediadelivery.net")
+    }.getOrDefault(false)
 
     private fun ensureRunning(id: String, generation: Long): SecureDownloadTask {
         val current = store.get(id) ?: throw DownloadStopped()
@@ -493,6 +528,7 @@ class SecureHlsDownloadService : Service() {
     companion object {
         private const val APP_ORIGIN = "https://easy-education.vercel.app"
         private const val MEDIA_USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
+        private const val BUNNY_USER_AGENT = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36"
         private const val PLAIN_TEMP_NAME = "plain-working.mp4"
         private val activeInstances = ConcurrentHashMap<String, WeakReference<SecureHlsDownloadService>>()
 
