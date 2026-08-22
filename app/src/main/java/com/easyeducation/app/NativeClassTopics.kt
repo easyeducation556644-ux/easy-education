@@ -197,11 +197,13 @@ object NativePlayerTopics {
 
     private fun showFullscreenDrawer(activity: Activity, classId: String, player: ExoPlayer) {
         val root = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
-        (root.findViewWithTag<View>(FULLSCREEN_DRAWER_TAG))?.let { old -> (old.parent as? ViewGroup)?.removeView(old) }
+        root.findViewWithTag<View>(FULLSCREEN_DRAWER_TAG)?.let { old ->
+            (old.parent as? ViewGroup)?.removeView(old)
+        }
         val rows = topics(classId)
         if (rows.isEmpty()) return
         val density = activity.resources.displayMetrics.density
-        fun dp(v: Int) = (v * density + 0.5f).toInt()
+        fun dp(value: Int) = (value * density + 0.5f).toInt()
 
         val overlay = FrameLayout(activity).apply {
             tag = FULLSCREEN_DRAWER_TAG
@@ -213,20 +215,34 @@ object NativePlayerTopics {
             setPadding(dp(16), dp(14), dp(16), dp(12))
             background = GradientDrawable().apply {
                 setColor(0xF51A1A1A.toInt())
-                cornerRadii = floatArrayOf(dp(18).toFloat(), dp(18).toFloat(), 0f, 0f, 0f, 0f, dp(18).toFloat(), dp(18).toFloat())
+                cornerRadii = floatArrayOf(
+                    dp(18).toFloat(), dp(18).toFloat(),
+                    0f, 0f,
+                    0f, 0f,
+                    dp(18).toFloat(), dp(18).toFloat(),
+                )
             }
             isClickable = true
         }
-        val width = minOf(dp(390), (activity.resources.displayMetrics.widthPixels * 0.44f).toInt().coerceAtLeast(dp(300)))
+        val width = minOf(
+            dp(390),
+            (activity.resources.displayMetrics.widthPixels * 0.44f).toInt().coerceAtLeast(dp(300)),
+        )
         overlay.addView(panel, FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
 
-        val header = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(TextView(activity).apply {
-            text = "Topics"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, dp(46), 1f))
+        val header = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(
+            TextView(activity).apply {
+                text = "Topics"
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, Typeface.BOLD)
+            },
+            LinearLayout.LayoutParams(0, dp(46), 1f),
+        )
         val close = TextView(activity).apply {
             text = "✕"
             textSize = 22f
@@ -250,7 +266,12 @@ object NativePlayerTopics {
                 setPadding(dp(12), dp(11), dp(12), dp(11))
                 text = "${formatTopicTime(topic.seconds)}   ${topic.title}"
                 setOnClickListener { seek(activity, classId, topic.seconds) }
-                list.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(5) })
+                list.addView(
+                    this,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(5)
+                    },
+                )
             }
         }
 
@@ -259,7 +280,8 @@ object NativePlayerTopics {
             override fun run() {
                 val selected = current(rows, player.currentPosition)
                 rowViews.forEachIndexed { index, view ->
-                    val active = rows[index].id == selected?.id && rows[index].seconds == selected.seconds
+                    val row = rows[index]
+                    val active = selected != null && row.id == selected.id && row.seconds == selected.seconds
                     view.background = GradientDrawable().apply {
                         setColor(if (active) 0xFF4C4168.toInt() else 0xFF262626.toInt())
                         cornerRadius = dp(12).toFloat()
@@ -288,10 +310,11 @@ object NativePlayerTopics {
 
     fun formatTopicTime(seconds: Int): String {
         val safe = seconds.coerceAtLeast(0)
-        val h = safe / 3600
-        val m = (safe % 3600) / 60
-        val s = safe % 60
-        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+        val hours = safe / 3600
+        val minutes = (safe % 3600) / 60
+        val secs = safe % 60
+        return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, secs)
+        else "%02d:%02d".format(minutes, secs)
     }
 }
 
@@ -304,7 +327,7 @@ fun NativeClassTopicsAction(classId: String) {
     var sheetOpen by remember(classId) { mutableStateOf(false) }
     var position by remember(classId) { mutableLongStateOf(0L) }
 
-    LaunchedEffect(request, classId) {
+    LaunchedEffect(request, classId, topics.size) {
         if (request == classId && topics.isNotEmpty()) {
             sheetOpen = true
             NativePlayerTopics.consumeSheet(classId)
@@ -312,7 +335,9 @@ fun NativeClassTopicsAction(classId: String) {
     }
     LaunchedEffect(sheetOpen, classId) {
         while (sheetOpen) {
-            if (PersistentNativePlayer.currentClassId() == classId) position = PersistentNativePlayer.player(context).currentPosition
+            if (PersistentNativePlayer.currentClassId() == classId) {
+                position = PersistentNativePlayer.player(context).currentPosition
+            }
             delay(250L)
         }
     }
@@ -335,7 +360,7 @@ fun NativeClassTopicsAction(classId: String) {
 
     if (sheetOpen) {
         ModalBottomSheet(onDismissRequest = { sheetOpen = false }) {
-            TopicSheetContent(classId, topics, position) { topic ->
+            TopicSheetContent(topics, position) { topic ->
                 NativePlayerTopics.seek(context, classId, topic.seconds)
             }
         }
@@ -344,7 +369,6 @@ fun NativeClassTopicsAction(classId: String) {
 
 @Composable
 private fun TopicSheetContent(
-    classId: String,
     topics: List<NativePlayerTopic>,
     positionMs: Long,
     onTopic: (NativePlayerTopic) -> Unit,
@@ -355,9 +379,9 @@ private fun TopicSheetContent(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text("Topics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text("Jump to a chapter in this class", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Jump to a topic in this class", color = MaterialTheme.colorScheme.onSurfaceVariant)
         topics.forEach { topic ->
-            val selected = running?.id == topic.id && running.seconds == topic.seconds
+            val selected = running != null && running.id == topic.id && running.seconds == topic.seconds
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable { onTopic(topic) },
                 shape = RoundedCornerShape(14.dp),
@@ -365,9 +389,19 @@ private fun TopicSheetContent(
                 border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
             ) {
                 Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(NativePlayerTopics.formatTopicTime(topic.seconds), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        NativePlayerTopics.formatTopicTime(topic.seconds),
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     Spacer(Modifier.width(12.dp))
-                    Text(topic.title, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+                    Text(
+                        topic.title,
+                        Modifier.weight(1f),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    )
                     Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                 }
             }
@@ -383,13 +417,18 @@ fun NativeClassTopicsDescription(classId: String) {
     if (topics.isEmpty()) return
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp)) {
         Text("Topics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(1.dp))
         topics.forEach { topic ->
             Row(
-                Modifier.fillMaxWidth().clickable { NativePlayerTopics.seek(context, classId, topic.seconds) }.padding(vertical = 8.dp),
+                Modifier.fillMaxWidth()
+                    .clickable { NativePlayerTopics.seek(context, classId, topic.seconds) }
+                    .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(NativePlayerTopics.formatTopicTime(topic.seconds), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text(
+                    NativePlayerTopics.formatTopicTime(topic.seconds),
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
                 Spacer(Modifier.width(12.dp))
                 Text(topic.title, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
