@@ -80,7 +80,6 @@ object NativePlayerTopics {
     fun requestSheet(classId: String) { if (classId.isNotBlank()) sheetRequestMutable.value = classId }
     fun consumeSheet(classId: String) { if (sheetRequestMutable.value == classId) sheetRequestMutable.value = null }
 
-    /** One canonical seek path for All Topics, portrait sheet and fullscreen drawer. */
     fun seek(context: Context, classId: String, seconds: Int) {
         PersistentNativePlayer.seekToTopic(context, classId, seconds.coerceAtLeast(0).toLong() * 1000L)
     }
@@ -131,11 +130,15 @@ object NativePlayerTopics {
             }
         }
         init {
-            // It must be inside the player's controls layer. That makes taps reach this view instead
-            // of the video gesture detector, and the topic chip fades with the rest of the chrome.
-            surface.addAuxiliaryControl(chip, FrameLayout.LayoutParams(dp(220), dp(34), Gravity.BOTTOM or Gravity.START).apply {
-                leftMargin = dp(118); bottomMargin = dp(4)
-            })
+            // YoutubeStylePlayerView's controls FrameLayout is child #1. Putting the chip there makes
+            // it inherit the exact controls fade. The chip overlaps the seekbar hit-zone so the
+            // player's gesture owner yields ACTION_DOWN to this clickable child instead of swallowing it.
+            val chrome = surface.getChildAt(1) as? FrameLayout
+            val params = FrameLayout.LayoutParams(dp(220), dp(30), Gravity.BOTTOM or Gravity.START).apply {
+                leftMargin = dp(118); bottomMargin = dp(43)
+            }
+            if (chrome != null) chrome.addView(chip, params) else surface.addView(chip, params)
+            chip.bringToFront()
             chip.setOnClickListener {
                 val classId = PersistentNativePlayer.currentClassId().ifBlank { fallbackClassId }
                 if (topics(classId).isEmpty()) return@setOnClickListener
