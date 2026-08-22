@@ -19,7 +19,7 @@ data class DownloadQualityOption(
     val estimated: Boolean,
     val kind: String,
     val recommended: Boolean = false,
-    /** Direct media/manifest URL when resolving an embed provider such as Bunny. */
+    /** Stable provider URL or direct media URL used when the selected quality is queued. */
     val resolvedUrl: String = "",
 ) {
     val key: String get() = "$kind:$height:$sizeBytes:$resolvedUrl"
@@ -74,19 +74,26 @@ class DownloadQualityResolver(
         }
     }
 
+    /**
+     * Bunny's CDN manifest may be signed/short-lived. Quality discovery uses the freshly resolved
+     * CDN URL, but the queued task intentionally stores the stable embed URL. The HLS service then
+     * re-resolves that embed every start/resume and reapplies Bunny's required request headers.
+     */
     private fun resolveBunny(classId: String, embedUrl: String): List<DownloadQualityOption> {
         val resolved = NativePlaybackSourceResolver.resolveOnline(classId, embedUrl, 1080)
         val direct = resolved as? NativeOnlinePlaybackSource.Direct
             ?: error("Bunny did not expose a downloadable media source")
         return if (direct.hls || SecureDownloadCoordinator.isHlsSource(direct.url)) {
-            resolveHls(direct.url).map { option ->
+            resolveHls(direct.url, direct.requestHeaders).map { option ->
                 option.copy(
                     kind = "bunny-hls",
-                    resolvedUrl = option.resolvedUrl.ifBlank { direct.url },
+                    // Persist the stable provider URL, never the expiring CDN manifest.
+                    resolvedUrl = embedUrl,
                 )
             }
         } else {
-            resolveDirect(direct.url).map { it.copy(kind = "bunny", resolvedUrl = direct.url) }
+            resolveDirect(direct.url, direct.requestHeaders)
+                .map { it.copy(kind = "bunny", resolvedUrl = direct.url) }
         }
     }
 
@@ -144,8 +151,11 @@ class DownloadQualityResolver(
         }
     }
 
-    private fun resolveHls(url: String): List<DownloadQualityOption> {
-        val text = getText(url)
+    private fun resolveHls(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+    ): List<DownloadQualityOption> {
+        val text = getText(url, headers)
         val lines = text.lines()
         val variants = mutableListOf<DownloadQualityOption>()
         lines.forEachIndexed { index, line ->
@@ -157,7 +167,7 @@ class DownloadQualityResolver(
             val bandwidth = Regex("(?:AVERAGE-)?BANDWIDTH=(\\d+)", RegexOption.IGNORE_CASE)
                 .find(line)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
             val variantUrl = URI(url).resolve(next.trim()).toString()
-            val size = estimateHlsSize(variantUrl, bandwidth)
+            val size = estimateHlsSize(variantUrl, bandwidth, headers)
             variants += DownloadQualityOption(
                 height = height,
                 label = if (height > 0) "${height}p" else "Auto",
@@ -172,14 +182,21 @@ class DownloadQualityResolver(
         return listOf(DownloadQualityOption(0, "Source quality", size, true, "hls", resolvedUrl = url))
     }
 
-    private fun resolveDirect(url: String): List<DownloadQualityOption> {
-        val size = probeLength(url)
+    private fun resolveDirect(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+    ): List<DownloadQualityOption> {
+        val size = probeLength(url, headers)
         require(size > 0) { "This video server does not support safe resumable offline downloads." }
         return listOf(DownloadQualityOption(0, "Original quality", size, false, "direct", resolvedUrl = url))
     }
 
-    private fun estimateHlsSize(url: String, bandwidth: Long): Long = runCatching {
-        estimateMediaPlaylistSize(getText(url).lines(), bandwidth)
+    private fun estimateHlsSize(
+        url: String,
+        bandwidth: Long,
+        headers: Map<String, String>,
+    ): Long = runCatching {
+        estimateMediaPlaylistSize(getText(url, headers).lines(), bandwidth)
     }.getOrDefault(0L)
 
     private fun estimateMediaPlaylistSize(lines: List<String>, bandwidth: Long): Long {
@@ -192,22 +209,29 @@ class DownloadQualityResolver(
         return ((bandwidth.toDouble() / 8.0) * seconds).toLong().coerceAtLeast(0L)
     }
 
-    private fun probeLength(url: String): Long {
-        val request = Request.Builder()
+    private fun probeLength(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+    ): Long {
+        val builder = Request.Builder()
             .url(url)
             .header("Range", "bytes=0-0")
             .header("User-Agent", YoutubeDeviceResolver.DOWNLOAD_USER_AGENT)
-            .build()
-        return http.newCall(request).execute().use { response ->
+        headers.forEach { (name, value) -> if (name.isNotBlank() && value.isNotBlank()) builder.header(name, value) }
+        return http.newCall(builder.build()).execute().use { response ->
             if (response.code != 206) return@use 0L
             val range = response.header("Content-Range").orEmpty()
             range.substringAfterLast('/', "").toLongOrNull() ?: 0L
         }
     }
 
-    private fun getText(url: String): String = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-        if (!response.isSuccessful) error("Video quality lookup returned HTTP ${response.code}")
-        response.body?.string() ?: error("Video quality response was empty")
+    private fun getText(url: String, headers: Map<String, String> = emptyMap()): String {
+        val builder = Request.Builder().url(url)
+        headers.forEach { (name, value) -> if (name.isNotBlank() && value.isNotBlank()) builder.header(name, value) }
+        return http.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) error("Video quality lookup returned HTTP ${response.code}")
+            response.body?.string() ?: error("Video quality response was empty")
+        }
     }
 
     private fun isRumblePage(value: String): Boolean = runCatching {
@@ -217,7 +241,7 @@ class DownloadQualityResolver(
 
     private fun isBunnyEmbed(value: String): Boolean = runCatching {
         val host = URI(value).host?.lowercase().orEmpty()
-        host == "player.mediadelivery.net" || host == "iframe.mediadelivery.net"
+        host == "mediadelivery.net" || host.endsWith(".mediadelivery.net")
     }.getOrDefault(false)
 
     companion object {
