@@ -63,6 +63,15 @@ object PersistentNativePlayer {
     fun currentSourceUrl(): String = activeSourceUrl
     fun currentHeight(): Int = activeHeight
 
+    /** Applies a topic/resume position even when the same prepared session is being reused. */
+    fun applySavedPosition(context: Context, classId: String) {
+        val exo = playerInstance ?: return
+        if (classId.isBlank() || activeClassId != classId) return
+        val saved = context.applicationContext.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
+            .getLong("class:$classId", 0L)
+        if (saved >= 0L && kotlin.math.abs(exo.currentPosition - saved) > 350L) exo.seekTo(saved)
+    }
+
     suspend fun ensureOnline(
         context: Context,
         classId: String,
@@ -77,6 +86,7 @@ object PersistentNativePlayer {
         val sameSession = !forceRefresh && matches(classId, sourceUrl, requestedHeight) && exo.mediaItemCount > 0
         if (sameSession) {
             withContext(Dispatchers.Main.immediate) {
+                applySavedPosition(app, classId)
                 if (autoPlay) exo.playWhenReady = true
             }
             return@withLock exo
