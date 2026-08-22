@@ -82,6 +82,7 @@ fun NativeInlinePlayer(
         surface.setFullscreenPresentation(false)
         surface.bindPlayer(exoPlayer)
         surface.setTitle(title)
+        NativePlayerTopics.attachToSurface(surface, exoPlayer, classId)
         surface.setLoading(loading)
         surface.setNavigationAvailability(hasPrevious, hasNext)
         surface.onBack = {
@@ -206,6 +207,7 @@ fun NativeInlinePlayer(
         if (alreadyPrepared) {
             loading = false
             errorText = null
+            PersistentNativePlayer.applySavedPosition(context, classId)
             exoPlayer.playWhenReady = true
             return@LaunchedEffect
         }
