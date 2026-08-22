@@ -68,7 +68,12 @@ internal data class CpsPreparedResources(
 
 internal data class CpsPreparedSegment(val math: Boolean, val value: String)
 
-internal class CpsExamAssetPreloader(private val context: Context) {
+/**
+ * Performs every expensive exam preparation step before the timer starts and before questions are
+ * visible. TeX is typeset on the existing Vercel function; Android only caches and displays static
+ * PNGs. A renderer/network failure degrades to lightweight text instead of blocking the exam.
+ */
+internal class CpsExamAssetPreloader(context: Context) {
     private val appContext = context.applicationContext
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -88,49 +93,34 @@ internal class CpsExamAssetPreloader(private val context: Context) {
         onProgress: (ExamPreparationProgress) -> Unit,
     ): CpsPreparedResources {
         val formulas = linkedSetOf<String>()
-        questionTexts.forEach { text ->
-            cpsPreparedSegments(text).filterToFormulaSet(formulas)
-        }
-        explanationTexts.forEach { text ->
-            cpsPreparedSegments(text).filterToFormulaSet(formulas)
-        }
+        questionTexts.forEach { collectFormulas(it, formulas) }
+        explanationTexts.forEach { collectFormulas(it, formulas) }
 
         val optionTotal = optionTexts.size
         optionTexts.forEachIndexed { index, text ->
-            cpsPreparedSegments(text).filterToFormulaSet(formulas)
+            collectFormulas(text, formulas)
             onProgress(
-                ExamPreparationProgress(
+                baseProgress(
                     percent = 28 + (((index + 1) * 12.0) / optionTotal.coerceAtLeast(1)).roundToInt(),
                     status = "Preparing options — ${index + 1}/$optionTotal",
-                    questionsDone = questionDone,
-                    questionsTotal = questionTotal,
-                    optionsDone = index + 1,
-                    optionsTotal = optionTotal,
+                    questionDone = questionDone,
+                    questionTotal = questionTotal,
+                    optionDone = index + 1,
+                    optionTotal = optionTotal,
                 ),
             )
         }
         if (optionTotal == 0) {
-            onProgress(
-                ExamPreparationProgress(
-                    percent = 40,
-                    status = "Scanning mathematics…",
-                    questionsDone = questionDone,
-                    questionsTotal = questionTotal,
-                    optionsDone = 0,
-                    optionsTotal = 0,
-                ),
-            )
+            onProgress(baseProgress(40, "Scanning mathematics…", questionDone, questionTotal, 0, 0))
         }
 
-        val uniqueFormulas = formulas.toList()
+        val formulaList = formulas.toList()
         val assets = linkedMapOf<String, CpsPreparedMathAsset>()
         val missing = mutableListOf<String>()
-        uniqueFormulas.forEach { formula ->
+        formulaList.forEach { formula ->
             val hash = mathHash(formula)
             val file = File(mathDir, "$hash.png")
-            val cached = file.takeIf { it.isFile && it.length() > 8L }?.let {
-                readMathAsset(formula, hash, it)
-            }
+            val cached = if (file.isFile && file.length() > 8L) readMathAsset(formula, hash, file) else null
             if (cached != null) assets[formula] = cached else {
                 file.delete()
                 missing += formula
@@ -139,41 +129,39 @@ internal class CpsExamAssetPreloader(private val context: Context) {
 
         var mathDone = assets.size
         onProgress(
-            ExamPreparationProgress(
-                percent = if (uniqueFormulas.isEmpty()) 72 else 42 + ((mathDone * 30.0) / uniqueFormulas.size).roundToInt(),
-                status = if (uniqueFormulas.isEmpty()) "No mathematical rendering needed" else "Rendering mathematics — $mathDone/${uniqueFormulas.size}",
-                questionsDone = questionDone,
-                questionsTotal = questionTotal,
-                optionsDone = optionTotal,
-                optionsTotal = optionTotal,
+            baseProgress(
+                percent = if (formulaList.isEmpty()) 72 else 42 + ((mathDone * 30.0) / formulaList.size).roundToInt(),
+                status = if (formulaList.isEmpty()) "No mathematical rendering needed" else "Rendering mathematics — $mathDone/${formulaList.size}",
+                questionDone = questionDone,
+                questionTotal = questionTotal,
+                optionDone = optionTotal,
+                optionTotal = optionTotal,
                 mathDone = mathDone,
-                mathTotal = uniqueFormulas.size,
+                mathTotal = formulaList.size,
             ),
         )
 
-        if (missing.isNotEmpty()) {
-            missing.chunked(MATH_BATCH).forEach { chunk ->
-                val rendered = fetchRenderedMath(chunk)
-                chunk.forEach { formula ->
-                    rendered[formula]?.let { asset -> assets[formula] = asset }
-                    mathDone += 1
-                    onProgress(
-                        ExamPreparationProgress(
-                            percent = 42 + ((mathDone * 30.0) / uniqueFormulas.size.coerceAtLeast(1)).roundToInt(),
-                            status = "Rendering mathematics — $mathDone/${uniqueFormulas.size}",
-                            questionsDone = questionDone,
-                            questionsTotal = questionTotal,
-                            optionsDone = optionTotal,
-                            optionsTotal = optionTotal,
-                            mathDone = mathDone,
-                            mathTotal = uniqueFormulas.size,
-                        ),
-                    )
-                }
+        missing.chunked(MATH_BATCH).forEach { chunk ->
+            val rendered = runCatching { fetchRenderedMath(chunk) }.getOrDefault(emptyMap())
+            chunk.forEach { formula ->
+                rendered[formula]?.let { assets[formula] = it }
+                mathDone += 1
+                onProgress(
+                    baseProgress(
+                        percent = 42 + ((mathDone * 30.0) / formulaList.size.coerceAtLeast(1)).roundToInt(),
+                        status = "Rendering mathematics — $mathDone/${formulaList.size}",
+                        questionDone = questionDone,
+                        questionTotal = questionTotal,
+                        optionDone = optionTotal,
+                        optionTotal = optionTotal,
+                        mathDone = mathDone,
+                        mathTotal = formulaList.size,
+                    ),
+                )
             }
         }
 
-        // Warm static PNGs so scrolling does not pay decode cost.
+        // Warm the exact static formula files into Coil memory/disk before the question list exists.
         assets.values.forEach { asset ->
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -206,37 +194,53 @@ internal class CpsExamAssetPreloader(private val context: Context) {
                 }
             }
             onProgress(
-                ExamPreparationProgress(
+                baseProgress(
                     percent = 74 + (((index + 1) * 22.0) / images.size.coerceAtLeast(1)).roundToInt(),
                     status = "Caching images — ${index + 1}/${images.size}",
-                    questionsDone = questionDone,
-                    questionsTotal = questionTotal,
-                    optionsDone = optionTotal,
-                    optionsTotal = optionTotal,
-                    mathDone = uniqueFormulas.size,
-                    mathTotal = uniqueFormulas.size,
-                    imagesDone = index + 1,
-                    imagesTotal = images.size,
+                    questionDone = questionDone,
+                    questionTotal = questionTotal,
+                    optionDone = optionTotal,
+                    optionTotal = optionTotal,
+                    mathDone = formulaList.size,
+                    mathTotal = formulaList.size,
+                    imageDone = index + 1,
+                    imageTotal = images.size,
                 ),
             )
         }
 
         onProgress(
-            ExamPreparationProgress(
-                percent = 100,
-                status = "Ready",
-                questionsDone = questionDone,
-                questionsTotal = questionTotal,
-                optionsDone = optionTotal,
-                optionsTotal = optionTotal,
-                mathDone = uniqueFormulas.size,
-                mathTotal = uniqueFormulas.size,
-                imagesDone = images.size,
-                imagesTotal = images.size,
+            baseProgress(
+                100, "Ready", questionDone, questionTotal, optionTotal, optionTotal,
+                formulaList.size, formulaList.size, images.size, images.size,
             ),
         )
         return CpsPreparedResources(assets)
     }
+
+    private fun baseProgress(
+        percent: Int,
+        status: String,
+        questionDone: Int,
+        questionTotal: Int,
+        optionDone: Int,
+        optionTotal: Int,
+        mathDone: Int = 0,
+        mathTotal: Int = 0,
+        imageDone: Int = 0,
+        imageTotal: Int = 0,
+    ) = ExamPreparationProgress(
+        percent = percent.coerceIn(0, 100),
+        status = status,
+        questionsDone = questionDone,
+        questionsTotal = questionTotal,
+        optionsDone = optionDone,
+        optionsTotal = optionTotal,
+        mathDone = mathDone,
+        mathTotal = mathTotal,
+        imagesDone = imageDone,
+        imagesTotal = imageTotal,
+    )
 
     private suspend fun fetchRenderedMath(formulas: List<String>): Map<String, CpsPreparedMathAsset> =
         withContext(Dispatchers.IO) {
@@ -249,42 +253,51 @@ internal class CpsExamAssetPreloader(private val context: Context) {
                 .header("Accept", "application/json")
                 .post(body.toRequestBody(JSON_MEDIA))
                 .build()
+
             http.newCall(request).execute().use { response ->
-                val text = response.body?.string().orEmpty()
+                val responseText = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    val detail = runCatching { JSONObject(text).optString("error") }.getOrNull()
+                    val detail = runCatching { JSONObject(responseText).optString("error") }.getOrNull()
                     error(detail?.takeIf(String::isNotBlank) ?: "Math preparation failed (${response.code})")
                 }
-                val payload = JSONObject(text)
-                val items = payload.optJSONArray("items") ?: JSONArray()
-                buildMap {
-                    for (index in 0 until items.length()) {
-                        val row = items.optJSONObject(index) ?: continue
-                        if (row.optString("error").isNotBlank()) continue
-                        val formula = row.optString("formula").trim()
-                        val hash = row.optString("hash").trim().ifBlank { mathHash(formula) }
-                        val encoded = row.optString("pngBase64")
-                        if (formula.isBlank() || encoded.isBlank()) continue
-                        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: continue
-                        if (bytes.size < 8 || bytes.size > MAX_PNG_BYTES) continue
-                        val file = File(mathDir, "$hash.png")
-                        runCatching {
-                            val temp = File(mathDir, "$hash.tmp")
-                            temp.writeBytes(bytes)
-                            if (file.exists()) file.delete()
-                            if (!temp.renameTo(file)) {
-                                file.writeBytes(bytes)
-                                temp.delete()
-                            }
-                        }.getOrElse { continue }
-                        val width = row.optInt("width", 0)
-                        val height = row.optInt("height", 0)
-                        val asset = if (width > 0 && height > 0) {
-                            CpsPreparedMathAsset(formula, hash, file, width, height)
-                        } else readMathAsset(formula, hash, file)
-                        asset?.let { put(formula, it) }
+                val rows = JSONObject(responseText).optJSONArray("items") ?: JSONArray()
+                val output = linkedMapOf<String, CpsPreparedMathAsset>()
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    if (row.optString("error").isNotBlank()) continue
+                    val formula = row.optString("formula").trim()
+                    if (formula.isBlank()) continue
+                    val hash = row.optString("hash").trim().ifBlank { mathHash(formula) }
+                    val encoded = row.optString("pngBase64")
+                    if (encoded.isBlank()) continue
+                    val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: continue
+                    if (bytes.size !in 8..MAX_PNG_BYTES) continue
+
+                    val file = File(mathDir, "$hash.png")
+                    var saved = true
+                    try {
+                        val temp = File(mathDir, "$hash.tmp")
+                        temp.writeBytes(bytes)
+                        if (file.exists()) file.delete()
+                        if (!temp.renameTo(file)) {
+                            file.writeBytes(bytes)
+                            temp.delete()
+                        }
+                    } catch (_: Throwable) {
+                        saved = false
                     }
+                    if (!saved) continue
+
+                    val width = row.optInt("width", 0)
+                    val height = row.optInt("height", 0)
+                    val asset = if (width > 0 && height > 0) {
+                        CpsPreparedMathAsset(formula, hash, file, width, height)
+                    } else {
+                        readMathAsset(formula, hash, file)
+                    }
+                    if (asset != null) output[formula] = asset
                 }
+                output
             }
         }
 
@@ -303,22 +316,21 @@ internal class CpsExamAssetPreloader(private val context: Context) {
     }
 }
 
-private fun List<CpsPreparedSegment>.filterToFormulaSet(target: MutableSet<String>) {
-    forEach { segment -> if (segment.math && segment.value.isNotBlank()) target += segment.value.trim() }
+private fun collectFormulas(text: String, target: MutableSet<String>) {
+    cpsPreparedSegments(text).forEach { segment ->
+        if (segment.math && segment.value.isNotBlank()) target += segment.value.trim()
+    }
 }
 
 internal fun mathHash(formula: String): String = MessageDigest.getInstance("SHA-256")
     .digest(formula.trim().toByteArray(Charsets.UTF_8))
     .joinToString("") { "%02x".format(it) }
 
-/**
- * Detects CPS bare TeX without running a TeX engine on Android. Parsing is intentionally lightweight;
- * expensive typesetting happens on the existing Vercel function and returns static PNGs.
- */
+/** Detect CPS bare TeX without running any TeX engine on Android. */
 internal fun cpsPreparedSegments(input: String): List<CpsPreparedSegment> {
     if (input.isBlank()) return listOf(CpsPreparedSegment(false, input))
-    val dollarCount = input.count { it == '$' }
-    if (dollarCount >= 2 && dollarCount % 2 == 0) return delimitedSegments(input)
+    val dollars = input.count { it == '$' }
+    if (dollars >= 2 && dollars % 2 == 0) return delimitedSegments(input)
 
     val spans = mutableListOf<IntRange>()
     var cursor = 0
@@ -326,62 +338,62 @@ internal fun cpsPreparedSegments(input: String): List<CpsPreparedSegment> {
         val trigger = findMathTrigger(input, cursor)
         if (trigger < 0) break
         val start = expandMathStart(input, trigger)
-        val endExclusive = consumeMathRun(input, start).coerceAtLeast(trigger + 1)
-        if (endExclusive > start) {
-            val range = start until endExclusive
+        val end = consumeMathRun(input, start).coerceAtLeast(trigger + 1)
+        if (end > start) {
+            val range = start until end
             val previous = spans.lastOrNull()
             if (previous != null && range.first <= previous.last + 2 &&
                 input.substring(previous.last + 1, range.first).all(Char::isWhitespace)
             ) {
                 spans[spans.lastIndex] = previous.first..range.last
-            } else spans += range
+            } else {
+                spans.add(range)
+            }
         }
-        cursor = maxOf(endExclusive, trigger + 1)
+        cursor = maxOf(end, trigger + 1)
     }
     if (spans.isEmpty()) return listOf(CpsPreparedSegment(false, input))
 
-    val result = mutableListOf<CpsPreparedSegment>()
+    val output = mutableListOf<CpsPreparedSegment>()
     var at = 0
     spans.forEach { span ->
-        if (span.first > at) result += CpsPreparedSegment(false, input.substring(at, span.first))
+        if (span.first > at) output.add(CpsPreparedSegment(false, input.substring(at, span.first)))
         val formula = input.substring(span.first, span.last + 1).trim()
-        if (formula.isNotEmpty()) result += CpsPreparedSegment(true, formula)
+        if (formula.isNotEmpty()) output.add(CpsPreparedSegment(true, formula))
         at = span.last + 1
     }
-    if (at < input.length) result += CpsPreparedSegment(false, input.substring(at))
-    return result.filter { it.value.isNotEmpty() }
+    if (at < input.length) output.add(CpsPreparedSegment(false, input.substring(at)))
+    return output.filter { it.value.isNotEmpty() }
 }
 
 private fun delimitedSegments(input: String): List<CpsPreparedSegment> {
-    val result = mutableListOf<CpsPreparedSegment>()
+    val output = mutableListOf<CpsPreparedSegment>()
     var at = 0
     while (at < input.length) {
         val start = input.indexOf('$', at)
         if (start < 0) {
-            if (at < input.length) result += CpsPreparedSegment(false, input.substring(at))
+            if (at < input.length) output.add(CpsPreparedSegment(false, input.substring(at)))
             break
         }
-        if (start > at) result += CpsPreparedSegment(false, input.substring(at, start))
+        if (start > at) output.add(CpsPreparedSegment(false, input.substring(at, start)))
         val display = start + 1 < input.length && input[start + 1] == '$'
         val marker = if (display) "$$" else "$"
         val bodyStart = start + marker.length
         val end = input.indexOf(marker, bodyStart)
         if (end < 0) {
-            result += CpsPreparedSegment(false, input.substring(start))
+            output.add(CpsPreparedSegment(false, input.substring(start)))
             break
         }
         val formula = input.substring(bodyStart, end).trim()
-        if (formula.isNotEmpty()) result += CpsPreparedSegment(true, formula)
+        if (formula.isNotEmpty()) output.add(CpsPreparedSegment(true, formula))
         at = end + marker.length
     }
-    return result.ifEmpty { listOf(CpsPreparedSegment(false, input)) }
+    return output.ifEmpty { listOf(CpsPreparedSegment(false, input)) }
 }
 
 private fun findMathTrigger(value: String, from: Int): Int {
-    var index = from.coerceAtLeast(0)
-    while (index < value.length) {
+    for (index in from.coerceAtLeast(0) until value.length) {
         if (mathTriggerAt(value, index)) return index
-        index += 1
     }
     return -1
 }
@@ -403,7 +415,7 @@ private fun expandMathStart(value: String, trigger: Int): Int {
     while (start > 0) {
         val previous = value[start - 1]
         if (previous.isWhitespace() || previous.isBengali() || previous == '।') break
-        if (previous.isAsciiLetterOrDigit() || previous in ".,+-=/()*[]") start -= 1 else break
+        if (previous.isAsciiLetterOrDigit() || previous in ".,+-=/()*[]") start-- else break
     }
     return start
 }
@@ -415,34 +427,35 @@ private fun consumeMathRun(value: String, start: Int): Int {
         val char = value[index]
         if (char.isBengali() || char == '।' || char == '\n' || char == '\r') break
         when {
-            char == '{' -> { braceDepth += 1; index += 1 }
-            char == '}' -> { if (braceDepth > 0) braceDepth -= 1; index += 1 }
+            char == '{' -> { braceDepth++; index++ }
+            char == '}' -> { if (braceDepth > 0) braceDepth--; index++ }
             char == '\\' && index + 1 < value.length && value[index + 1].isAsciiLetter() -> {
                 index += 2
-                while (index < value.length && value[index].isAsciiLetter()) index += 1
-                while (index < value.length && value[index].isWhitespace() && value[index] != '\n') index += 1
+                while (index < value.length && value[index].isAsciiLetter()) index++
+                while (index < value.length && value[index].isWhitespace() && value[index] != '\n') index++
                 while (index < value.length && value[index] == '{') index = consumeBalancedGroup(value, index)
             }
             char == '^' || char == '_' -> {
-                index += 1
-                if (index < value.length && value[index] == '{') index = consumeBalancedGroup(value, index)
-                else if (index < value.length) {
+                index++
+                if (index < value.length && value[index] == '{') {
+                    index = consumeBalancedGroup(value, index)
+                } else if (index < value.length) {
                     if (value[index] == '\\' && index + 1 < value.length) {
-                        index += 1
-                        while (index < value.length && value[index].isAsciiLetter()) index += 1
-                    } else index += 1
+                        index++
+                        while (index < value.length && value[index].isAsciiLetter()) index++
+                    } else index++
                 }
             }
-            braceDepth > 0 -> index += 1
+            braceDepth > 0 -> index++
             char.isWhitespace() -> {
                 val next = nextNonSpace(value, index)
                 if (next < 0 || value[next].isBengali() || value[next] == '।') break
-                val singleLetter = value[next].isAsciiLetter() &&
+                val oneLetter = value[next].isAsciiLetter() &&
                     (next + 1 >= value.length || !value[next + 1].isAsciiLetter())
-                if (mathTriggerAt(value, next) || value[next].isDigit() || value[next] in "+-=()[]" || singleLetter) index = next
+                if (mathTriggerAt(value, next) || value[next].isDigit() || value[next] in "+-=()[]" || oneLetter) index = next
                 else break
             }
-            char.isAsciiLetterOrDigit() || char in ".,+-=/()*[]:%" -> index += 1
+            char.isAsciiLetterOrDigit() || char in ".,+-=/()*[]:%" -> index++
             else -> break
         }
     }
@@ -454,21 +467,21 @@ private fun consumeBalancedGroup(value: String, open: Int): Int {
     var index = open
     while (index < value.length) {
         when (value[index]) {
-            '{' -> depth += 1
+            '{' -> depth++
             '}' -> {
-                depth -= 1
+                depth--
                 if (depth <= 0) return index + 1
             }
         }
-        index += 1
+        index++
     }
     return value.length
 }
 
 private fun nextNonSpace(value: String, from: Int): Int {
     var index = from
-    while (index < value.length && value[index].isWhitespace() && value[index] != '\n' && value[index] != '\r') index += 1
-    return index.takeIf { it < value.length } ?: -1
+    while (index < value.length && value[index].isWhitespace() && value[index] != '\n' && value[index] != '\r') index++
+    return if (index < value.length) index else -1
 }
 
 private fun Char.isAsciiLetter(): Boolean = this in 'A'..'Z' || this in 'a'..'z'
@@ -478,21 +491,21 @@ private fun Char.isBengali(): Boolean = code in 0x0980..0x09FF
 private data class DisplayToken(val math: Boolean, val value: String)
 
 private fun displayLines(raw: String): List<List<DisplayToken>> {
-    val lines = mutableListOf(mutableListOf<DisplayToken>())
+    val lines = mutableListOf<MutableList<DisplayToken>>(mutableListOf())
     cpsPreparedSegments(raw).forEach { segment ->
         if (segment.math) {
-            lines.last() += DisplayToken(true, segment.value.trim())
-            return@forEach
-        }
-        val parts = segment.value.split('\n')
-        parts.forEachIndexed { index, part ->
-            Regex("\\S+\\s*|\\s+").findAll(part).forEach { match ->
-                lines.last() += DisplayToken(false, match.value)
+            lines.last().add(DisplayToken(true, segment.value.trim()))
+        } else {
+            val parts = segment.value.split('\n')
+            parts.forEachIndexed { index, part ->
+                Regex("\\S+\\s*|\\s+").findAll(part).forEach { match ->
+                    lines.last().add(DisplayToken(false, match.value))
+                }
+                if (index < parts.lastIndex) lines.add(mutableListOf())
             }
-            if (index < parts.lastIndex) lines += mutableListOf()
         }
     }
-    return lines.ifEmpty { listOf(emptyList()) }
+    return if (lines.isEmpty()) listOf(emptyList()) else lines
 }
 
 @Composable
@@ -529,8 +542,7 @@ internal fun CpsPreparedText(
                             val ratio = (asset.widthPx.toFloat() / asset.heightPx.coerceAtLeast(1)).coerceIn(0.2f, 30f)
                             val baseHeight = 23f
                             val maxWidth = (screenWidth - 28).coerceAtLeast(120).toFloat()
-                            val naturalWidth = baseHeight * ratio
-                            val widthDp = minOf(naturalWidth, maxWidth)
+                            val widthDp = minOf(baseHeight * ratio, maxWidth)
                             val heightDp = (widthDp / ratio).coerceIn(14f, 42f)
                             AsyncImage(
                                 model = asset.file,
