@@ -2,7 +2,7 @@
   "versionCode": 2102500,
   "versionName": "2.10.25",
   "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.25/Easy-Education-2.10.25.apk",
-  "sha256": "",
+  "sha256": "6f5ca690a2cb0379a1b51f49470386f9deca0d30f7adcdf47b19b590f1d0764e",
   "force": false,
   "notes": "Exam Results stability fixes and built-in background updates for future releases."
 }
