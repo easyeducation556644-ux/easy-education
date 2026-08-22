@@ -62,7 +62,6 @@ import java.util.concurrent.ConcurrentHashMap
 data class NativePlayerTopic(val id: String, val title: String, val seconds: Int)
 
 object NativePlayerTopics {
-    private const val CHIP_TAG = "easy-education-player-topic-chip"
     private const val DRAWER_TAG = "easy-education-fullscreen-topics"
     private val sheetRequestMutable = MutableStateFlow<String?>(null)
     val sheetRequest = sheetRequestMutable.asStateFlow()
@@ -91,9 +90,16 @@ object NativePlayerTopics {
 
     fun attachToSurface(surface: YoutubeStylePlayerView, player: ExoPlayer, fallbackClassId: String) {
         controllers[surface]?.let { it.bind(player, fallbackClassId); return }
+        if (topics(fallbackClassId).isEmpty()) return
         TopicChipController(surface, player, fallbackClassId).also { controllers[surface] = it; it.start() }
     }
 
+    /**
+     * Reuses the player's existing speed badge as the topic control. That exact View is already part
+     * of YoutubeStylePlayerView.interactiveControls(), so taps are not swallowed by the player gesture
+     * owner. Settings still owns playback-speed selection. Moving the badge into the bottom row keeps
+     * Topics beside the time label in portrait and fullscreen, never on top of the seek bar.
+     */
     private class TopicChipController(
         private val surface: YoutubeStylePlayerView,
         private var player: ExoPlayer,
@@ -101,54 +107,71 @@ object NativePlayerTopics {
     ) {
         private val handler = Handler(Looper.getMainLooper())
         private fun dp(value: Int) = (value * surface.resources.displayMetrics.density + .5f).toInt()
-        private val chip = TextView(surface.context).apply {
-            tag = CHIP_TAG
-            textSize = 11.5f
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, Typeface.BOLD)
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), 0, dp(10), 0)
-            background = GradientDrawable().apply {
-                setColor(0xC41B1B1B.toInt()); cornerRadius = dp(999).toFloat(); setStroke(dp(1), 0x55FFFFFF)
-            }
-            visibility = View.GONE
-            isClickable = true
-            isFocusable = true
-        }
+        private val chip: TextView? = locateAndMoveTopicControl()
         private val updater = object : Runnable {
             override fun run() {
                 val classId = PersistentNativePlayer.currentClassId().ifBlank { fallbackClassId }
                 val running = current(topics(classId), player.currentPosition)
-                chip.visibility = if (running == null) View.GONE else View.VISIBLE
+                chip?.visibility = if (running == null) View.GONE else View.VISIBLE
                 if (running != null) {
-                    chip.text = running.title
-                    chip.contentDescription = "Current topic ${running.title}. Open topics"
+                    chip?.text = running.title
+                    chip?.contentDescription = "Current topic ${running.title}. Open topics"
                 }
                 handler.postDelayed(this, 250L)
             }
         }
+
         init {
-            // YoutubeStylePlayerView's controls FrameLayout is child #1. Putting the chip there makes
-            // it inherit the exact controls fade. The chip overlaps the seekbar hit-zone so the
-            // player's gesture owner yields ACTION_DOWN to this clickable child instead of swallowing it.
-            val chrome = surface.getChildAt(1) as? FrameLayout
-            val params = FrameLayout.LayoutParams(dp(220), dp(30), Gravity.BOTTOM or Gravity.START).apply {
-                leftMargin = dp(118); bottomMargin = dp(43)
-            }
-            if (chrome != null) chrome.addView(chip, params) else surface.addView(chip, params)
-            chip.bringToFront()
-            chip.setOnClickListener {
+            chip?.setOnClickListener {
                 val classId = PersistentNativePlayer.currentClassId().ifBlank { fallbackClassId }
                 if (topics(classId).isEmpty()) return@setOnClickListener
                 val activity = surface.context.findTopicActivity() ?: return@setOnClickListener
-                val fullscreen = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE || surface.width > surface.height * 13 / 10
+                val fullscreen = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE ||
+                    surface.width > surface.height * 13 / 10
                 if (fullscreen) showFullscreenDrawer(activity, classId, player) else requestSheet(classId)
             }
         }
-        fun bind(nextPlayer: ExoPlayer, nextFallback: String) { player = nextPlayer; fallbackClassId = nextFallback; chip.bringToFront() }
-        fun start() { handler.removeCallbacks(updater); handler.post(updater) }
+
+        private fun locateAndMoveTopicControl(): TextView? {
+            val controls = surface.getChildAt(1) as? FrameLayout ?: return null
+            val top = controls.getChildAt(0) as? LinearLayout ?: return null
+            val badge = top.getChildAt(2) as? TextView ?: return null
+            val bottom = controls.getChildAt(3) as? LinearLayout ?: return null
+            val bottomRow = bottom.getChildAt(1) as? LinearLayout ?: return null
+
+            (badge.parent as? ViewGroup)?.removeView(badge)
+            badge.textSize = 11f
+            badge.setTextColor(0xD9FFFFFF.toInt())
+            badge.setTypeface(badge.typeface, Typeface.MEDIUM)
+            badge.gravity = Gravity.CENTER
+            badge.maxLines = 1
+            badge.ellipsize = android.text.TextUtils.TruncateAt.END
+            badge.setPadding(dp(9), 0, dp(9), 0)
+            badge.alpha = 0.82f
+            badge.background = GradientDrawable().apply {
+                setColor(0x861B1B1B.toInt())
+                cornerRadius = dp(999).toFloat()
+                setStroke(dp(1), 0x33FFFFFF)
+            }
+            badge.visibility = View.GONE
+            val insertAt = (bottomRow.childCount - 1).coerceAtLeast(0)
+            bottomRow.addView(
+                badge,
+                insertAt,
+                LinearLayout.LayoutParams(dp(132), dp(31)).apply { marginEnd = dp(5) },
+            )
+            return badge
+        }
+
+        fun bind(nextPlayer: ExoPlayer, nextFallback: String) {
+            player = nextPlayer
+            fallbackClassId = nextFallback
+        }
+
+        fun start() {
+            handler.removeCallbacks(updater)
+            handler.post(updater)
+        }
     }
 
     private fun showFullscreenDrawer(activity: Activity, classId: String, player: ExoPlayer) {
@@ -160,7 +183,9 @@ object NativePlayerTopics {
         fun dp(value: Int) = (value * density + .5f).toInt()
         val overlay = FrameLayout(activity).apply { tag = DRAWER_TAG; isClickable = true; setBackgroundColor(0x33000000) }
         val panel = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); isClickable = true
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(12))
+            isClickable = true
             background = GradientDrawable().apply {
                 setColor(0xF51A1A1A.toInt())
                 cornerRadii = floatArrayOf(dp(18).toFloat(), dp(18).toFloat(), 0f, 0f, 0f, 0f, dp(18).toFloat(), dp(18).toFloat())
@@ -170,10 +195,16 @@ object NativePlayerTopics {
         overlay.addView(panel, FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
         val header = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         header.addView(TextView(activity).apply {
-            text = "Topics"; textSize = 20f; setTextColor(Color.WHITE); setTypeface(typeface, Typeface.BOLD)
+            text = "Topics"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, Typeface.BOLD)
         }, LinearLayout.LayoutParams(0, dp(46), 1f))
         header.addView(TextView(activity).apply {
-            text = "✕"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+            text = "✕"
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
             setOnClickListener { closeDrawer(overlay, panel) }
         }, LinearLayout.LayoutParams(dp(48), dp(46)))
         panel.addView(header)
@@ -183,7 +214,10 @@ object NativePlayerTopics {
         panel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         val rowViews = rows.map { topic ->
             TextView(activity).apply {
-                textSize = 14f; setTextColor(Color.WHITE); maxLines = 3; setPadding(dp(12), dp(11), dp(12), dp(11))
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                maxLines = 3
+                setPadding(dp(12), dp(11), dp(12), dp(11))
                 text = "${formatTopicTime(topic.seconds)}   ${topic.title}"
                 setOnClickListener { seek(activity, classId, topic.seconds) }
                 list.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(5) })
@@ -196,7 +230,10 @@ object NativePlayerTopics {
                 rowViews.forEachIndexed { index, view ->
                     val row = rows[index]
                     val active = activeTopic != null && row.id == activeTopic.id && row.seconds == activeTopic.seconds
-                    view.background = GradientDrawable().apply { setColor(if (active) 0xFF4C4168.toInt() else 0xFF262626.toInt()); cornerRadius = dp(12).toFloat() }
+                    view.background = GradientDrawable().apply {
+                        setColor(if (active) 0xFF4C4168.toInt() else 0xFF262626.toInt())
+                        cornerRadius = dp(12).toFloat()
+                    }
                     view.setTypeface(view.typeface, if (active) Typeface.BOLD else Typeface.NORMAL)
                 }
                 if (overlay.parent != null) handler.postDelayed(this, 250L)
@@ -207,15 +244,22 @@ object NativePlayerTopics {
         panel.setOnClickListener { }
         root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         overlay.bringToFront()
-        panel.post { panel.translationX = panel.width.toFloat().coerceAtLeast(width.toFloat()); panel.animate().translationX(0f).setDuration(240L).start() }
+        panel.post {
+            panel.translationX = panel.width.toFloat().coerceAtLeast(width.toFloat())
+            panel.animate().translationX(0f).setDuration(240L).start()
+        }
     }
 
     private fun closeDrawer(overlay: FrameLayout, panel: View) {
-        panel.animate().translationX(panel.width.toFloat()).setDuration(210L).withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
+        panel.animate().translationX(panel.width.toFloat()).setDuration(210L)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
     }
 
     fun formatTopicTime(seconds: Int): String {
-        val safe = seconds.coerceAtLeast(0); val h = safe / 3600; val m = (safe % 3600) / 60; val s = safe % 60
+        val safe = seconds.coerceAtLeast(0)
+        val h = safe / 3600
+        val m = (safe % 3600) / 60
+        val s = safe % 60
         return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
     }
 }
@@ -240,7 +284,8 @@ fun NativeClassTopicsAction(classId: String) {
     if (rows.isEmpty()) return
     Surface(Modifier.clickable { open = true }, RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(Modifier.padding(horizontal = 15.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            Icon(Icons.Default.Topic, null, Modifier.size(20.dp)); Text("Topics", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+            Icon(Icons.Default.Topic, null, Modifier.size(20.dp))
+            Text("Topics", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
         }
     }
     if (open) ModalBottomSheet(onDismissRequest = { open = false }) {
@@ -260,7 +305,12 @@ private fun TopicSheet(rows: List<NativePlayerTopic>, positionMs: Long, onTopic:
         Text("Jump to a topic in this class", color = MaterialTheme.colorScheme.onSurfaceVariant)
         rows.forEach { topic ->
             val selected = running != null && running.id == topic.id && running.seconds == topic.seconds
-            Surface(Modifier.fillMaxWidth().clickable { onTopic(topic) }, RoundedCornerShape(14.dp), color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant, border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null) {
+            Surface(
+                Modifier.fillMaxWidth().clickable { onTopic(topic) },
+                RoundedCornerShape(14.dp),
+                color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+            ) {
                 Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(NativePlayerTopics.formatTopicTime(topic.seconds), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
@@ -281,9 +331,13 @@ fun NativeClassTopicsDescription(classId: String) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp)) {
         Text("Topics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         rows.forEach { topic ->
-            Row(Modifier.fillMaxWidth().clickable { NativePlayerTopics.seek(context, classId, topic.seconds) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().clickable { NativePlayerTopics.seek(context, classId, topic.seconds) }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(NativePlayerTopics.formatTopicTime(topic.seconds), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(12.dp)); Text(topic.title, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.width(12.dp))
+                Text(topic.title, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -291,6 +345,9 @@ fun NativeClassTopicsDescription(classId: String) {
 
 private fun Context.findTopicActivity(): Activity? {
     var current: Context? = this
-    while (current is ContextWrapper) { if (current is Activity) return current; current = current.baseContext }
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
     return current as? Activity
 }
