@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.20 verification is running",
-              "context": "Easy Education final release 2.10.20",
+              "description": "Web + CPS + signed Android 2.10.21 verification is running",
+              "context": "Easy Education final release 2.10.21",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -71,23 +71,6 @@ jobs:
           print('PASS: CPS upstream handlers are read-only')
           PY
 
-      - name: Verify CPS math uses existing Vercel function
-        shell: bash
-        run: |
-          grep -q "action === 'math-svg'" api/version.js
-          grep -q 'server-static-png-v1' server/api-resources/cps-math-svg.js
-          grep -q 'requireAuthenticatedUser' server/api-resources/cps-math-svg.js
-          grep -q 'sharp' server/api-resources/cps-math-svg.js
-          test ! -f api/cps-math.js
-          test ! -f api/math-svg.js
-
-      - name: Verify CPS academic ordering fallback
-        shell: bash
-        run: |
-          grep -q 'MISSING_ORDER = 2147483647' server/api-resources/cps-academic-v3.js
-          grep -q 'sortTimeMs' server/api-resources/cps-academic-v3.js
-          grep -q 'orderExplicit' server/api-resources/cps-academic-v3.js
-
       - name: Verify Vercel Hobby function budget
         shell: bash
         run: |
@@ -98,6 +81,14 @@ jobs:
           test ! -f api/exam-results.js
           test ! -f api/cps.js
           test ! -f api/cps-math.js
+          test ! -f api/math-svg.js
+
+      - name: Verify CPS academic ordering fallback
+        shell: bash
+        run: |
+          grep -q 'MISSING_ORDER = 2147483647' server/api-resources/cps-academic-v3.js
+          grep -q 'sortTimeMs' server/api-resources/cps-academic-v3.js
+          grep -q 'orderExplicit' server/api-resources/cps-academic-v3.js
 
       - uses: actions/setup-node@v4
         with:
@@ -118,15 +109,16 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.20"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.21"' native/app/build.gradle.kts
           grep -q 'NativeCpsExamSafeActivity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'CpsExamAssetPreloader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'ExamFixedHeader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
-          grep -q 'Preparing your exam' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'View detailed result' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'Explanation' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
-          grep -q 'server-png-v1' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
-          grep -q 'CpsPreparedText' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
+          grep -q 'native-fast-math-v2' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
+          grep -q 'normalizeCpsMathText' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
+          grep -q 'imageWarmScope.launch' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
+          ! grep -q 'api/version?resource=cps&action=math-svg' native/app/src/main/java/com/easyeducation/app/CpsExamPreparedContent.kt
           test ! -f native/app/src/main/java/com/easyeducation/app/CpsMathText.kt
           ! grep -q 'katexWebJar' native/app/build.gradle.kts
           grep -q 'bottomRow.addView' native/app/src/main/java/com/easyeducation/app/NativeClassTopics.kt
@@ -179,7 +171,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.20-release-apk
+          name: easy-education-2.10.21-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -196,8 +188,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.20 verified",
-              "context": "Easy Education final release 2.10.20",
+              "description": "Web, Vercel budget and signed Android 2.10.21 verified",
+              "context": "Easy Education final release 2.10.21",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
