@@ -95,10 +95,9 @@ object NativePlayerTopics {
     }
 
     /**
-     * Reuses the player's existing speed badge as the topic control. That exact View is already part
-     * of YoutubeStylePlayerView.interactiveControls(), so taps are not swallowed by the player gesture
-     * owner. Settings still owns playback-speed selection. Moving the badge into the bottom row keeps
-     * Topics beside the time label in portrait and fullscreen, never on top of the seek bar.
+     * Reuses an existing player-interactive TextView so the player's gesture owner never swallows
+     * topic taps. The view is moved to the bottom time row before the fullscreen button, therefore it
+     * stays beside the time in portrait and fullscreen instead of overlapping the seek bar.
      */
     private class TopicChipController(
         private val surface: YoutubeStylePlayerView,
@@ -142,7 +141,7 @@ object NativePlayerTopics {
             (badge.parent as? ViewGroup)?.removeView(badge)
             badge.textSize = 11f
             badge.setTextColor(0xD9FFFFFF.toInt())
-            badge.setTypeface(badge.typeface, Typeface.MEDIUM)
+            badge.setTypeface(badge.typeface, Typeface.NORMAL)
             badge.gravity = Gravity.CENTER
             badge.maxLines = 1
             badge.ellipsize = android.text.TextUtils.TruncateAt.END
