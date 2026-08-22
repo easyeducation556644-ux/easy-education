@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.16 verification is running",
-              "context": "Easy Education final release 2.10.16",
+              "description": "Web + CPS + signed Android 2.10.17 verification is running",
+              "context": "Easy Education final release 2.10.17",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -99,13 +99,21 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.16"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.17"' native/app/build.gradle.kts
           grep -q 'NativeCpsCourseExperienceV4' native/app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
           grep -q 'NativeCpsExamSafeActivity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           ! grep -q 'NativeCpsExamV2Activity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'LaunchedEffect(initialClassId)' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           ! grep -q 'LaunchedEffect(initialClassId, launched)' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'YoutubeClassWatchPage' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
+          grep -q 'sortedBy { it.order }' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
+          grep -q 'formatCpsMath' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
+          grep -q 'NativeClassTopicsAction' native/app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt
+          grep -q 'NativeClassTopicsDescription' native/app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt
+          grep -q 'NativePlayerTopics.attachToSurface' native/app/src/main/java/com/easyeducation/app/NativeInlinePlayer.kt
+          grep -q 'applySavedPosition' native/app/src/main/java/com/easyeducation/app/PersistentNativePlayer.kt
+          grep -q 'bunny-hls' native/app/src/main/java/com/easyeducation/app/DownloadQualityResolver.kt
+          grep -q 'resolvedUrl' native/app/src/main/java/com/easyeducation/app/NativeAppViewModel.kt
           grep -q 'NativeCpsRoutineRepository' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'player.mediadelivery.net' native/app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt
           ! grep -q 'expandedChapter' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
@@ -150,7 +158,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.16-release-apk
+          name: easy-education-2.10.17-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -167,8 +175,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.16 verified",
-              "context": "Easy Education final release 2.10.16",
+              "description": "Web, Vercel budget and signed Android 2.10.17 verified",
+              "context": "Easy Education final release 2.10.17",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
