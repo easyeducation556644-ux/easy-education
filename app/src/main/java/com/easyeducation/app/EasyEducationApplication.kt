@@ -34,9 +34,11 @@ class EasyEducationApplication : Application(), Application.ActivityLifecycleCal
         currentActivity = WeakReference(activity)
         NativeCapturePolicy.refreshIfDue(activity, FirebaseAuth.getInstance().currentUser)
         installFullscreenExitFixer(activity)
+        NativeAppUpdateManager.onActivityResumed(activity)
     }
 
     override fun onActivityPaused(activity: Activity) {
+        NativeAppUpdateManager.onActivityPaused(activity)
         if (currentActivity.get() === activity) currentActivity.clear()
     }
 
