@@ -26,6 +26,10 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
         <activity
+            android:name=".NativeCpsExamSafeActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+        <activity
             android:name=".NativeCpsLivePlayerActivity"
             android:exported="false"
             android:screenOrientation="unspecified"

@@ -96,5 +96,5 @@ fun NativeCpsCourseScreen(
     state: NativeUiState,
     courseId: String,
 ) {
-    NativeCpsCourseExperience(nav, viewModel, state, courseId)
+    NativeCpsCourseExperienceV3(nav, viewModel, state, courseId)
 }
