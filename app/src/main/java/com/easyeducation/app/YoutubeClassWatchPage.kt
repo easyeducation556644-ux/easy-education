@@ -287,6 +287,7 @@ fun YoutubeClassWatchPage(
                             scope.launch { toggleReaction(db, classId, user, "dislike", myReaction == "dislike") }
                         }
                     }
+                    NativeClassTopicsAction(classId)
 
                     when (task?.state) {
                         "completed" -> WatchActionChip(
@@ -546,6 +547,7 @@ private fun WatchDescriptionSheet(
                     }
                 }
             }
+            item { NativeClassTopicsDescription(classItem.id) }
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 18.dp)) {
                     Text("Resources", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
