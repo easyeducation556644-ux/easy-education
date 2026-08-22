@@ -17,6 +17,8 @@ private const val CPS_API_ORIGIN = "https://easy-education.vercel.app"
 private const val CPS_PREFIX = "cps:"
 private const val CPS_CATALOG_CACHE = "cps_catalog"
 private const val CPS_COURSE_CACHE = "cps_course_preview"
+private const val CPS_EXAM_CACHE = "cps_exam_payload_v1"
+private const val CPS_EXAM_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
 
 data class NativeCpsLiveClass(
     val id: String,
@@ -126,19 +128,53 @@ class NativeCpsRepository(context: Context) {
     suspend fun loadExam(courseId: String, examId: String): NativeCpsExamPayload {
         val resolvedExamId = Uri.decode(examId).trim()
         if (resolvedExamId.isBlank()) error("Exam id is missing")
+        val resolvedCourseId = rawCourseId(Uri.decode(courseId))
+        val uid = auth.currentUser?.uid.orEmpty()
+        val cacheId = "${uid.ifBlank { "anonymous" }}:$resolvedCourseId:$resolvedExamId"
+        val now = System.currentTimeMillis()
+
+        val cached = withContext(Dispatchers.IO) { cache.getDoc(CPS_EXAM_CACHE, cacheId) }
+        if (cached != null &&
+            cached.optString("_cachedUserId") == uid &&
+            now - cached.optLong("_cachedAtMs", 0L) in 0..CPS_EXAM_CACHE_TTL_MS
+        ) {
+            runCatching { parseExamPayload(cached) }.getOrNull()?.let { return it }
+        }
+
         val payload = get(
             "exam",
             mapOf(
-                "courseId" to rawCourseId(Uri.decode(courseId)),
+                "courseId" to resolvedCourseId,
                 "examId" to resolvedExamId,
             ),
         )
+        val parsed = parseExamPayload(payload)
+        val persisted = runCatching {
+            JSONObject(payload.toString())
+                .put("_cachedAtMs", now)
+                .put("_cachedUserId", uid)
+                .put("courseId", resolvedCourseId)
+                .put("userId", uid)
+        }.getOrNull()
+        if (persisted != null) {
+            withContext(Dispatchers.IO) { cache.putDoc(CPS_EXAM_CACHE, cacheId, persisted) }
+        }
+        return parsed
+    }
+
+    fun isCpsCourse(courseId: String): Boolean = courseId.startsWith(CPS_PREFIX)
+
+    fun isAccessActive(extras: NativeCpsCourseExtras?, now: Long = System.currentTimeMillis()): Boolean {
+        if (extras?.hasAccess != true) return false
+        val expiresAt = extras.accessExpiresAtMs
+        return expiresAt == 0L || expiresAt > now
+    }
+
+    private fun parseExamPayload(payload: JSONObject): NativeCpsExamPayload {
         val exam = payload.optJSONObject("exam")?.let(::examSummary) ?: error("CPS exam data was empty")
         val questions = payload.optJSONArray("questions").objects().mapIndexed { index, item ->
             val sourceId = item.optString("id").trim().ifBlank { "question" }
             NativeCpsQuestion(
-                // Compose lazy lists require unique keys. Some CPS question documents expose blank
-                // or repeated ids, so append the response index defensively.
                 id = "$sourceId:$index",
                 question = item.optString("question"),
                 questionImageUrl = item.optString("questionImageUrl"),
@@ -149,14 +185,6 @@ class NativeCpsRepository(context: Context) {
             )
         }
         return NativeCpsExamPayload(exam, questions)
-    }
-
-    fun isCpsCourse(courseId: String): Boolean = courseId.startsWith(CPS_PREFIX)
-
-    fun isAccessActive(extras: NativeCpsCourseExtras?, now: Long = System.currentTimeMillis()): Boolean {
-        if (extras?.hasAccess != true) return false
-        val expiresAt = extras.accessExpiresAtMs
-        return expiresAt == 0L || expiresAt > now
     }
 
     private fun parseCatalog(payload: JSONObject): NativeCpsCatalog {
