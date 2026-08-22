@@ -19,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
@@ -33,11 +34,9 @@ data class NativeAppUpdateInfo(
 )
 
 /**
- * Self-update manager for releases distributed outside Play Store.
- *
- * DownloadManager owns the APK transfer, so the download continues when Easy Education goes to the
- * background or is removed from recents. Android still owns the final package installation screen:
- * a normal app cannot silently install an APK without user confirmation.
+ * Secure self-update flow for the directly distributed APK.
+ * DownloadManager keeps transferring in the background; Android's package installer still requires
+ * explicit user confirmation for the final install.
  */
 object NativeAppUpdateManager {
     private const val UPDATE_URL = "https://easy-education.vercel.app/app-update.json"
@@ -46,7 +45,6 @@ object NativeAppUpdateManager {
     private const val KEY_INFO = "update_info"
     private const val CHECK_INTERVAL_MS = 30L * 60L * 1000L
     private const val APK_MIME = "application/vnd.android.package-archive"
-    private const val RELEASE_HOST = "github.com"
     private const val RELEASE_PATH_PREFIX = "/easyeducation556644-ux/easy-education/releases/download/"
 
     private val http = OkHttpClient.Builder()
@@ -67,9 +65,8 @@ object NativeAppUpdateManager {
 
     fun onActivityResumed(activity: Activity) {
         if (activity !is MainActivity || activity.isFinishing || activity.isDestroyed) return
-        val pending = readPending(activity)
-        if (pending != null) {
-            handlePending(activity, pending.first, pending.second)
+        readPending(activity)?.let { (info, id) ->
+            handlePending(activity, info, id)
             return
         }
         if (dismissedForProcess) return
@@ -82,9 +79,7 @@ object NativeAppUpdateManager {
     fun onActivityPaused(activity: Activity) {
         if (activity !is MainActivity) return
         monitorToken += 1
-        dialog?.let { shown ->
-            if (shown.isShowing) runCatching { shown.dismiss() }
-        }
+        dialog?.takeIf { it.isShowing }?.let { runCatching { it.dismiss() } }
         dialog = null
     }
 
@@ -100,13 +95,12 @@ object NativeAppUpdateManager {
                         .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
                         .build(),
                 ).execute().use { response ->
-                    if (!response.isSuccessful) return@use null
-                    val raw = response.body?.string().orEmpty()
-                    parseInfo(JSONObject(raw))
+                    if (!response.isSuccessful) null
+                    else parseInfo(JSONObject(response.body?.string().orEmpty()))
                 }
             }.getOrNull()
             checkInFlight.set(false)
-            if (info == null || info.versionCode <= BuildConfig.VERSION_CODE || !validReleaseUrl(info.apkUrl)) return@Thread
+            if (info == null || info.versionCode <= BuildConfig.VERSION_CODE) return@Thread
             activity.runOnUiThread {
                 if (!activity.isFinishing && !activity.isDestroyed) showAvailable(activity, info)
             }
@@ -116,13 +110,8 @@ object NativeAppUpdateManager {
     private fun showAvailable(activity: Activity, info: NativeAppUpdateInfo) {
         if (dialog?.isShowing == true) return
         val message = buildString {
-            append("Easy Education ")
-            append(info.versionName.ifBlank { "update" })
-            append(" is available.")
-            if (info.notes.isNotBlank()) {
-                append("\n\n")
-                append(info.notes.take(700))
-            }
+            append("Easy Education ${info.versionName} is available.")
+            if (info.notes.isNotBlank()) append("\n\n${info.notes.take(700)}")
             append("\n\nThe APK will download in the background. Android will ask you to confirm installation when it is ready.")
         }
         dialog = AlertDialog.Builder(activity)
@@ -162,50 +151,50 @@ object NativeAppUpdateManager {
             clearPending(activity)
             return
         }
-        when (val state = query(activity, id)) {
-            null -> {
+        val state = query(activity, id)
+        when (state?.status) {
+            DownloadManager.STATUS_SUCCESSFUL -> showInstallReady(activity, info, id)
+            DownloadManager.STATUS_FAILED -> {
+                clearPending(activity)
+                showRetry(activity, info, state.reason)
+            }
+            DownloadManager.STATUS_PENDING,
+            DownloadManager.STATUS_PAUSED,
+            DownloadManager.STATUS_RUNNING -> showDownloadProgress(activity, info, id)
+            else -> {
                 clearPending(activity)
                 if (!dismissedForProcess) checkRemote(activity)
-            }
-            else -> when (state.status) {
-                DownloadManager.STATUS_SUCCESSFUL -> showInstallReady(activity, info, id)
-                DownloadManager.STATUS_FAILED -> {
-                    clearPending(activity)
-                    showRetry(activity, info, state.reason)
-                }
-                DownloadManager.STATUS_PENDING,
-                DownloadManager.STATUS_PAUSED,
-                DownloadManager.STATUS_RUNNING -> showDownloadProgress(activity, info, id)
-                else -> Unit
             }
         }
     }
 
     private fun showDownloadProgress(activity: Activity, info: NativeAppUpdateInfo, id: Long) {
         if (dialog?.isShowing == true) return
+        val density = activity.resources.displayMetrics.density
         val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            val pad = (24 * resources.displayMetrics.density).roundToInt()
+            val pad = (24 * density).roundToInt()
             setPadding(pad, 4, pad, 4)
         }
-        val status = TextView(activity).apply {
+        val statusText = TextView(activity).apply {
             text = "Preparing download…"
             textSize = 15f
         }
         val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             max = 100
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = (14 * resources.displayMetrics.density).roundToInt()
-            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = (14 * density).roundToInt() }
         }
-        container.addView(status)
+        container.addView(statusText)
         container.addView(progress)
 
         val shown = AlertDialog.Builder(activity)
             .setTitle("Downloading update")
             .setView(container)
-            .setNegativeButton("Run in background") { _, _ -> Unit }
+            .setNegativeButton("Run in background", null)
             .setCancelable(true)
             .create()
         dialog = shown
@@ -233,19 +222,19 @@ object NativeAppUpdateManager {
                     if (state.totalBytes > 0L) {
                         progress.isIndeterminate = false
                         progress.progress = state.progress
-                        status.text = "Downloading… ${state.progress}%"
+                        statusText.text = "Downloading… ${state.progress}%"
                     } else {
                         progress.isIndeterminate = true
-                        status.text = "Downloading…"
+                        statusText.text = "Downloading…"
                     }
                 }
-                DownloadManager.STATUS_PAUSED -> status.text = "Download paused by Android. It will continue when the connection is available."
-                DownloadManager.STATUS_PENDING -> status.text = "Waiting to start download…"
-                else -> status.text = "Preparing download…"
+                DownloadManager.STATUS_PAUSED -> statusText.text = "Download paused by Android. It will continue when the connection is available."
+                DownloadManager.STATUS_PENDING -> statusText.text = "Waiting to start download…"
+                else -> statusText.text = "Preparing download…"
             }
-            main.postDelayed(::tick, 900L)
+            main.postDelayed({ tick() }, 900L)
         }
-        main.post(::tick)
+        main.post { tick() }
     }
 
     private fun showRetry(activity: Activity, info: NativeAppUpdateInfo, reason: Int) {
@@ -254,7 +243,9 @@ object NativeAppUpdateManager {
             .setTitle("Update download stopped")
             .setMessage("Android could not finish the update download (reason $reason). You can retry now.")
             .setPositiveButton("Retry") { _, _ -> startDownload(activity, info) }
-            .apply { if (!info.force) setNegativeButton("Later") { _, _ -> dismissedForProcess = true } }
+            .apply {
+                if (!info.force) setNegativeButton("Later") { _, _ -> dismissedForProcess = true }
+            }
             .setCancelable(!info.force)
             .create()
             .also { it.show() }
@@ -281,7 +272,7 @@ object NativeAppUpdateManager {
         }
         Thread {
             val expected = info.sha256.trim().lowercase(Locale.US)
-            val validHash = if (expected.isBlank()) true else runCatching {
+            val valid = expected.isBlank() || runCatching {
                 activity.contentResolver.openInputStream(uri)?.use { stream ->
                     val digest = MessageDigest.getInstance("SHA-256")
                     val buffer = ByteArray(128 * 1024)
@@ -294,12 +285,12 @@ object NativeAppUpdateManager {
                 } ?: false
             }.getOrDefault(false)
             activity.runOnUiThread {
-                if (!validHash) {
+                if (!valid) {
                     clearPending(activity)
                     showSimple(activity, "Update verification failed", "The APK did not match the signed release checksum. Please download it again.")
-                    return@runOnUiThread
+                } else {
+                    launchInstaller(activity, uri)
                 }
-                launchInstaller(activity, uri)
             }
         }.start()
     }
@@ -311,7 +302,7 @@ object NativeAppUpdateManager {
                     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")),
                 )
             }.onFailure {
-                showSimple(activity, "Permission required", "Allow Easy Education to install this update, then return to the app and tap Install Update again.")
+                showSimple(activity, "Permission required", "Allow Easy Education to install updates, then return and tap Install Update again.")
             }
             return
         }
@@ -330,7 +321,6 @@ object NativeAppUpdateManager {
     private data class DownloadState(
         val status: Int,
         val progress: Int,
-        val downloadedBytes: Long,
         val totalBytes: Long,
         val reason: Int,
     )
@@ -345,8 +335,8 @@ object NativeAppUpdateManager {
                 val downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)).coerceAtLeast(0L)
                 val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
                 val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                val progress = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else 0
-                DownloadState(status, progress, downloaded, total, reason)
+                val percent = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else 0
+                DownloadState(status, percent, total, reason)
             }
         }.getOrNull()
     }
@@ -369,7 +359,7 @@ object NativeAppUpdateManager {
     private fun validReleaseUrl(value: String): Boolean = runCatching {
         val uri = Uri.parse(value)
         uri.scheme.equals("https", true) &&
-            uri.host.equals(RELEASE_HOST, true) &&
+            uri.host.equals("github.com", true) &&
             uri.path.orEmpty().startsWith(RELEASE_PATH_PREFIX)
     }.getOrDefault(false)
 
