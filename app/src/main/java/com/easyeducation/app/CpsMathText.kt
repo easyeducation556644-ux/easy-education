@@ -12,6 +12,7 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
@@ -107,12 +108,9 @@ fun CpsMathText(
     AndroidView(
         factory = { webView },
         update = { it.submit(payload) },
-        modifier = modifier.then(Modifier).fillMathHeight(renderedHeight),
+        modifier = modifier.height(renderedHeight),
     )
 }
-
-private fun Modifier.fillMathHeight(height: androidx.compose.ui.unit.Dp): Modifier =
-    this.then(androidx.compose.foundation.layout.height(height))
 
 private fun cpsExamPlainSource(raw: String): String = runCatching {
     android.text.Html.fromHtml(
@@ -137,7 +135,8 @@ private fun cpsMathSegments(input: String): List<CpsMathSegment> {
         if (endExclusive > start) {
             val range = start until endExclusive
             val previous = spans.lastOrNull()
-            if (previous != null && range.first <= previous.last + 2 &&
+            if (
+                previous != null && range.first <= previous.last + 2 &&
                 input.substring(previous.last + 1, range.first).all { it.isWhitespace() }
             ) {
                 spans[spans.lastIndex] = previous.first..range.last
@@ -308,9 +307,7 @@ private fun Color.toCssHex(): String {
     return "#%06X".format(rgb)
 }
 
-private class CpsMathBridge(
-    private val onHeight: (Int) -> Unit,
-) {
+private class CpsMathBridge(private val onHeight: (Int) -> Unit) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface
@@ -363,7 +360,6 @@ private class CpsMathWebView(
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                 ready = false
                 Handler(Looper.getMainLooper()).post(onFailure)
-                view?.destroy()
                 return true
             }
         }
@@ -381,7 +377,7 @@ private class CpsMathWebView(
         if (!ready || pendingPayload.isBlank() || pendingPayload == lastRenderedPayload) return
         val safe = pendingPayload
         evaluateJavascript("window.renderContent && window.renderContent('$safe')") { result ->
-            if (result == null) onFailure()
+            if (result == null || result == "false") onFailure()
         }
         lastRenderedPayload = pendingPayload
     }
