@@ -88,9 +88,7 @@ class YoutubeDeviceResolver(
     fun resolve(videoUrl: String): Result {
         val videoId = extractVideoId(videoUrl)
             ?: throw IllegalArgumentException("Invalid YouTube video URL")
-        val primaryError: Throwable?
         val info = try {
-            primaryError = null
             YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
         } catch (error: Throwable) {
             return resolveFallback(videoId, error)
@@ -122,7 +120,7 @@ class YoutubeDeviceResolver(
         if (variants.isEmpty()) {
             return resolveFallback(
                 videoId,
-                primaryError ?: IllegalStateException("YouTube did not expose playable qualities for this video"),
+                IllegalStateException("YouTube did not expose playable qualities for this video"),
             )
         }
 
