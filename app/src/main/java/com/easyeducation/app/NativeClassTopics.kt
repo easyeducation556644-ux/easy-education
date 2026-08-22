@@ -20,11 +20,14 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -59,7 +62,6 @@ import java.util.concurrent.ConcurrentHashMap
 data class NativePlayerTopic(val id: String, val title: String, val seconds: Int)
 
 object NativePlayerTopics {
-    private const val PLAYER_PREFS = "native_player_positions_v2"
     private const val CHIP_TAG = "easy-education-player-topic-chip"
     private const val DRAWER_TAG = "easy-education-fullscreen-topics"
     private val sheetRequestMutable = MutableStateFlow<String?>(null)
@@ -78,11 +80,9 @@ object NativePlayerTopics {
     fun requestSheet(classId: String) { if (classId.isNotBlank()) sheetRequestMutable.value = classId }
     fun consumeSheet(classId: String) { if (sheetRequestMutable.value == classId) sheetRequestMutable.value = null }
 
+    /** One canonical seek path for All Topics, portrait sheet and fullscreen drawer. */
     fun seek(context: Context, classId: String, seconds: Int) {
-        val ms = seconds.coerceAtLeast(0).toLong() * 1000L
-        context.applicationContext.getSharedPreferences(PLAYER_PREFS, Context.MODE_PRIVATE)
-            .edit().putLong("class:$classId", ms).apply()
-        if (PersistentNativePlayer.currentClassId() == classId) runCatching { PersistentNativePlayer.player(context).seekTo(ms) }
+        PersistentNativePlayer.seekToTopic(context, classId, seconds.coerceAtLeast(0).toLong() * 1000L)
     }
 
     fun current(rows: List<NativePlayerTopic>, positionMs: Long): NativePlayerTopic? {
@@ -115,6 +115,8 @@ object NativePlayerTopics {
                 setColor(0xC41B1B1B.toInt()); cornerRadius = dp(999).toFloat(); setStroke(dp(1), 0x55FFFFFF)
             }
             visibility = View.GONE
+            isClickable = true
+            isFocusable = true
         }
         private val updater = object : Runnable {
             override fun run() {
@@ -129,10 +131,11 @@ object NativePlayerTopics {
             }
         }
         init {
-            surface.addView(chip, FrameLayout.LayoutParams(dp(220), dp(34), Gravity.BOTTOM or Gravity.START).apply {
+            // It must be inside the player's controls layer. That makes taps reach this view instead
+            // of the video gesture detector, and the topic chip fades with the rest of the chrome.
+            surface.addAuxiliaryControl(chip, FrameLayout.LayoutParams(dp(220), dp(34), Gravity.BOTTOM or Gravity.START).apply {
                 leftMargin = dp(118); bottomMargin = dp(4)
             })
-            chip.bringToFront()
             chip.setOnClickListener {
                 val classId = PersistentNativePlayer.currentClassId().ifBlank { fallbackClassId }
                 if (topics(classId).isEmpty()) return@setOnClickListener
@@ -171,7 +174,7 @@ object NativePlayerTopics {
             setOnClickListener { closeDrawer(overlay, panel) }
         }, LinearLayout.LayoutParams(dp(48), dp(46)))
         panel.addView(header)
-        val scroll = ScrollView(activity)
+        val scroll = ScrollView(activity).apply { isFillViewport = true }
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(list, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         panel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -245,7 +248,11 @@ fun NativeClassTopicsAction(classId: String) {
 @Composable
 private fun TopicSheet(rows: List<NativePlayerTopic>, positionMs: Long, onTopic: (NativePlayerTopic) -> Unit) {
     val running = NativePlayerTopics.current(rows, positionMs)
-    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text("Topics", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text("Jump to a topic in this class", color = MaterialTheme.colorScheme.onSurfaceVariant)
         rows.forEach { topic ->
