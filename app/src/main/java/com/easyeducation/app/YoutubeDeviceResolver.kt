@@ -13,8 +13,10 @@ import java.util.concurrent.TimeUnit
  * Compatibility wrapper around the mature YouTube extraction engine.
  *
  * The rest of Easy Education still consumes Result/Variant/Format, but the URLs normally come from
- * NewPipe, which handles YouTube player JS, signatureCipher and n-parameter deobfuscation. A narrow
- * iOS/Android player fallback is used only when NewPipe specifically rejects a VISIONOS response.
+ * NewPipe, which handles YouTube player JS, signatureCipher and n-parameter deobfuscation. If the
+ * primary extractor fails for a valid YouTube URL, the app also tries the safe iOS/Android player
+ * fallback before giving up. This matters for older/archive videos where YouTube exposes different
+ * player responses than current live replays.
  */
 class YoutubeDeviceResolver(
     private val context: Context = FirebaseApp.getInstance().applicationContext,
@@ -86,19 +88,12 @@ class YoutubeDeviceResolver(
     fun resolve(videoUrl: String): Result {
         val videoId = extractVideoId(videoUrl)
             ?: throw IllegalArgumentException("Invalid YouTube video URL")
+        val primaryError: Throwable?
         val info = try {
+            primaryError = null
             YoutubeExtractorEngine.resolve(context, canonicalWatchUrl(videoId))
         } catch (error: Throwable) {
-            if (!isVisionOsInvalidResponse(error)) throw error
-            return try {
-                YoutubeVisionFallbackResolver(http).resolve(videoId)
-            } catch (fallbackError: Throwable) {
-                throw IllegalStateException(
-                    "YouTube rejected the VISIONOS player response and the safe iOS/Android fallback also failed. " +
-                        (fallbackError.message ?: "Try again later."),
-                    error,
-                )
-            }
+            return resolveFallback(videoId, error)
         }
 
         val progressive = info.videoStreams
@@ -125,7 +120,10 @@ class YoutubeDeviceResolver(
 
         val variants = buildVariants(progressive, videoOnly, audioOnly)
         if (variants.isEmpty()) {
-            throw IllegalStateException("YouTube did not expose downloadable qualities for this video")
+            return resolveFallback(
+                videoId,
+                primaryError ?: IllegalStateException("YouTube did not expose playable qualities for this video"),
+            )
         }
 
         return Result(
@@ -135,6 +133,23 @@ class YoutubeDeviceResolver(
             variants = variants,
             hlsUrl = info.hlsUrl?.takeIf { it.startsWith("https://") },
         )
+    }
+
+    private fun resolveFallback(videoId: String, primaryError: Throwable): Result {
+        return try {
+            YoutubeVisionFallbackResolver(http).resolve(videoId)
+        } catch (fallbackError: Throwable) {
+            val primaryMessage = primaryError.message?.takeIf { it.isNotBlank() }
+            val fallbackMessage = fallbackError.message?.takeIf { it.isNotBlank() }
+            throw IllegalStateException(
+                listOfNotNull(
+                    "YouTube could not expose a playable stream for this class.",
+                    primaryMessage?.let { "Primary: $it" },
+                    fallbackMessage?.let { "Fallback: $it" },
+                ).joinToString(" "),
+                primaryError,
+            )
+        }
     }
 
     fun pickFormat(videoUrl: String, requestedHeight: Int): Pair<Result, Format> {
@@ -289,21 +304,6 @@ class YoutubeDeviceResolver(
             "ANDROID" -> ANDROID_USER_AGENT
             else -> DOWNLOAD_USER_AGENT
         }
-    }
-
-    private fun isVisionOsInvalidResponse(error: Throwable): Boolean {
-        var current: Throwable? = error
-        repeat(8) {
-            val message = current?.message.orEmpty()
-            if (
-                message.contains("VISIONOS", ignoreCase = true) &&
-                (message.contains("response is not valid", ignoreCase = true) ||
-                    message.contains("player response", ignoreCase = true))
-            ) return true
-            current = current?.cause
-            if (current == null) return false
-        }
-        return false
     }
 
     private fun parseHeight(value: String?): Int = value.orEmpty()
