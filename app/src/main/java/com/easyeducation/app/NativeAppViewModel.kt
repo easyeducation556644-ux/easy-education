@@ -158,8 +158,6 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
         val activeCps = cpsCatalog.courses
             .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }
             .map { it.course }
-        // CPS access is intentionally first in My Courses. Description is presentation-only there,
-        // so keep the shared course cards compact and title-focused.
         return (activeCps + easyEducationCourses + trialOurCourseCards())
             .distinctBy { it.id }
             .map { it.copy(description = "") }
@@ -352,7 +350,8 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun hasOfflineLease(courseId: String): Boolean {
-        if (_state.value.restrictionMessage != null || cpsRepository.isCpsCourse(courseId)) return false
+        if (_state.value.restrictionMessage != null) return false
+        if (cpsRepository.isCpsCourse(courseId)) return hasCpsAccess(courseId)
         val uid = auth.currentUser?.uid ?: return false
         return runCatching { repository.hasOfflineLease(uid, courseId) }.getOrDefault(false)
     }
@@ -429,8 +428,8 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun startDownload(context: Context, course: NativeCourse, item: NativeClassItem, option: DownloadQualityOption) {
         val uid = auth.currentUser?.uid ?: return
-        if (cpsRepository.isCpsCourse(course.id)) {
-            _state.value = _state.value.copy(error = "CPS classes are online-only; access is verified before every playable session")
+        if (cpsRepository.isCpsCourse(course.id) && !hasCpsAccess(course.id)) {
+            _state.value = _state.value.copy(error = "Your CPS access must be active before downloading this class")
             return
         }
         if (_state.value.restrictionMessage != null) {
@@ -450,9 +449,10 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             _state.value = _state.value.copy(error = storage.message)
             return
         }
+        val selectedSource = option.resolvedUrl.ifBlank { item.downloadUrl }
         val id = SecureMediaStore.downloadId(uid, item.id)
         val existing = downloads.get(id)
-        val sameSource = existing?.sourceUrl == item.downloadUrl && existing.height == option.height && existing.sourceKind == option.kind
+        val sameSource = existing?.sourceUrl == selectedSource && existing.height == option.height && existing.sourceKind == option.kind
         val task = SecureDownloadTask(
             id = id,
             userId = uid,
@@ -460,7 +460,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             classId = item.id,
             title = item.title,
             courseTitle = course.title,
-            sourceUrl = item.downloadUrl,
+            sourceUrl = selectedSource,
             height = option.height,
             qualityLabel = option.label,
             sourceKind = option.kind,
