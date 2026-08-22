@@ -21,14 +21,9 @@
         android:label="Easy Education"
         android:theme="@style/Theme.EasyEducation"
         android:usesCleartextTraffic="false">
-        <activity
-            android:name=".NativeResourceViewerActivity"
-            android:exported="false"
-            android:screenOrientation="unspecified" />
-        <activity
-            android:name=".NativeCpsExamSafeActivity"
-            android:exported="false"
-            android:screenOrientation="unspecified" />
+        <activity android:name=".NativeResourceViewerActivity" android:exported="false" android:screenOrientation="unspecified" />
+        <activity android:name=".NativeCpsExamV2Activity" android:exported="false" android:screenOrientation="unspecified" />
+        <activity android:name=".NativeCpsExamSafeActivity" android:exported="false" android:screenOrientation="unspecified" />
         <activity
             android:name=".NativeCpsLivePlayerActivity"
             android:exported="false"
@@ -56,35 +51,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <service
-            android:name=".SecureDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".SecureYoutubeDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".SecureHlsDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".HlsDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".YoutubeDownloadService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".EasyEducationMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
+        <service android:name=".SecureDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".SecureYoutubeDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".SecureHlsDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".HlsDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".YoutubeDownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".EasyEducationMessagingService" android:exported="false">
+            <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
         </service>
-        <receiver
-            android:name=".DownloadActionReceiver"
-            android:exported="false" />
+        <receiver android:name=".DownloadActionReceiver" android:exported="false" />
     </application>
 </manifest>
