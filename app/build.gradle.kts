@@ -1,23 +1,8 @@
-import org.gradle.api.tasks.Sync
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.gms.google-services")
-}
-
-val katexVersion = "0.16.4"
-val katexWebJar by configurations.creating
-val generatedKatexAssets = layout.buildDirectory.dir("generated/katexAssets")
-val syncKatexAssets by tasks.registering(Sync::class) {
-    val prefix = "META-INF/resources/webjars/katex/$katexVersion/dist/"
-    from({ katexWebJar.files.map { zipTree(it) } }) {
-        include("${prefix}**")
-        eachFile { path = path.removePrefix(prefix) }
-        includeEmptyDirs = false
-    }
-    into(generatedKatexAssets.map { it.dir("katex") })
 }
 
 android {
@@ -28,12 +13,8 @@ android {
         applicationId = "com.easyeducation.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2101900
-        versionName = "2.10.19"
-    }
-
-    sourceSets {
-        getByName("main").assets.srcDir(generatedKatexAssets)
+        versionCode = 2102000
+        versionName = "2.10.20"
     }
 
     buildFeatures {
@@ -70,11 +51,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
-tasks.named("preBuild").configure { dependsOn(syncKatexAssets) }
-
 dependencies {
-    katexWebJar("org.webjars.npm:katex:$katexVersion")
-
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
     implementation("androidx.core:core-ktx:1.15.0")
