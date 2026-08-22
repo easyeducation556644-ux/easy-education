@@ -59,28 +59,20 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
 
-/**
- * Crash-contained CPS exam host. It deliberately does not use a navigation path with encoded CPS
- * ids and it sanitizes every question before Compose receives it. A malformed CPS question becomes
- * a readable card instead of terminating the Easy Education process.
- */
+/** Crash-contained CPS exam host with a native renderer for CPS's mixed Bengali/English LaTeX text. */
 class NativeCpsExamSafeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         NativeCapturePolicy.applyCached(this, FirebaseAuth.getInstance().currentUser)
         NativeCapturePolicy.refreshNow(this, FirebaseAuth.getInstance().currentUser)
-
         val courseId = intent.getStringExtra(EXTRA_COURSE_ID).orEmpty().trim()
         val examId = intent.getStringExtra(EXTRA_EXAM_ID).orEmpty().trim()
-        if (courseId.isBlank() || examId.isBlank()) {
-            finish()
-            return
-        }
+        if (courseId.isBlank() || examId.isBlank()) { finish(); return }
         setContent {
             EasyEducationTheme(NativeThemePreferences.mode(this)) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    CpsSafeExamScreen(courseId = courseId, examId = examId, onBack = ::finish)
+                    CpsSafeExamScreen(courseId, examId, ::finish)
                 }
             }
         }
@@ -94,14 +86,11 @@ class NativeCpsExamSafeActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_COURSE_ID = "cps_exam_course_id"
         private const val EXTRA_EXAM_ID = "cps_exam_id"
-
         fun open(context: Context, courseId: String, examId: String) {
             if (courseId.isBlank() || examId.isBlank()) return
-            context.startActivity(
-                Intent(context, NativeCpsExamSafeActivity::class.java)
-                    .putExtra(EXTRA_COURSE_ID, courseId)
-                    .putExtra(EXTRA_EXAM_ID, examId),
-            )
+            context.startActivity(Intent(context, NativeCpsExamSafeActivity::class.java)
+                .putExtra(EXTRA_COURSE_ID, courseId)
+                .putExtra(EXTRA_EXAM_ID, examId))
         }
     }
 }
@@ -134,8 +123,7 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
     val answers = remember(courseId, examId) { mutableStateMapOf<String, Int>() }
 
     LaunchedEffect(courseId, examId) {
-        loading = true
-        error = null
+        loading = true; error = null
         runCatching { repository.loadExam(courseId, examId) }
             .onSuccess { loaded ->
                 payload = loaded
@@ -143,19 +131,14 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
                 startedAtMs = System.currentTimeMillis()
                 remainingSeconds = loaded.exam.duration.coerceIn(0, 24 * 60) * 60
             }
-            .onFailure { throwable ->
-                error = throwable.message?.take(300)?.ifBlank { null } ?: "Exam questions could not be loaded"
-            }
+            .onFailure { error = it.message?.take(300)?.ifBlank { null } ?: "Exam questions could not be loaded" }
         loading = false
     }
 
     LaunchedEffect(payload?.exam?.id, submitted) {
         val duration = payload?.exam?.duration ?: return@LaunchedEffect
         if (duration <= 0 || submitted) return@LaunchedEffect
-        while (!submitted && remainingSeconds > 0) {
-            delay(1_000L)
-            if (!submitted) remainingSeconds = (remainingSeconds - 1).coerceAtLeast(0)
-        }
+        while (!submitted && remainingSeconds > 0) { delay(1_000L); if (!submitted) remainingSeconds = (remainingSeconds - 1).coerceAtLeast(0) }
         if (!submitted && remainingSeconds == 0) submitted = true
     }
 
@@ -174,37 +157,28 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
         if (!submitted || saveStarted || questions.isEmpty()) return@LaunchedEffect
         saveStarted = true
         val elapsed = if (startedAtMs > 0L) ((System.currentTimeMillis() - startedAtMs) / 1000L).toInt().coerceAtLeast(0) else 0
-        val sourceByKey = loaded.questions.mapIndexed { index, q -> "${q.id}:$index" to q }.toMap()
         val rows = questions.map { q ->
             val selected = answers[q.key] ?: -1
-            val source = sourceByKey[q.key]
-            NativeCpsExamAnswerResult(
-                questionId = source?.id?.ifBlank { q.sourceId } ?: q.sourceId,
-                selectedIndex = selected,
-                correctIndex = q.correctIndex,
-                isCorrect = selected >= 0 && q.correctIndex in q.options.indices && selected == q.correctIndex,
-            )
+            NativeCpsExamAnswerResult(q.sourceId, selected, q.correctIndex, selected >= 0 && q.correctIndex in q.options.indices && selected == q.correctIndex)
         }
         runCatching {
-            resultRepository.save(
-                NativeCpsExamResultDraft(
-                    courseId = courseId,
-                    courseTitle = "",
-                    examId = loaded.exam.id,
-                    examTitle = loaded.exam.title,
-                    startedAtMs = startedAtMs,
-                    timeTakenSeconds = elapsed,
-                    answered = answered,
-                    correct = correct,
-                    wrong = wrong,
-                    unanswered = unanswered,
-                    marks = marks,
-                    maxScore = maxScore,
-                    negativeMarks = negative,
-                    questionCount = questions.size,
-                    answers = rows,
-                ),
-            )
+            resultRepository.save(NativeCpsExamResultDraft(
+                courseId = courseId,
+                courseTitle = "",
+                examId = loaded.exam.id,
+                examTitle = loaded.exam.title,
+                startedAtMs = startedAtMs,
+                timeTakenSeconds = elapsed,
+                answered = answered,
+                correct = correct,
+                wrong = wrong,
+                unanswered = unanswered,
+                marks = marks,
+                maxScore = maxScore,
+                negativeMarks = negative,
+                questionCount = questions.size,
+                answers = rows,
+            ))
         }.onSuccess { saveMessage = "Result saved to your profile" }
             .onFailure { saveMessage = "Result is ready; profile sync can be retried later." }
     }
@@ -213,16 +187,13 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
         loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         error != null -> CpsExamError(error.orEmpty(), onBack)
         current == null -> CpsExamError("Exam is unavailable", onBack)
-        else -> LazyColumn(
-            Modifier.fillMaxSize().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        else -> LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                     Column(Modifier.weight(1f)) {
-                        Text(safeMath(current.exam.title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Text(formatCpsMath(current.exam.title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
                         Text("CPS exam", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (current.exam.duration > 0 && !submitted) {
@@ -234,32 +205,16 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
                     }
                 }
             }
-
-            if (questions.isEmpty()) {
-                item { CpsExamMessage("No readable questions are available for this exam.") }
-            } else {
+            if (questions.isEmpty()) item { CpsExamMessage("No readable questions are available for this exam.") }
+            else {
                 itemsIndexed(questions, key = { index, q -> "${q.key}:$index" }) { index, question ->
-                    Card(
-                        Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        shape = RoundedCornerShape(16.dp),
-                    ) {
+                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), shape = RoundedCornerShape(16.dp)) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("${index + 1}. ${question.text}", fontWeight = FontWeight.SemiBold)
-                            if (question.imageUrl.startsWith("http")) {
-                                AsyncImage(question.imageUrl, "Question image", Modifier.fillMaxWidth().height(180.dp), contentScale = ContentScale.Fit)
-                            }
+                            if (question.imageUrl.startsWith("http")) AsyncImage(question.imageUrl, "Question image", Modifier.fillMaxWidth().height(180.dp), contentScale = ContentScale.Fit)
                             question.options.forEachIndexed { optionIndex, option ->
-                                Row(
-                                    Modifier.fillMaxWidth().clickable(enabled = !submitted) { answers[question.key] = optionIndex }.padding(vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    RadioButton(
-                                        selected = answers[question.key] == optionIndex,
-                                        onClick = { if (!submitted) answers[question.key] = optionIndex },
-                                        enabled = !submitted,
-                                    )
+                                Row(Modifier.fillMaxWidth().clickable(enabled = !submitted) { answers[question.key] = optionIndex }.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    RadioButton(selected = answers[question.key] == optionIndex, onClick = { if (!submitted) answers[question.key] = optionIndex }, enabled = !submitted)
                                     Spacer(Modifier.width(8.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text(option)
@@ -272,31 +227,17 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
                             if (submitted && question.correctIndex in question.options.indices) {
                                 HorizontalDivider()
                                 val selected = answers[question.key]
-                                Text(
-                                    if (selected == question.correctIndex) "Correct" else "Correct answer: ${question.options[question.correctIndex]}",
-                                    color = if (selected == question.correctIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
+                                Text(if (selected == question.correctIndex) "Correct" else "Correct answer: ${question.options[question.correctIndex]}", color = if (selected == question.correctIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
                                 if (question.explanation.isNotBlank()) Text(question.explanation, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
-
                 item {
                     if (!submitted) {
-                        Button(
-                            onClick = { submitted = true },
-                            enabled = answers.isNotEmpty(),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(999.dp),
-                        ) { Text("Submit exam") }
+                        Button(onClick = { submitted = true }, enabled = answers.isNotEmpty(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(999.dp)) { Text("Submit exam") }
                     } else {
-                        Card(
-                            Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                            shape = RoundedCornerShape(18.dp),
-                        ) {
+                        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(18.dp)) {
                             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.CheckCircle, null); Spacer(Modifier.width(8.dp)); Text("Exam result", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
                                 Text("Marks: ${examMarks(marks)} / ${examMarks(maxScore)}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
@@ -314,61 +255,84 @@ private fun CpsSafeExamScreen(courseId: String, examId: String, onBack: () -> Un
 
 private fun NativeCpsQuestion.toSafe(index: Int): SafeCpsQuestion {
     val source = id.substringBeforeLast(":$index").ifBlank { "question-$index" }
-    val safeOptions = options.take(12).map { safeMath(it).ifBlank { "—" } }
+    val safeOptions = options.take(12).map { formatCpsMath(it).ifBlank { "—" } }
     val safeCorrect = correctIndex.takeIf { it in safeOptions.indices } ?: -1
     return SafeCpsQuestion(
         key = "$source:$index",
         sourceId = source,
-        text = safeMath(question).ifBlank { "Question text unavailable" },
+        text = formatCpsMath(question).ifBlank { "Question text unavailable" },
         imageUrl = questionImageUrl.trim().take(2048),
         options = safeOptions,
         optionImages = optionImageUrls.take(12).map { it.trim().take(2048) },
         correctIndex = safeCorrect,
-        explanation = safeMath(explanation),
+        explanation = formatCpsMath(explanation),
     )
 }
 
-private fun safeMath(raw: String): String {
-    var value = raw.take(16_000)
-    val replacements = linkedMapOf(
-        "{lambda}" to "λ", "\\lambda" to "λ", "{alpha}" to "α", "\\alpha" to "α",
-        "{beta}" to "β", "\\beta" to "β", "{gamma}" to "γ", "\\gamma" to "γ",
-        "{delta}" to "δ", "\\delta" to "δ", "{theta}" to "θ", "\\theta" to "θ",
-        "{pi}" to "π", "\\pi" to "π", "{mu}" to "μ", "\\mu" to "μ",
-        "{sigma}" to "σ", "\\sigma" to "σ", "{omega}" to "ω", "\\omega" to "ω",
-        "\\times" to "×", "\\div" to "÷", "\\pm" to "±", "\\leq" to "≤", "\\geq" to "≥",
+/**
+ * CPS stores mixed prose + bare LaTeX commands (often without $ delimiters). MathJax/KaTeX only
+ * typeset delimited TeX, which is why strings such as `\\text{ m}` and `\\sin` were shown raw.
+ * This formatter handles that storage format natively and is safe to use for dozens of questions.
+ */
+private fun formatCpsMath(raw: String): String {
+    var value = runCatching {
+        android.text.Html.fromHtml(raw.take(16_000), android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+    }.getOrDefault(raw.take(16_000))
+    value = value.replace("$", "").replace("\\left", "").replace("\\right", "")
+
+    repeat(8) {
+        value = value.replace(Regex("\\\\(?:text|mathrm|mathbf|operatorname)\\s*\\{([^{}]*)}")) { it.groupValues[1] }
+        value = value.replace(Regex("\\\\frac\\s*\\{([^{}]+)}\\s*\\{([^{}]+)}")) { m -> "${mathGroup(m.groupValues[1])}⁄${mathGroup(m.groupValues[2])}" }
+        value = value.replace(Regex("\\\\sqrt\\s*\\{([^{}]+)}")) { m -> "√(${m.groupValues[1]})" }
+    }
+
+    val commands = linkedMapOf(
+        "lambda" to "λ", "alpha" to "α", "beta" to "β", "gamma" to "γ", "delta" to "δ", "theta" to "θ",
+        "pi" to "π", "mu" to "μ", "sigma" to "σ", "omega" to "ω", "phi" to "φ", "rho" to "ρ", "epsilon" to "ε",
+        "infty" to "∞", "times" to "×", "div" to "÷", "pm" to "±", "le" to "≤", "leq" to "≤", "ge" to "≥", "geq" to "≥",
+        "neq" to "≠", "approx" to "≈", "cdot" to "·", "rightarrow" to "→", "leftarrow" to "←", "degree" to "°",
+        "sin" to "sin", "cos" to "cos", "tan" to "tan", "cot" to "cot", "sec" to "sec", "csc" to "csc", "log" to "log", "ln" to "ln", "exp" to "exp",
     )
-    replacements.forEach { (from, to) -> value = value.replace(from, to, ignoreCase = true) }
-    value = runCatching { android.text.Html.fromHtml(value, android.text.Html.FROM_HTML_MODE_LEGACY).toString() }.getOrDefault(value)
-    return value.replace("$", "").replace("\\left", "").replace("\\right", "").trim()
+    commands.forEach { (name, symbol) -> value = value.replace(Regex("\\\\$name\\b", RegexOption.IGNORE_CASE), symbol) }
+
+    value = value
+        .replace(Regex("\\^\\{([0-9+\\-=()]+)}")) { toSuperscript(it.groupValues[1]) }
+        .replace(Regex("\\^([0-9+-])")) { toSuperscript(it.groupValues[1]) }
+        .replace(Regex("_\\{([0-9+\\-=()]+)}")) { toSubscript(it.groupValues[1]) }
+        .replace(Regex("_([0-9+-])")) { toSubscript(it.groupValues[1]) }
+        .replace(Regex("\\\\[,;!:]"), " ")
+        .replace(Regex("\\\\([A-Za-z]+)")) { it.groupValues[1] }
+        .replace("{", "").replace("}", "")
+        .replace(Regex("[ \\t]+"), " ")
+        .replace(Regex(" *\\n *"), "\n")
+        .trim()
+    return value
 }
+
+private fun mathGroup(value: String): String = if (value.any { it.isWhitespace() || it in "+-=" }) "(${value.trim()})" else value.trim()
+
+private fun toSuperscript(value: String): String = value.map { char ->
+    when (char) { '0' -> '⁰'; '1' -> '¹'; '2' -> '²'; '3' -> '³'; '4' -> '⁴'; '5' -> '⁵'; '6' -> '⁶'; '7' -> '⁷'; '8' -> '⁸'; '9' -> '⁹'; '+' -> '⁺'; '-' -> '⁻'; '=' -> '⁼'; '(' -> '⁽'; ')' -> '⁾'; else -> char }
+}.joinToString("")
+
+private fun toSubscript(value: String): String = value.map { char ->
+    when (char) { '0' -> '₀'; '1' -> '₁'; '2' -> '₂'; '3' -> '₃'; '4' -> '₄'; '5' -> '₅'; '6' -> '₆'; '7' -> '₇'; '8' -> '₈'; '9' -> '₉'; '+' -> '₊'; '-' -> '₋'; '=' -> '₌'; '(' -> '₍'; ')' -> '₎'; else -> char }
+}.joinToString("")
 
 @Composable
 private fun CpsExamError(message: String, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-            Text("Exam", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
-        Card(border = BorderStroke(1.dp, MaterialTheme.colorScheme.error), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-            Text(message.take(400), Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer)
-        }
+        Row(verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }; Text("Exam", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        Card(border = BorderStroke(1.dp, MaterialTheme.colorScheme.error), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) { Text(message.take(400), Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer) }
     }
 }
 
-@Composable
-private fun CpsExamMessage(message: String) {
-    Card(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
-        Text(message, Modifier.padding(18.dp))
-    }
+@Composable private fun CpsExamMessage(message: String) {
+    Card(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) { Text(message, Modifier.padding(18.dp)) }
 }
 
 private fun examTimer(seconds: Int): String {
-    val safe = seconds.coerceAtLeast(0)
-    val hours = safe / 3600
-    val minutes = (safe % 3600) / 60
-    val secs = safe % 60
+    val safe = seconds.coerceAtLeast(0); val hours = safe / 3600; val minutes = (safe % 3600) / 60; val secs = safe % 60
     return if (hours > 0) "%d:%02d:%02d".format(Locale.US, hours, minutes, secs) else "%02d:%02d".format(Locale.US, minutes, secs)
 }
-
 private fun examMarks(value: Double): String = if (abs(value - value.toInt()) < 0.00001) value.toInt().toString() else String.format(Locale.US, "%.2f", value)
