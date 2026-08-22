@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   statuses: write
 
 jobs:
@@ -36,8 +36,8 @@ jobs:
           print(json.dumps({
               "state": "pending",
               "target_url": os.environ["RUN_URL"],
-              "description": "Web + CPS + signed Android 2.10.24 verification is running",
-              "context": "Easy Education final release 2.10.24",
+              "description": "Web + CPS + signed Android 2.10.25 verification is running",
+              "context": "Easy Education final release 2.10.25",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
@@ -90,6 +90,17 @@ jobs:
           grep -q 'sortTimeMs' server/api-resources/cps-academic-v3.js
           grep -q 'orderExplicit' server/api-resources/cps-academic-v3.js
 
+      - name: Verify app update metadata
+        shell: bash
+        run: |
+          test -f public/app-update.json
+          node - <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('public/app-update.json', 'utf8'));
+          if (data.versionCode !== 2102500 || data.versionName !== '2.10.25') throw new Error('Wrong app update version metadata');
+          if (!String(data.apkUrl || '').includes('/releases/download/android-2.10.25/Easy-Education-2.10.25.apk')) throw new Error('Wrong APK release URL');
+          NODE
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -109,7 +120,8 @@ jobs:
       - name: Verify final native source
         shell: bash
         run: |
-          grep -q 'versionName = "2.10.24"' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.25"' native/app/build.gradle.kts
+          grep -q 'versionCode = 2102500' native/app/build.gradle.kts
           grep -q 'NativeCpsExamSafeActivity.open' native/app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
           grep -q 'CpsExamAssetPreloader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
           grep -q 'ExamFixedHeader' native/app/src/main/java/com/easyeducation/app/NativeCpsExamSafeActivity.kt
@@ -136,6 +148,13 @@ jobs:
           grep -q 'NativeClassTopicsAction' native/app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt
           grep -q 'return resolveFallback(videoId, error)' native/app/src/main/java/com/easyeducation/app/YoutubeDeviceResolver.kt
           grep -q 'while (!seen.add(unique))' native/app/src/main/java/com/easyeducation/app/NativeCpsExamResultRepository.kt
+          grep -q 'itemsIndexed' native/app/src/main/java/com/easyeducation/app/NativeCpsScreens.kt
+          grep -q 'Result metadata never needs a TeX' native/app/src/main/java/com/easyeducation/app/NativeCpsScreens.kt
+          ! grep -q 'CpsRichMathText(result.examTitle' native/app/src/main/java/com/easyeducation/app/NativeCpsScreens.kt
+          grep -q 'object NativeAppUpdateManager' native/app/src/main/java/com/easyeducation/app/NativeAppUpdate.kt
+          grep -q 'DownloadManager' native/app/src/main/java/com/easyeducation/app/NativeAppUpdate.kt
+          grep -q 'REQUEST_INSTALL_PACKAGES' native/app/src/main/AndroidManifest.xml
+          grep -q 'NativeAppUpdateManager.onActivityResumed' native/app/src/main/java/com/easyeducation/app/EasyEducationApplication.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -174,9 +193,26 @@ jobs:
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
 
+      - name: Publish signed APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="2.10.25"
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          cp native/app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/$ASSET"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/$ASSET" --clobber
+          else
+            gh release create "$TAG" "$RUNNER_TEMP/$ASSET" \
+              --title "Easy Education $VERSION" \
+              --notes "Signed Android release $VERSION"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: easy-education-2.10.24-release-apk
+          name: easy-education-2.10.25-release-apk
           path: native/app/build/outputs/apk/release/app-release.apk
 
       - name: Publish release verification final status
@@ -193,8 +229,8 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "target_url": os.environ["RUN_URL"],
-              "description": "Web, Vercel budget and signed Android 2.10.24 verified",
-              "context": "Easy Education final release 2.10.24",
+              "description": "Web, Vercel budget and signed Android 2.10.25 verified",
+              "context": "Easy Education final release 2.10.25",
           }))
           PY
           curl --fail-with-body --silent --show-error -X POST \
