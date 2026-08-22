@@ -17,7 +17,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
-import kotlin.math.roundToInt
 
 internal data class ExamPreparationProgress(
     val percent: Int = 0,
@@ -33,21 +32,16 @@ internal data class ExamPreparationProgress(
 )
 
 /**
- * Kept as an explicit resource object so the exam renderer can evolve without changing the screen
- * contract. Mathematics is now normalized to native text, therefore opening an exam no longer
- * waits for a TeX/PNG network renderer.
+ * Lightweight native exam resources. The running exam never creates WebViews and never waits for
+ * a TeX renderer. The formatter below intentionally avoids java.util.regex entirely so malformed
+ * CPS text cannot trigger PatternSyntaxException while an exam opens.
  */
 internal data class CpsPreparedResources(
-    val renderer: String = "native-fast-math-v2",
+    val renderer: String = "native-fast-math-v3",
 )
 
 internal data class CpsPreparedSegment(val math: Boolean, val value: String)
 
-/**
- * Critical-path preparation intentionally does no network math rendering. CPS question/option
- * images are warmed into Coil's memory/disk cache in the background, so they never hold the exam
- * timer hostage. Once Coil has fetched an image it is reused on following opens.
- */
 internal class CpsExamAssetPreloader(context: Context) {
     private val appContext = context.applicationContext
 
@@ -72,8 +66,6 @@ internal class CpsExamAssetPreloader(context: Context) {
             ),
         )
 
-        // Prime the tiny native formatter once while the loading surface is still visible. This is
-        // CPU-only and completes in milliseconds; there is no server call and no WebView/KaTeX.
         var mathLike = 0
         (questionTexts.asSequence() + optionTexts.asSequence() + explanationTexts.asSequence())
             .forEach { raw ->
@@ -87,8 +79,7 @@ internal class CpsExamAssetPreloader(context: Context) {
             .distinct()
             .toList()
 
-        // Do not await images. The student gets the exam immediately; Coil persists successful
-        // responses in its disk cache and serves the same URLs from cache on later attempts.
+        // Images are warmed asynchronously. They never block the student from entering the exam.
         if (images.isNotEmpty()) {
             imageWarmScope.launch {
                 images.forEach { url ->
@@ -134,12 +125,6 @@ internal fun mathHash(formula: String): String = MessageDigest.getInstance("SHA-
     .digest(formula.trim().toByteArray(Charsets.UTF_8))
     .joinToString("") { "%02x".format(it) }
 
-/**
- * Native lightweight rendering for CPS/HSC-style mathematics. The goal is consistent line height
- * and immediate scrolling, not bitmap typesetting. Common TeX commands are converted to readable
- * Unicode and normal text so equations stay aligned with Bangla/English text instead of appearing
- * as oversized raster islands.
- */
 @Composable
 internal fun CpsPreparedText(
     raw: String,
@@ -148,13 +133,8 @@ internal fun CpsPreparedText(
     style: TextStyle = LocalTextStyle.current,
     color: Color = LocalContentColor.current,
 ) {
-    val normalized = remember(raw) { normalizeCpsMathText(raw) }
-    Text(
-        text = normalized,
-        modifier = modifier,
-        style = style,
-        color = color,
-    )
+    val normalized = remember(raw, resources.renderer) { normalizeCpsMathText(raw) }
+    Text(text = normalized, modifier = modifier, style = style, color = color)
 }
 
 internal fun cpsPreparedSegments(input: String): List<CpsPreparedSegment> =
@@ -163,12 +143,26 @@ internal fun cpsPreparedSegments(input: String): List<CpsPreparedSegment> =
 private fun looksLikeMath(value: String): Boolean =
     value.indexOf('\\') >= 0 || value.indexOf('$') >= 0 || value.indexOf('^') >= 0 || value.indexOf('_') >= 0
 
-internal fun normalizeCpsMathText(input: String): String {
+/**
+ * Safe native CPS math normalizer. No Regex objects are created here. Any unexpected formatter
+ * problem falls back to minimally cleaned plain text instead of failing the exam screen.
+ */
+internal fun normalizeCpsMathText(input: String): String = runCatching {
+    normalizeCpsMathTextUnsafe(input)
+}.getOrElse {
+    input.replace("\\", "").replace("{", "").replace("}", "").trim()
+}
+
+private fun normalizeCpsMathTextUnsafe(input: String): String {
     if (input.isBlank()) return input
     var value = input
         .replace("\r\n", "\n")
         .replace("\r", "\n")
-        .replace(Regex("(?m)^\\s*#{1,6}\\s*"), "")
+        .replace("######", "")
+        .replace("#####", "")
+        .replace("####", "")
+        .replace("###", "")
+        .replace("##", "")
         .replace("**", "")
         .replace("__", "")
         .replace("$$", "")
@@ -180,52 +174,212 @@ internal fun normalizeCpsMathText(input: String): String {
         .replace("\\!", "")
 
     repeat(5) {
-        value = value
-            .replace(Regex("\\\\text\\s*\\{([^{}]*)}"), "$1")
-            .replace(Regex("\\\\mathrm\\s*\\{([^{}]*)}"), "$1")
-            .replace(Regex("\\\\mathbf\\s*\\{([^{}]*)}"), "$1")
-            .replace(Regex("\\\\operatorname\\s*\\{([^{}]*)}"), "$1")
-            .replace(Regex("\\\\sqrt\\s*\\{([^{}]*)}")) { match -> "√(${match.groupValues[1]})" }
-            .replace(Regex("\\\\frac\\s*\\{([^{}]+)}\\s*\\{([^{}]+)}")) { match ->
-                "(${match.groupValues[1]})/(${match.groupValues[2]})"
-            }
+        value = replaceUnaryCommand(value, "\\text") { it }
+        value = replaceUnaryCommand(value, "\\mathrm") { it }
+        value = replaceUnaryCommand(value, "\\mathbf") { it }
+        value = replaceUnaryCommand(value, "\\operatorname") { it }
+        value = replaceUnaryCommand(value, "\\sqrt") { "√($it)" }
+        value = replaceFractionCommand(value)
     }
 
     val commands = linkedMapOf(
+        "\\varepsilon" to "ε", "\\vartheta" to "ϑ", "\\varphi" to "ϕ",
         "\\alpha" to "α", "\\beta" to "β", "\\gamma" to "γ", "\\delta" to "δ",
-        "\\epsilon" to "ε", "\\varepsilon" to "ε", "\\zeta" to "ζ", "\\eta" to "η",
-        "\\theta" to "θ", "\\vartheta" to "ϑ", "\\iota" to "ι", "\\kappa" to "κ",
-        "\\lambda" to "λ", "\\mu" to "μ", "\\nu" to "ν", "\\xi" to "ξ",
-        "\\pi" to "π", "\\rho" to "ρ", "\\sigma" to "σ", "\\tau" to "τ",
-        "\\phi" to "φ", "\\varphi" to "ϕ", "\\chi" to "χ", "\\psi" to "ψ", "\\omega" to "ω",
-        "\\Delta" to "Δ", "\\Theta" to "Θ", "\\Lambda" to "Λ", "\\Pi" to "Π",
-        "\\Sigma" to "Σ", "\\Phi" to "Φ", "\\Psi" to "Ψ", "\\Omega" to "Ω",
-        "\\times" to "×", "\\cdot" to "·", "\\pm" to "±", "\\mp" to "∓",
-        "\\leq" to "≤", "\\le" to "≤", "\\geq" to "≥", "\\ge" to "≥",
-        "\\neq" to "≠", "\\approx" to "≈", "\\equiv" to "≡", "\\propto" to "∝",
-        "\\infty" to "∞", "\\degree" to "°", "\\circ" to "°",
-        "\\rightarrow" to "→", "\\leftarrow" to "←", "\\Rightarrow" to "⇒",
-        "\\sin" to "sin", "\\cos" to "cos", "\\tan" to "tan", "\\cot" to "cot",
-        "\\sec" to "sec", "\\csc" to "csc", "\\log" to "log", "\\ln" to "ln",
+        "\\epsilon" to "ε", "\\zeta" to "ζ", "\\eta" to "η", "\\theta" to "θ",
+        "\\iota" to "ι", "\\kappa" to "κ", "\\lambda" to "λ", "\\mu" to "μ",
+        "\\nu" to "ν", "\\xi" to "ξ", "\\pi" to "π", "\\rho" to "ρ",
+        "\\sigma" to "σ", "\\tau" to "τ", "\\phi" to "φ", "\\chi" to "χ",
+        "\\psi" to "ψ", "\\omega" to "ω", "\\Delta" to "Δ", "\\Theta" to "Θ",
+        "\\Lambda" to "Λ", "\\Pi" to "Π", "\\Sigma" to "Σ", "\\Phi" to "Φ",
+        "\\Psi" to "Ψ", "\\Omega" to "Ω", "\\times" to "×", "\\cdot" to "·",
+        "\\pm" to "±", "\\mp" to "∓", "\\leq" to "≤", "\\le" to "≤",
+        "\\geq" to "≥", "\\ge" to "≥", "\\neq" to "≠", "\\approx" to "≈",
+        "\\equiv" to "≡", "\\propto" to "∝", "\\infty" to "∞", "\\degree" to "°",
+        "\\circ" to "°", "\\rightarrow" to "→", "\\leftarrow" to "←",
+        "\\Rightarrow" to "⇒", "\\sin" to "sin", "\\cos" to "cos", "\\tan" to "tan",
+        "\\cot" to "cot", "\\sec" to "sec", "\\csc" to "csc", "\\log" to "log",
+        "\\ln" to "ln",
     )
     commands.forEach { (command, replacement) -> value = value.replace(command, replacement) }
 
-    value = value
-        .replace(Regex("\\\\vec\\s*\\{([^{}]+)}")) { "${it.groupValues[1]}⃗" }
-        .replace(Regex("\\\\hat\\s*\\{([^{}]+)}")) { "${it.groupValues[1]}̂" }
-        .replace(Regex("\\\\bar\\s*\\{([^{}]+)}")) { "${it.groupValues[1]}̄" }
-        .replace(Regex("\\^\\s*\\{([^{}]+)}")) { toSuperscript(it.groupValues[1]) }
-        .replace(Regex("\\^([0-9+\\-=()]+)")) { toSuperscript(it.groupValues[1]) }
-        .replace(Regex("_\\s*\\{([^{}]+)}")) { toSubscript(it.groupValues[1]) }
-        .replace(Regex("_([0-9+\\-=()]+)")) { toSubscript(it.groupValues[1]) }
-        .replace(Regex("\\\\[A-Za-z]+"), "")
+    value = replaceUnaryCommand(value, "\\vec") { "$it⃗" }
+    value = replaceUnaryCommand(value, "\\hat") { "$it̂" }
+    value = replaceUnaryCommand(value, "\\bar") { "$it̄" }
+    value = replaceScripts(value)
+    value = stripUnknownCommands(value)
         .replace("{", "")
         .replace("}", "")
-        .replace(Regex("[ \\t]{2,}"), " ")
-        .replace(Regex(" *\\n *"), "\n")
-        .trim()
 
+    return tidyWhitespace(value)
+}
+
+private fun replaceUnaryCommand(source: String, command: String, transform: (String) -> String): String {
+    var value = source
+    var searchFrom = 0
+    while (searchFrom < value.length) {
+        val index = value.indexOf(command, searchFrom)
+        if (index < 0) break
+        var cursor = index + command.length
+        if (cursor < value.length && value[cursor].isLetter()) {
+            searchFrom = cursor
+            continue
+        }
+        while (cursor < value.length && value[cursor].isWhitespace() && value[cursor] != '\n') cursor++
+        if (cursor >= value.length || value[cursor] != '{') {
+            searchFrom = index + command.length
+            continue
+        }
+        val close = matchingBrace(value, cursor)
+        if (close < 0) {
+            searchFrom = cursor + 1
+            continue
+        }
+        val replacement = transform(value.substring(cursor + 1, close))
+        value = value.substring(0, index) + replacement + value.substring(close + 1)
+        searchFrom = index + replacement.length
+    }
     return value
+}
+
+private fun replaceFractionCommand(source: String): String {
+    var value = source
+    var searchFrom = 0
+    val command = "\\frac"
+    while (searchFrom < value.length) {
+        val index = value.indexOf(command, searchFrom)
+        if (index < 0) break
+        var firstOpen = index + command.length
+        while (firstOpen < value.length && value[firstOpen].isWhitespace() && value[firstOpen] != '\n') firstOpen++
+        if (firstOpen >= value.length || value[firstOpen] != '{') {
+            searchFrom = index + command.length
+            continue
+        }
+        val firstClose = matchingBrace(value, firstOpen)
+        if (firstClose < 0) {
+            searchFrom = firstOpen + 1
+            continue
+        }
+        var secondOpen = firstClose + 1
+        while (secondOpen < value.length && value[secondOpen].isWhitespace() && value[secondOpen] != '\n') secondOpen++
+        if (secondOpen >= value.length || value[secondOpen] != '{') {
+            searchFrom = firstClose + 1
+            continue
+        }
+        val secondClose = matchingBrace(value, secondOpen)
+        if (secondClose < 0) {
+            searchFrom = secondOpen + 1
+            continue
+        }
+        val numerator = value.substring(firstOpen + 1, firstClose)
+        val denominator = value.substring(secondOpen + 1, secondClose)
+        val replacement = "($numerator)/($denominator)"
+        value = value.substring(0, index) + replacement + value.substring(secondClose + 1)
+        searchFrom = index + replacement.length
+    }
+    return value
+}
+
+private fun matchingBrace(value: String, open: Int): Int {
+    if (open !in value.indices || value[open] != '{') return -1
+    var depth = 0
+    for (index in open until value.length) {
+        when (value[index]) {
+            '{' -> depth++
+            '}' -> {
+                depth--
+                if (depth == 0) return index
+            }
+        }
+    }
+    return -1
+}
+
+private fun replaceScripts(source: String): String {
+    val out = StringBuilder(source.length)
+    var index = 0
+    while (index < source.length) {
+        val marker = source[index]
+        if (marker != '^' && marker != '_') {
+            out.append(marker)
+            index++
+            continue
+        }
+
+        var cursor = index + 1
+        while (cursor < source.length && source[cursor].isWhitespace() && source[cursor] != '\n') cursor++
+        if (cursor >= source.length) {
+            out.append(marker)
+            index++
+            continue
+        }
+
+        val body: String
+        val nextIndex: Int
+        if (source[cursor] == '{') {
+            val close = matchingBrace(source, cursor)
+            if (close < 0) {
+                out.append(marker)
+                index++
+                continue
+            }
+            body = source.substring(cursor + 1, close)
+            nextIndex = close + 1
+        } else {
+            body = source[cursor].toString()
+            nextIndex = cursor + 1
+        }
+        out.append(if (marker == '^') toSuperscript(body) else toSubscript(body))
+        index = nextIndex
+    }
+    return out.toString()
+}
+
+private fun stripUnknownCommands(source: String): String {
+    val out = StringBuilder(source.length)
+    var index = 0
+    while (index < source.length) {
+        if (source[index] != '\\') {
+            out.append(source[index++])
+            continue
+        }
+        if (index + 1 >= source.length) break
+        val next = source[index + 1]
+        if (!next.isLetter()) {
+            if (next != '\\') out.append(next)
+            else out.append(' ')
+            index += 2
+            continue
+        }
+        index += 2
+        while (index < source.length && source[index].isLetter()) index++
+    }
+    return out.toString()
+}
+
+private fun tidyWhitespace(source: String): String {
+    val out = StringBuilder(source.length)
+    var lastWasSpace = false
+    var consecutiveNewlines = 0
+    source.forEach { char ->
+        when (char) {
+            ' ', '\t' -> {
+                if (!lastWasSpace && consecutiveNewlines == 0) out.append(' ')
+                lastWasSpace = true
+            }
+            '\n' -> {
+                while (out.isNotEmpty() && out.last() == ' ') out.setLength(out.length - 1)
+                if (consecutiveNewlines < 2) out.append('\n')
+                consecutiveNewlines++
+                lastWasSpace = false
+            }
+            else -> {
+                out.append(char)
+                lastWasSpace = false
+                consecutiveNewlines = 0
+            }
+        }
+    }
+    return out.toString().trim()
 }
 
 private fun toSuperscript(value: String): String = value.map { char ->
