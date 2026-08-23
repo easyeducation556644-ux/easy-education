@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client"
 import App from "./App"
 import { ThemeProvider } from "./contexts/ThemeContext"
 import { registerServiceWorker } from "./lib/pwa"
+import { installJsonConsoleFileUpload } from "./lib/jsonConsoleFileUpload"
 import SecurityMonitor from "./components/SecurityMonitor"
 import "./index.css"
 
@@ -17,6 +18,7 @@ if (rootElement) {
       </ThemeProvider>
     </React.StrictMode>
   )
+  installJsonConsoleFileUpload()
 } else {
   console.error("Failed to find the root element with ID 'root'")
 }
