@@ -74,14 +74,6 @@ export default function DownloadResumeAgent() {
         html[data-easy-education-native-app="false"] .aspect-video + .flex.flex-wrap.items-center.justify-between.gap-3.border-t.border-border.bg-card {
           display: none !important;
         }
-        .${WEB_DOWNLOAD_NOTE_CLASS} {
-          border-top: 1px solid hsl(var(--border));
-          background: hsl(var(--muted) / 0.35);
-          padding: 10px 16px;
-          color: hsl(var(--muted-foreground));
-          font-size: 0.875rem;
-          line-height: 1.35rem;
-        }
         .${PAGE_SKELETON_CLASS} {
           display: block !important;
           min-height: 55vh !important;
@@ -117,7 +109,7 @@ export default function DownloadResumeAgent() {
       document.head.appendChild(style)
     }
 
-    const removeNotes = () => {
+    const removeLegacyDownloadNotes = () => {
       document.querySelectorAll(`.${WEB_DOWNLOAD_NOTE_CLASS}`).forEach((node) => node.remove())
     }
 
@@ -129,41 +121,15 @@ export default function DownloadResumeAgent() {
       })
     }
 
-    const syncWebDownloadNote = () => {
-      if (nativeApp || !/\/course\/[^/]+\/watch(?:\/|$)/.test(location.pathname)) {
-        removeNotes()
-        return
-      }
+    removeLegacyDownloadNotes()
+    syncPageLoadingSkeletons()
 
-      document.querySelectorAll(".aspect-video").forEach((videoBox) => {
-        const parent = videoBox.parentElement
-        if (!parent || parent.querySelector(`.${WEB_DOWNLOAD_NOTE_CLASS}`)) return
-
-        const offlinePanel = videoBox.nextElementSibling
-        const note = document.createElement("div")
-        note.className = WEB_DOWNLOAD_NOTE_CLASS
-        note.textContent = "ভিডিও ডাউনলোড করতে Easy Education app ব্যবহার করুন।"
-
-        if (offlinePanel?.matches?.(".flex.flex-wrap.items-center.justify-between.gap-3.border-t.border-border.bg-card")) {
-          offlinePanel.insertAdjacentElement("afterend", note)
-        } else {
-          videoBox.insertAdjacentElement("afterend", note)
-        }
-      })
-    }
-
-    const syncUi = () => {
-      syncPageLoadingSkeletons()
-      syncWebDownloadNote()
-    }
-
-    syncUi()
-    const observer = new MutationObserver(() => window.requestAnimationFrame(syncUi))
+    const observer = new MutationObserver(() => window.requestAnimationFrame(syncPageLoadingSkeletons))
     observer.observe(document.body, { childList: true, subtree: true })
 
     return () => {
       observer.disconnect()
-      removeNotes()
+      removeLegacyDownloadNotes()
       document.querySelectorAll(`.${PAGE_SKELETON_CLASS}`).forEach((node) => {
         node.classList.remove(PAGE_SKELETON_CLASS)
       })
