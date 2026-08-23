@@ -358,10 +358,6 @@ function JsonAdminConsole() {
 
     if (isTopicImportPayload(parsed)) {
       if (!selectedCourse) throw new Error("Select a course before previewing Topic JSON.")
-      const courseType = String(selectedCourse.type || "subject").trim().toLowerCase()
-      if (courseType !== "subject") {
-        throw new Error(`Selected course is type "${selectedCourse.type || "unknown"}". Topic JSON import is configured for subject-type courses.`)
-      }
 
       const generated = buildTopicImportOperations(parsed, selectedCourse.id)
       const operations = validateOperations(generated.operations)
@@ -585,7 +581,7 @@ function JsonAdminConsole() {
           />
 
           <div className="mt-3 text-xs text-muted-foreground space-y-1">
-            <p>Topic import: TopicTitle → chapter, Videos[] → classes, subject → []. Select a subject-type course first.</p>
+            <p>Topic import: TopicTitle → chapter, Videos[] → classes, subject → []. Select a target course first.</p>
             <p>Special values: {`{"__serverTimestamp":true}`}, {`{"__deleteField":true}`}, {`{"__increment":1}`}</p>
             <p>Arrays: {`{"__arrayUnion":[...]}`} and {`{"__arrayRemove":[...]}`}</p>
           </div>
