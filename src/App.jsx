@@ -6,6 +6,7 @@ import {
   collection,
   deleteField,
   doc,
+  getDocs,
   increment,
   serverTimestamp,
   writeBatch,
@@ -68,7 +69,7 @@ const JSON_EXAMPLE = {
       action: "add",
       collection: "classes",
       data: {
-        courseId: "COURSE_ID",
+        courseId: "{{COURSE_ID}}",
         title: "New class",
         subject: [],
         chapter: ["Chapter name"],
@@ -122,7 +123,13 @@ const materializeFirestoreValues = (value) => {
 
 const operationPath = (operation) => {
   if (typeof operation.path === "string" && operation.path.trim()) return operation.path.trim()
-  if (typeof operation.collection === "string" && operation.collection.trim() && operation.id !== undefined && operation.id !== null && String(operation.id).trim()) {
+  if (
+    typeof operation.collection === "string" &&
+    operation.collection.trim() &&
+    operation.id !== undefined &&
+    operation.id !== null &&
+    String(operation.id).trim()
+  ) {
     return `${operation.collection.trim()}/${String(operation.id).trim()}`
   }
   return ""
@@ -155,7 +162,10 @@ const validateOperations = (operations) => {
       if (path.split("/").filter(Boolean).length % 2 !== 0) {
         throw new Error(`Operation ${index + 1}: document path must point to a document.`)
       }
-      if (action !== "delete" && (!operation.data || typeof operation.data !== "object" || Array.isArray(operation.data))) {
+      if (
+        action !== "delete" &&
+        (!operation.data || typeof operation.data !== "object" || Array.isArray(operation.data))
+      ) {
         throw new Error(`Operation ${index + 1}: ${action} requires a data object.`)
       }
     }
@@ -164,14 +174,146 @@ const validateOperations = (operations) => {
   })
 }
 
+const isTopicImportPayload = (payload) => (
+  Array.isArray(payload) &&
+  payload.length > 0 &&
+  payload.every((topic) => (
+    topic &&
+    typeof topic === "object" &&
+    !Array.isArray(topic) &&
+    typeof topic.TopicTitle === "string" &&
+    Array.isArray(topic.Videos)
+  ))
+)
+
+const safeDocumentPart = (value) => encodeURIComponent(String(value || "").trim() || "item")
+
+const formatDurationMinutes = (minutes) => {
+  const numericMinutes = Number(minutes)
+  if (!Number.isFinite(numericMinutes) || numericMinutes < 0) return ""
+  const totalSeconds = Math.round(numericMinutes * 60)
+  const hours = Math.floor(totalSeconds / 3600)
+  const remaining = totalSeconds % 3600
+  const mins = Math.floor(remaining / 60)
+  const seconds = remaining % 60
+  if (hours > 0) return `${hours}:${String(mins).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+  return `${mins}:${String(seconds).padStart(2, "0")}`
+}
+
+const normalizeVideoLink = (video) => {
+  const rawLink = String(video?.VideoLink || "").trim()
+  const type = String(video?.VideoType || "").trim().toLowerCase()
+  if (!rawLink) return { type, url: "" }
+
+  if (type === "youtube") {
+    const isFullUrl = /^https?:\/\//i.test(rawLink)
+    return { type, url: isFullUrl ? rawLink : `https://www.youtube.com/watch?v=${rawLink}` }
+  }
+
+  return { type, url: rawLink }
+}
+
+const buildTopicImportOperations = (topics, courseId) => {
+  const normalizedCourseId = String(courseId || "").trim()
+  if (!normalizedCourseId) throw new Error("Select a course before importing Topic JSON.")
+
+  const chapterMap = new Map()
+  const classOperations = []
+  const nextOrderByChapter = new Map()
+
+  topics.forEach((topic, topicIndex) => {
+    const chapterTitle = String(topic.TopicTitle || "").trim()
+    if (!chapterTitle) throw new Error(`Topic ${topicIndex + 1} has an empty TopicTitle.`)
+
+    if (!chapterMap.has(chapterTitle)) {
+      chapterMap.set(chapterTitle, {
+        action: "set",
+        path: `chapters/json_${safeDocumentPart(normalizedCourseId)}_${safeDocumentPart(chapterTitle)}`,
+        merge: true,
+        data: {
+          title: chapterTitle,
+          imageUrl: "",
+          courseId: normalizedCourseId,
+          subjectId: "",
+          order: chapterMap.size + 1,
+          updatedAt: { __serverTimestamp: true },
+        },
+      })
+      nextOrderByChapter.set(chapterTitle, 1)
+    }
+
+    topic.Videos.forEach((video, videoIndex) => {
+      const title = String(video?.VideoTitle || "").trim()
+      if (!title) throw new Error(`Topic ${topicIndex + 1}, video ${videoIndex + 1} has an empty VideoTitle.`)
+
+      const order = nextOrderByChapter.get(chapterTitle) || 1
+      nextOrderByChapter.set(chapterTitle, order + 1)
+
+      const normalizedVideo = normalizeVideoLink(video)
+      const sourceVideoId = String(video?.VideoId || "").trim()
+      const fallbackId = `${chapterTitle}_${order}_${title}`
+      const documentId = `json_${safeDocumentPart(normalizedCourseId)}_${safeDocumentPart(sourceVideoId || fallbackId)}`
+
+      const youtubeLink = normalizedVideo.type === "youtube" ? normalizedVideo.url : ""
+      const hlsLink = normalizedVideo.type === "hls" ? normalizedVideo.url : ""
+      const driveLink = normalizedVideo.type === "drive" ? normalizedVideo.url : ""
+      const dailymotionLink = normalizedVideo.type === "dailymotion" ? normalizedVideo.url : ""
+      const rumbleLink = normalizedVideo.type === "rumble" ? normalizedVideo.url : ""
+
+      classOperations.push({
+        action: "set",
+        path: `classes/${documentId}`,
+        merge: true,
+        data: {
+          courseId: normalizedCourseId,
+          title,
+          topic: "",
+          chapter: [chapterTitle],
+          subject: [],
+          order,
+          duration: formatDurationMinutes(video?.DurationInMinute),
+          youtubeLink,
+          hlsLink,
+          driveLink,
+          dailymotionLink,
+          rumbleLink,
+          videoURL: normalizedVideo.url,
+          imageURL: "",
+          teacherName: [],
+          teacherImageURL: "",
+          resourceLinks: [],
+          updatedAt: { __serverTimestamp: true },
+        },
+      })
+    })
+  })
+
+  return {
+    operations: [...chapterMap.values(), ...classOperations],
+    stats: {
+      chapters: chapterMap.size,
+      classes: classOperations.length,
+    },
+  }
+}
+
 function JsonAdminConsole() {
   const { userProfile } = useAuth()
   const fullAdmin = isFullAdmin(userProfile)
   const [jsonText, setJsonText] = useState(JSON.stringify(JSON_EXAMPLE, null, 2))
   const [preview, setPreview] = useState(null)
+  const [previewInfo, setPreviewInfo] = useState(null)
   const [error, setError] = useState("")
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState(null)
+  const [courses, setCourses] = useState([])
+  const [coursesLoading, setCoursesLoading] = useState(false)
+  const [selectedCourseId, setSelectedCourseId] = useState("")
+
+  const selectedCourse = useMemo(
+    () => courses.find((course) => course.id === selectedCourseId) || null,
+    [courses, selectedCourseId],
+  )
 
   const previewRows = useMemo(() => {
     if (!preview) return []
@@ -184,12 +326,55 @@ function JsonAdminConsole() {
     }))
   }, [preview])
 
+  useEffect(() => {
+    if (!fullAdmin) return undefined
+
+    let cancelled = false
+    setCoursesLoading(true)
+    getDocs(collection(db, "courses"))
+      .then((snapshot) => {
+        if (cancelled) return
+        const data = snapshot.docs
+          .map((courseDoc) => ({ id: courseDoc.id, ...courseDoc.data() }))
+          .sort((a, b) => String(a.title || a.name || "").localeCompare(String(b.title || b.name || "")))
+        setCourses(data)
+      })
+      .catch((courseError) => {
+        if (!cancelled) setError(courseError.message || "Failed to load courses.")
+      })
+      .finally(() => {
+        if (!cancelled) setCoursesLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [fullAdmin])
+
   if (!fullAdmin) return <Navigate to="/admin" replace />
 
-  const parseAndValidate = () => {
+  const prepareJson = () => {
     const parsed = JSON.parse(jsonText)
+
+    if (isTopicImportPayload(parsed)) {
+      if (!selectedCourse) throw new Error("Select a course before previewing Topic JSON.")
+      const courseType = String(selectedCourse.type || "subject").trim().toLowerCase()
+      if (courseType !== "subject") {
+        throw new Error(`Selected course is type "${selectedCourse.type || "unknown"}". Topic JSON import is configured for subject-type courses.`)
+      }
+
+      const generated = buildTopicImportOperations(parsed, selectedCourse.id)
+      const operations = validateOperations(generated.operations)
+      setPreview(operations)
+      setPreviewInfo({ mode: "topic", ...generated.stats })
+      setError("")
+      setResult(null)
+      return operations
+    }
+
     const operations = validateOperations(normalizeOperations(parsed))
     setPreview(operations)
+    setPreviewInfo({ mode: "operations" })
     setError("")
     setResult(null)
     return operations
@@ -197,9 +382,10 @@ function JsonAdminConsole() {
 
   const handlePreview = () => {
     try {
-      parseAndValidate()
+      prepareJson()
     } catch (parseError) {
       setPreview(null)
+      setPreviewInfo(null)
       setResult(null)
       setError(parseError.message || "Invalid JSON.")
     }
@@ -215,10 +401,34 @@ function JsonAdminConsole() {
     }
   }
 
+  const handleApplyCourseId = () => {
+    if (!selectedCourseId) {
+      setError("Select a course first.")
+      return
+    }
+    setJsonText((current) => current
+      .replaceAll("{{COURSE_ID}}", selectedCourseId)
+      .replaceAll("COURSE_ID", selectedCourseId))
+    setPreview(null)
+    setPreviewInfo(null)
+    setResult(null)
+    setError("")
+  }
+
+  const handleCopyCourseId = async () => {
+    if (!selectedCourseId) return
+    try {
+      await navigator.clipboard.writeText(selectedCourseId)
+      setError("")
+    } catch {
+      setError("Could not copy the course ID. You can select and copy it manually.")
+    }
+  }
+
   const handleExecute = async () => {
     let operations
     try {
-      operations = parseAndValidate()
+      operations = prepareJson()
     } catch (parseError) {
       setError(parseError.message || "Invalid JSON.")
       return
@@ -272,15 +482,90 @@ function JsonAdminConsole() {
         </p>
       </div>
 
+      <section className="mb-5 rounded-xl border border-border bg-card p-4 sm:p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div className="min-w-0 flex-1">
+            <label className="mb-2 block text-sm font-semibold" htmlFor="json-course-select">Target course</label>
+            <select
+              id="json-course-select"
+              value={selectedCourseId}
+              disabled={coursesLoading}
+              onChange={(event) => {
+                setSelectedCourseId(event.target.value)
+                setPreview(null)
+                setPreviewInfo(null)
+                setResult(null)
+                setError("")
+              }}
+              className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              <option value="">{coursesLoading ? "Loading courses..." : "Select a course"}</option>
+              {courses.map((course) => (
+                <option key={course.id} value={course.id}>
+                  {course.title || course.name || "Untitled course"} · {course.type || "subject"}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="min-w-0 flex-[1.2]">
+            <div className="mb-2 text-sm font-semibold">Course ID</div>
+            <div className="flex gap-2">
+              <div className="min-w-0 flex-1 rounded-lg border border-border bg-muted/40 px-3 py-2.5 font-mono text-xs break-all">
+                {selectedCourseId || "Select a course to see its Firestore ID"}
+              </div>
+              <button
+                type="button"
+                disabled={!selectedCourseId}
+                onClick={handleCopyCourseId}
+                className="rounded-lg bg-muted px-3 py-2 text-xs font-medium hover:bg-muted/80 disabled:opacity-50"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={!selectedCourseId}
+            onClick={handleApplyCourseId}
+            className="rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            Apply ID to JSON
+          </button>
+        </div>
+
+        {selectedCourse && (
+          <div className="mt-3 text-xs text-muted-foreground">
+            Selected: <span className="font-medium text-foreground">{selectedCourse.title || selectedCourse.name || "Untitled course"}</span>
+            {` · type: ${selectedCourse.type || "subject"}`}
+          </div>
+        )}
+      </section>
+
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <section className="bg-card border border-border rounded-xl p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div>
-              <h2 className="font-semibold">Operations JSON</h2>
-              <p className="text-xs text-muted-foreground mt-1">Supported: add, update, set, delete. Up to 450 operations at once.</p>
+              <h2 className="font-semibold">JSON</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Paste TopicTitle + Videos JSON directly, or use add/update/set/delete operations. TopicTitle becomes chapter and subject stays empty.
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => { setJsonText(JSON.stringify(JSON_EXAMPLE, null, 2)); setPreview(null); setError(""); setResult(null) }} className="px-3 py-2 text-xs rounded-lg bg-muted hover:bg-muted/80">Example</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setJsonText(JSON.stringify(JSON_EXAMPLE, null, 2))
+                  setPreview(null)
+                  setPreviewInfo(null)
+                  setError("")
+                  setResult(null)
+                }}
+                className="px-3 py-2 text-xs rounded-lg bg-muted hover:bg-muted/80"
+              >
+                Example
+              </button>
               <button type="button" onClick={handleFormat} className="px-3 py-2 text-xs rounded-lg bg-muted hover:bg-muted/80">Format</button>
               <button type="button" onClick={handlePreview} className="px-3 py-2 text-xs rounded-lg bg-primary/10 text-primary hover:bg-primary/20">Preview</button>
             </div>
@@ -288,12 +573,19 @@ function JsonAdminConsole() {
 
           <textarea
             value={jsonText}
-            onChange={(event) => { setJsonText(event.target.value); setPreview(null); setResult(null); setError("") }}
+            onChange={(event) => {
+              setJsonText(event.target.value)
+              setPreview(null)
+              setPreviewInfo(null)
+              setResult(null)
+              setError("")
+            }}
             spellCheck={false}
             className="w-full min-h-[520px] resize-y rounded-lg border border-border bg-background p-3 font-mono text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-primary"
           />
 
           <div className="mt-3 text-xs text-muted-foreground space-y-1">
+            <p>Topic import: TopicTitle → chapter, Videos[] → classes, subject → []. Select a subject-type course first.</p>
             <p>Special values: {`{"__serverTimestamp":true}`}, {`{"__deleteField":true}`}, {`{"__increment":1}`}</p>
             <p>Arrays: {`{"__arrayUnion":[...]}`} and {`{"__arrayRemove":[...]}`}</p>
           </div>
@@ -302,6 +594,12 @@ function JsonAdminConsole() {
         <aside className="space-y-4">
           <section className="bg-card border border-border rounded-xl p-4 sm:p-5">
             <h2 className="font-semibold mb-3">Preview</h2>
+            {previewInfo?.mode === "topic" && (
+              <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-3 text-xs">
+                Topic JSON detected: <strong>{previewInfo.chapters}</strong> chapter{previewInfo.chapters === 1 ? "" : "s"} + <strong>{previewInfo.classes}</strong> class{previewInfo.classes === 1 ? "" : "es"}.
+              </div>
+            )}
+
             {!previewRows.length ? (
               <p className="text-sm text-muted-foreground">Preview the JSON before executing it.</p>
             ) : (
@@ -357,8 +655,8 @@ function App() {
 
   useEffect(() => {
     const handleCacheUpdate = (event) => {
-      const collection = event?.detail?.collection
-      if (collection !== "userCourses" && collection !== "payments") return
+      const collectionName = event?.detail?.collection
+      if (collectionName !== "userCourses" && collectionName !== "payments") return
       if (!window.location.pathname.startsWith("/course/")) return
       setAccessVersion((version) => version + 1)
     }
