@@ -797,13 +797,26 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     }
   }
 
+  const hideControls = () => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current)
+      controlsTimeoutRef.current = null
+    }
+    setShowControls(false)
+    setShowSettings(false)
+    setShowVolumeSlider(false)
+  }
+
+  const toggleControls = () => {
+    if (showControls) hideControls()
+    else revealControlsTemporarily()
+  }
+
   const showDoubleTapFeedback = (side) => {
     const isLeft = side === "left"
 
     commitSeek(currentTimeRef.current + (isLeft ? -10 : 10))
-    setShowControls(false)
-    setShowSettings(false)
-    setShowVolumeSlider(false)
+    hideControls()
     setShowDoubleTapLeft(isLeft)
     setShowDoubleTapRight(!isLeft)
     setDoubleTapCount((previous) => ({
@@ -826,10 +839,19 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     event?.preventDefault()
     if (isSwiping) return
 
+    if (side === "center") {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current)
+        singleTapTimeoutRef.current = null
+      }
+      lastTapRef.current = { time: 0, side: null }
+      toggleControls()
+      return
+    }
+
     const now = Date.now()
     const previousTap = lastTapRef.current
     const isDoubleTap =
-      side !== "center" &&
       previousTap.side === side &&
       now - previousTap.time < 320
 
@@ -853,9 +875,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         lastTapRef.current.time === now &&
         lastTapRef.current.side === side
       ) {
-        revealControlsTemporarily()
-        setShowSettings(false)
-        setShowVolumeSlider(false)
+        toggleControls()
         lastTapRef.current = { time: 0, side: null }
       }
     }, 300)
@@ -887,7 +907,7 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
     ).matches
 
     if (playing && hasPreciseHover) {
-      setShowControls(false)
+      hideControls()
     }
   }
 
@@ -941,20 +961,43 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
 
   const handlePlayPause = () => {
     if (isYouTube && playerRef.current) {
-      if (playing) {
-        playerRef.current.pauseVideo()
-      } else {
-        playerRef.current.playVideo()
+      const player = playerRef.current
+      let playerState = null
+      try {
+        playerState = player.getPlayerState?.()
+      } catch {
+        playerState = null
       }
-    } else if (videoRef.current) {
-      if (playing) {
-        videoRef.current.pause()
+
+      const ytStates = window.YT?.PlayerState
+      const shouldPause =
+        playerState === ytStates?.PLAYING ||
+        playerState === ytStates?.BUFFERING ||
+        playerState === 1 ||
+        playerState === 3
+
+      if (shouldPause) {
+        player.pauseVideo()
+        setPlaying(false)
+        setShowControls(true)
       } else {
-        videoRef.current.play().catch(() => {
-          setPlaying(false)
-          setShowControls(true)
-        })
+        player.playVideo()
       }
+      return
+    }
+
+    const video = videoRef.current
+    if (!video) return
+
+    if (!video.paused && !video.ended) {
+      video.pause()
+      setPlaying(false)
+      setShowControls(true)
+    } else {
+      video.play().catch(() => {
+        setPlaying(false)
+        setShowControls(true)
+      })
     }
   }
 
@@ -1281,7 +1324,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           }
         }
 
-        /* Improved seek bar */
         .seek-bar-container {
           position: relative;
           height: 24px;
@@ -1350,7 +1392,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           z-index: 10;
         }
         
-        /* Volume slider */
         .volume-slider-container {
           position: relative;
           height: 4px;
@@ -1374,7 +1415,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           transform: translateY(-50%) scale(1.2);
         }
         
-        /* Smooth control transitions */
         .controls-container {
           transition: opacity 0.3s ease, transform 0.3s ease;
         }
@@ -1385,7 +1425,6 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
           transform: translateY(10px);
         }
 
-        /* Remove all outlines and shadows on focus/active */
         * {
           -webkit-tap-highlight-color: transparent;
           -webkit-touch-callout: none;
@@ -1423,6 +1462,9 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         onTouchEnd={handleTouchEnd}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {/* Prevent the legacy DownloadResumeAgent observer from injecting extra visible app notes. */}
+        <span className="easy-education-app-download-note hidden" aria-hidden="true" />
+
         {isYouTube ? (
           <>
             <div
@@ -1479,395 +1521,396 @@ export default function CustomVideoPlayer({ url, onNext, onPrevious }) {
         )}
 
         {!isDrive && !isDailymotion && !isRumble && (
-        <div className="absolute inset-0 flex z-[40] pointer-events-none">
-          <div 
-            className="w-1/4 h-full pointer-events-auto cursor-pointer" 
-            onClick={(event) => handleTap(event, "left")}
-          />
-          <div 
-            className="w-1/2 h-full pointer-events-auto cursor-pointer" 
-            onClick={(event) => handleTap(event, "center")}
-          />
-          <div 
-            className="w-1/4 h-full pointer-events-auto cursor-pointer" 
-            onClick={(event) => handleTap(event, "right")}
-          />
-        </div>
+          <div className="absolute inset-0 flex z-[40] pointer-events-none">
+            <div
+              className="w-1/4 h-full pointer-events-auto cursor-pointer"
+              onClick={(event) => handleTap(event, "left")}
+            />
+            <div
+              className="w-1/2 h-full pointer-events-auto cursor-pointer"
+              onClick={(event) => handleTap(event, "center")}
+            />
+            <div
+              className="w-1/4 h-full pointer-events-auto cursor-pointer"
+              onClick={(event) => handleTap(event, "right")}
+            />
+          </div>
         )}
 
         {!isDrive && !isDailymotion && !isRumble && (
-        <>
-        {/* Volume Indicator - Right side of center */}
-        <AnimatePresence>
-          {showVolumeIndicator && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="absolute top-1/2 left-1/2 -translate-y-1/2 translate-x-16 z-[55] pointer-events-none"
-            >
-              <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
-                <div className="flex flex-col items-center gap-3">
-                  <Volume2 className="w-6 h-6 text-white" />
-                  <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
-                    <motion.div 
-                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-red-500 to-red-400 rounded-full"
-                      style={{ height: `${volume}%` }}
-                      transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                    />
-                  </div>
-                  <span className="text-white font-bold text-sm">{Math.round(volume)}%</span>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Seek Indicator */}
-        <AnimatePresence>
-          {showSeekIndicator && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[55] pointer-events-none"
-            >
-              <div className="bg-black/90 backdrop-blur-xl rounded-2xl px-6 py-4 min-w-[120px]">
-                <div className="flex flex-col items-center gap-2">
-                  <div className="flex items-center gap-2">
-                    {seekDelta > 0 ? (
-                      <>
-                        <RotateCw className="w-8 h-8 text-white" />
-                        <span className="text-white font-bold text-2xl">+{Math.abs(Math.round(seekDelta))}s</span>
-                      </>
-                    ) : (
-                      <>
-                        <RotateCcw className="w-8 h-8 text-white" />
-                        <span className="text-white font-bold text-2xl">-{Math.abs(Math.round(seekDelta))}s</span>
-                      </>
-                    )}
-                  </div>
-                  <span className="text-white/70 text-xs">{formatTime(currentTime + seekDelta)}</span>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Double Tap Left Indicator - YouTube Style */}
-        <AnimatePresence>
-          {showDoubleTapLeft && (
-            <motion.div
-              key="double-tap-left"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16 }}
-              className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
-            >
-              <div className="double-tap-visual left">
+          <>
+            <AnimatePresence>
+              {showVolumeIndicator && (
                 <motion.div
-                  key={doubleTapCount.left}
-                  initial={{ scale: 0.82 }}
-                  animate={{ scale: 1 }}
-                  className="double-tap-content"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="absolute top-1/2 left-1/2 -translate-y-1/2 translate-x-16 z-[55] pointer-events-none"
                 >
-                  <div className="double-tap-chevrons">
-                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
-                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
-                    <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                  <div className="bg-black/90 backdrop-blur-xl rounded-2xl p-4 min-w-[80px]">
+                    <div className="flex flex-col items-center gap-3">
+                      <Volume2 className="w-6 h-6 text-white" />
+                      <div className="relative w-2 h-32 bg-white/20 rounded-full overflow-hidden">
+                        <motion.div
+                          className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-red-500 to-red-400 rounded-full"
+                          style={{ height: `${volume}%` }}
+                          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                        />
+                      </div>
+                      <span className="text-white font-bold text-sm">{Math.round(volume)}%</span>
+                    </div>
                   </div>
-                  <span className="text-xs font-semibold sm:text-sm">
-                    {10 * (doubleTapCount.left || 1)} seconds
-                  </span>
                 </motion.div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              )}
+            </AnimatePresence>
 
-        {/* Double Tap Right Indicator - YouTube Style */}
-        <AnimatePresence>
-          {showDoubleTapRight && (
-            <motion.div
-              key="double-tap-right"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16 }}
-              className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
-            >
-              <div className="double-tap-visual right">
+            <AnimatePresence>
+              {showSeekIndicator && (
                 <motion.div
-                  key={doubleTapCount.right}
-                  initial={{ scale: 0.82 }}
-                  animate={{ scale: 1 }}
-                  className="double-tap-content"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[55] pointer-events-none"
                 >
-                  <div className="double-tap-chevrons">
-                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
-                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
-                    <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                  <div className="bg-black/90 backdrop-blur-xl rounded-2xl px-6 py-4 min-w-[120px]">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="flex items-center gap-2">
+                        {seekDelta > 0 ? (
+                          <>
+                            <RotateCw className="w-8 h-8 text-white" />
+                            <span className="text-white font-bold text-2xl">+{Math.abs(Math.round(seekDelta))}s</span>
+                          </>
+                        ) : (
+                          <>
+                            <RotateCcw className="w-8 h-8 text-white" />
+                            <span className="text-white font-bold text-2xl">-{Math.abs(Math.round(seekDelta))}s</span>
+                          </>
+                        )}
+                      </div>
+                      <span className="text-white/70 text-xs">{formatTime(currentTime + seekDelta)}</span>
+                    </div>
                   </div>
-                  <span className="text-xs font-semibold sm:text-sm">
-                    {10 * (doubleTapCount.right || 1)} seconds
-                  </span>
                 </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {showDoubleTapLeft && (
+                <motion.div
+                  key="double-tap-left"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.16 }}
+                  className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
+                >
+                  <div className="double-tap-visual left">
+                    <motion.div
+                      key={doubleTapCount.left}
+                      initial={{ scale: 0.82 }}
+                      animate={{ scale: 1 }}
+                      className="double-tap-content"
+                    >
+                      <div className="double-tap-chevrons">
+                        <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                        <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                        <ChevronLeft className="double-tap-chevron" strokeWidth={3} />
+                      </div>
+                      <span className="text-xs font-semibold sm:text-sm">
+                        {10 * (doubleTapCount.left || 1)} seconds
+                      </span>
+                    </motion.div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {showDoubleTapRight && (
+                <motion.div
+                  key="double-tap-right"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.16 }}
+                  className="absolute inset-0 z-[70] pointer-events-none overflow-hidden"
+                >
+                  <div className="double-tap-visual right">
+                    <motion.div
+                      key={doubleTapCount.right}
+                      initial={{ scale: 0.82 }}
+                      animate={{ scale: 1 }}
+                      className="double-tap-content"
+                    >
+                      <div className="double-tap-chevrons">
+                        <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                        <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                        <ChevronRight className="double-tap-chevron" strokeWidth={3} />
+                      </div>
+                      <span className="text-xs font-semibold sm:text-sm">
+                        {10 * (doubleTapCount.right || 1)} seconds
+                      </span>
+                    </motion.div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {loading && (
+              <div className="absolute inset-0 z-[80] flex items-center justify-center bg-black">
+                <div className="yt-like-spinner" aria-label="Loading video" />
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            )}
 
-        {loading && (
-          <div className="absolute inset-0 z-[80] flex items-center justify-center bg-black">
-            <div className="yt-like-spinner" aria-label="Loading video" />
-          </div>
-        )}
-
-        {(isBuffering || isSeekingLoading) && !loading && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-[65] flex items-center justify-center pointer-events-none"
-          >
-            <div className="yt-like-spinner" aria-label="Buffering" />
-          </motion.div>
-        )}
-
-        {!playing && !loading && !isBuffering && !isSeekingLoading && (
-          <motion.div
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="absolute inset-0 z-[50] flex items-center justify-center cursor-pointer"
-            onClick={handlePlayPause}
-          >
-            <motion.div
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.95 }}
-              className="flex h-12 w-[68px] items-center justify-center rounded-[14px] bg-[#ff0033] shadow-lg sm:h-14 sm:w-20"
-            >
-              <Play className="ml-1 h-7 w-7 fill-white text-white sm:h-8 sm:w-8" />
-            </motion.div>
-          </motion.div>
-        )}
-
-        <div
-          className={`controls-container player-controls-backdrop absolute bottom-0 left-0 right-0 z-[60] pb-1 sm:pb-2 ${
-            !showControls ? "controls-hidden" : ""
-          }`}
-        >
-          <div className="px-3 pt-7 pb-1 sm:px-6 sm:pt-8 sm:pb-3">
-            <div
-              className={`seek-bar-container ${isSeeking ? "seeking" : ""}`}
-              onMouseDown={handleSeekMouseDown}
-              onMouseUp={handleSeekMouseUp}
-              onTouchStart={handleSeekMouseDown}
-              onTouchMove={(event) => event.stopPropagation()}
-              onTouchEnd={handleSeekMouseUp}
-            >
-              <div className="seek-bar-track">
-                <div className="seek-bar-buffered" style={{ width: `${buffered}%` }} />
-                <div className="seek-bar-progress" style={{ width: `${playedPercentage}%` }} />
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={duration || 0}
-                step={0.1}
-                value={currentTime}
-                onChange={handleSeekChange}
-                className="seek-bar-input"
-              />
-              <div className="seek-bar-thumb" style={{ left: `${playedPercentage}%` }} />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between px-2 sm:px-6 py-1.5 sm:py-2 gap-1 sm:gap-3">
-            {/* Left controls */}
-            <div className="flex min-w-0 items-center gap-1 sm:gap-3">
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={handlePlayPause}
-                className="text-white hover:text-red-500 transition-colors p-1"
-                aria-label={playing ? "Pause" : "Play"}
+            {(isBuffering || isSeekingLoading) && !loading && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 z-[65] flex items-center justify-center pointer-events-none"
               >
-                {playing ? (
-                  <Pause className="w-6 h-6 sm:w-7 sm:h-7" />
-                ) : (
-                  <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current" />
-                )}
-              </motion.button>
+                <div className="yt-like-spinner" aria-label="Buffering" />
+              </motion.div>
+            )}
 
-              <div className="flex items-center gap-0 sm:gap-1 md:gap-2 border-l border-white/20 pl-1.5 md:pl-3">
+            <AnimatePresence>
+              {showControls && !loading && !isBuffering && !isSeekingLoading && (
                 <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={skipBackward}
-                  className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
-                  aria-label="Skip backward 10 seconds"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
-                  <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
-                </motion.button>
-
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={skipForward}
-                  className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
-                  aria-label="Skip forward 10 seconds"
-                >
-                  <RotateCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
-                  <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
-                </motion.button>
-              </div>
-
-              <div className="relative flex items-center gap-1 border-l border-white/20 pl-1.5 sm:gap-2 sm:pl-3" ref={volumeSliderRef}>
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => {
-                    if (window.innerWidth < 768) {
-                      setShowVolumeSlider(!showVolumeSlider)
-                    } else {
-                      handleToggleMute()
-                    }
+                  key={playing ? "center-pause" : "center-play"}
+                  type="button"
+                  initial={{ opacity: 0, scale: 0.82 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.82 }}
+                  transition={{ duration: 0.18 }}
+                  whileTap={{ scale: 0.92 }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    handlePlayPause()
                   }}
-                  className="text-white hover:text-red-500 transition-colors p-1"
-                  aria-label={volume === 0 ? "Unmute" : "Mute"}
+                  className="absolute left-1/2 top-1/2 z-[58] flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm sm:h-16 sm:w-16"
+                  aria-label={playing ? "Pause" : "Play"}
                 >
-                  {volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                  {playing ? (
+                    <Pause className="h-7 w-7 fill-white sm:h-8 sm:w-8" />
+                  ) : (
+                    <Play className="ml-1 h-7 w-7 fill-white sm:h-8 sm:w-8" />
+                  )}
                 </motion.button>
+              )}
+            </AnimatePresence>
 
-                {/* Desktop volume slider */}
-                <div className="hidden md:flex items-center gap-2">
-                  <div className="relative w-20 volume-slider-container bg-white/20 rounded-full cursor-pointer">
-                    <div
-                      className="absolute h-full bg-white rounded-full transition-all"
-                      style={{ width: `${volume}%` }}
-                    />
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={volume}
-                      onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                      aria-label="Volume"
-                    />
-                    <div className="volume-slider-thumb" style={{ left: `${volume}%` }} />
+            <div
+              className={`controls-container player-controls-backdrop absolute bottom-0 left-0 right-0 z-[60] pb-1 sm:pb-2 ${
+                !showControls ? "controls-hidden" : ""
+              }`}
+            >
+              <div className="px-3 pt-7 pb-1 sm:px-6 sm:pt-8 sm:pb-3">
+                <div
+                  className={`seek-bar-container ${isSeeking ? "seeking" : ""}`}
+                  onMouseDown={handleSeekMouseDown}
+                  onMouseUp={handleSeekMouseUp}
+                  onTouchStart={handleSeekMouseDown}
+                  onTouchMove={(event) => event.stopPropagation()}
+                  onTouchEnd={handleSeekMouseUp}
+                >
+                  <div className="seek-bar-track">
+                    <div className="seek-bar-buffered" style={{ width: `${buffered}%` }} />
+                    <div className="seek-bar-progress" style={{ width: `${playedPercentage}%` }} />
                   </div>
-                  <span className="text-white text-xs font-medium min-w-[3ch]">{Math.round(volume)}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration || 0}
+                    step={0.1}
+                    value={currentTime}
+                    onChange={handleSeekChange}
+                    className="seek-bar-input"
+                  />
+                  <div className="seek-bar-thumb" style={{ left: `${playedPercentage}%` }} />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between px-2 sm:px-6 py-1.5 sm:py-2 gap-1 sm:gap-3">
+                <div className="flex min-w-0 items-center gap-1 sm:gap-3">
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={handlePlayPause}
+                    className="text-white hover:text-red-500 transition-colors p-1"
+                    aria-label={playing ? "Pause" : "Play"}
+                  >
+                    {playing ? (
+                      <Pause className="w-6 h-6 sm:w-7 sm:h-7" />
+                    ) : (
+                      <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-current" />
+                    )}
+                  </motion.button>
+
+                  <div className="flex items-center gap-0 sm:gap-1 md:gap-2 border-l border-white/20 pl-1.5 md:pl-3">
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={skipBackward}
+                      className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
+                      aria-label="Skip backward 10 seconds"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                      <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                    </motion.button>
+
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={skipForward}
+                      className="text-white hover:text-red-500 transition-colors p-0.5 md:p-1 relative"
+                      aria-label="Skip forward 10 seconds"
+                    >
+                      <RotateCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 md:w-5 md:h-5 lg:w-6 lg:h-6" />
+                      <span className="absolute text-[6px] sm:text-[7px] md:text-[8px] lg:text-[9px] font-bold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white">10</span>
+                    </motion.button>
+                  </div>
+
+                  <div className="relative flex items-center gap-1 border-l border-white/20 pl-1.5 sm:gap-2 sm:pl-3" ref={volumeSliderRef}>
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={() => {
+                        if (window.innerWidth < 768) {
+                          setShowVolumeSlider(!showVolumeSlider)
+                        } else {
+                          handleToggleMute()
+                        }
+                      }}
+                      className="text-white hover:text-red-500 transition-colors p-1"
+                      aria-label={volume === 0 ? "Unmute" : "Mute"}
+                    >
+                      {volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                    </motion.button>
+
+                    <div className="hidden md:flex items-center gap-2">
+                      <div className="relative w-20 volume-slider-container bg-white/20 rounded-full cursor-pointer">
+                        <div
+                          className="absolute h-full bg-white rounded-full transition-all"
+                          style={{ width: `${volume}%` }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={volume}
+                          onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                          aria-label="Volume"
+                        />
+                        <div className="volume-slider-thumb" style={{ left: `${volume}%` }} />
+                      </div>
+                      <span className="text-white text-xs font-medium min-w-[3ch]">{Math.round(volume)}%</span>
+                    </div>
+
+                    <AnimatePresence>
+                      {showVolumeSlider && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                          className="md:hidden absolute bottom-full left-0 mb-3 bg-black/95 backdrop-blur-xl rounded-xl p-4 shadow-2xl border border-white/10"
+                        >
+                          <div className="flex items-center gap-3">
+                            <VolumeX className="w-4 h-4 text-white/60" />
+                            <div className="relative w-32 volume-slider-container bg-white/20 rounded-full cursor-pointer">
+                              <div
+                                className="absolute h-full bg-red-500 rounded-full transition-all"
+                                style={{ width: `${volume}%` }}
+                              />
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={volume}
+                                onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                aria-label="Volume"
+                              />
+                              <div className="volume-slider-thumb" style={{ left: `${volume}%` }} />
+                            </div>
+                            <Volume2 className="w-4 h-4 text-white" />
+                          </div>
+                          <div className="text-center text-white text-sm font-medium mt-2">{Math.round(volume)}%</div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="whitespace-nowrap border-l border-white/20 pl-1.5 text-[10px] font-medium text-white sm:pl-3 sm:text-sm">
+                    {formatTime(currentTime)} / {formatTime(duration)}
+                  </div>
                 </div>
 
-                {/* Mobile volume slider popup */}
-                <AnimatePresence>
-                  {showVolumeSlider && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                      className="md:hidden absolute bottom-full left-0 mb-3 bg-black/95 backdrop-blur-xl rounded-xl p-4 shadow-2xl border border-white/10"
+                <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+                  <div className="relative">
+                    <motion.button
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={() => setShowSettings(!showSettings)}
+                      className="text-white hover:text-red-500 transition-colors p-1"
+                      aria-label="Settings"
                     >
-                      <div className="flex items-center gap-3">
-                        <VolumeX className="w-4 h-4 text-white/60" />
-                        <div className="relative w-32 volume-slider-container bg-white/20 rounded-full cursor-pointer">
-                          <div
-                            className="absolute h-full bg-red-500 rounded-full transition-all"
-                            style={{ width: `${volume}%` }}
-                          />
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={volume}
-                            onChange={(e) => handleVolumeChange(Number(e.target.value))}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                            aria-label="Volume"
-                          />
-                          <div className="volume-slider-thumb" style={{ left: `${volume}%` }} />
-                        </div>
-                        <Volume2 className="w-4 h-4 text-white" />
-                      </div>
-                      <div className="text-center text-white text-sm font-medium mt-2">{Math.round(volume)}%</div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+                      <Settings className="w-5 h-5" />
+                    </motion.button>
+                    <AnimatePresence>
+                      {showSettings && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                          className="absolute bottom-full right-0 mb-3 bg-black/95 backdrop-blur-xl rounded-xl p-3 min-w-[160px] shadow-2xl border border-white/10"
+                        >
+                          <div className="text-white text-xs font-bold mb-2 px-2 text-gray-400">SPEED</div>
+                          <div className="space-y-1">
+                            {playbackRates.map((rate) => (
+                              <motion.button
+                                key={rate}
+                                whileHover={{ scale: 1.02 }}
+                                whileTap={{ scale: 0.98 }}
+                                onClick={() => {
+                                  setPlaybackRate(rate)
+                                  if (isYouTube && playerRef.current) {
+                                    playerRef.current.setPlaybackRate(rate)
+                                  } else if (videoRef.current) {
+                                    videoRef.current.playbackRate = rate
+                                  }
+                                  setShowSettings(false)
+                                }}
+                                className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-all ${
+                                  playbackRate === rate
+                                    ? "bg-gradient-to-r from-red-500 to-red-600 text-white font-semibold"
+                                    : "text-white/80 hover:bg-white/10 hover:text-white"
+                                }`}
+                              >
+                                {rate === 1 ? "Normal" : `${rate}x`}
+                              </motion.button>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
 
-              <div className="whitespace-nowrap border-l border-white/20 pl-1.5 text-[10px] font-medium text-white sm:pl-3 sm:text-sm">
-                {formatTime(currentTime)} / {formatTime(duration)}
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={handleFullscreen}
+                    className="text-white hover:text-red-500 transition-colors p-1"
+                    aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                  >
+                    {fullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+                  </motion.button>
+                </div>
               </div>
             </div>
-
-            {/* Right controls */}
-            <div className="flex shrink-0 items-center gap-1 sm:gap-3">
-              <div className="relative">
-                <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="text-white hover:text-red-500 transition-colors p-1"
-                  aria-label="Settings"
-                >
-                  <Settings className="w-5 h-5" />
-                </motion.button>
-                <AnimatePresence>
-                  {showSettings && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                      className="absolute bottom-full right-0 mb-3 bg-black/95 backdrop-blur-xl rounded-xl p-3 min-w-[160px] shadow-2xl border border-white/10"
-                    >
-                      <div className="text-white text-xs font-bold mb-2 px-2 text-gray-400">SPEED</div>
-                      <div className="space-y-1">
-                        {playbackRates.map((rate) => (
-                          <motion.button
-                            key={rate}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            onClick={() => {
-                              setPlaybackRate(rate)
-                              if (isYouTube && playerRef.current) {
-                                playerRef.current.setPlaybackRate(rate)
-                              } else if (videoRef.current) {
-                                videoRef.current.playbackRate = rate
-                              }
-                              setShowSettings(false)
-                            }}
-                            className={`w-full text-left px-3 py-2 text-sm rounded-lg transition-all ${
-                              playbackRate === rate
-                                ? "bg-gradient-to-r from-red-500 to-red-600 text-white font-semibold"
-                                : "text-white/80 hover:bg-white/10 hover:text-white"
-                            }`}
-                          >
-                            {rate === 1 ? "Normal" : `${rate}x`}
-                          </motion.button>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={handleFullscreen}
-                className="text-white hover:text-red-500 transition-colors p-1"
-                aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-              >
-                {fullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
-              </motion.button>
-            </div>
-          </div>
-        </div>
-        </>
+          </>
         )}
       </div>
     </>
