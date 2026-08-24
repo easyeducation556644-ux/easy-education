@@ -373,7 +373,6 @@ async function repairImportedClassSync(db, session, existing, sourceClasses, eeC
           sourceChapter: sourceClass.chapterTitle || item.sourceChapter || "",
         } : {}),
         eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
         updatedAt: serverNow(),
       }
       batch.set(db.collection("classes").doc(item.id), patch, { merge: true })
@@ -623,6 +622,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
         sourceChapter: sourceClass.chapterTitle || "",
         sourceVideoHint: sourceClass.sourceVideoLocator || "",
         eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
         updatedAt: serverNow(),
         createdAt: serverNow(),
       }, { merge: true })
