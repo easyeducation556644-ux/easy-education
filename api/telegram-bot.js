@@ -27,6 +27,8 @@ const PLATFORM_LABELS = { udvash: "Udvash" }
 const PLATFORM_IDS = new Set(Object.keys(PLATFORM_LABELS))
 const SNAPSHOT_CHUNK_SIZE = 150
 const MEDIA_CONCURRENCY = 3
+const PUBLIC_SYNC_FEED_LIMIT = 1000
+const BOT_CLASS_SYNC_SCHEMA = 1
 
 const asArray = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
 const normalizeText = (value) => String(value || "").trim().toLowerCase()
@@ -262,9 +264,85 @@ function hasPlayableMedia(item) {
   return Boolean(item.youtubeLink || item.hlsLink || item.driveLink || item.dailymotionLink || item.rumbleLink || item.videoURL)
 }
 
+function classVideoUrl(item) {
+  return String(
+    item.videoURL
+    || item.youtubeLink
+    || item.driveLink
+    || item.dailymotionLink
+    || item.rumbleLink
+    || item.hlsLink
+    || "",
+  )
+}
+
+async function publishClassSyncEvents(db, classIds, action = "changed") {
+  const ids = [...new Set(asArray(classIds).map((id) => String(id || "").trim()).filter(Boolean))]
+  if (!ids.length) return 0
+
+  const normalizedAction = action === "deleted" ? "deleted" : "changed"
+  const ref = db.collection("settings").doc("contentSync")
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref)
+    const current = snapshot.exists ? snapshot.data() : {}
+    let seq = Number(current.seq || 0)
+    const previousEvents = Array.isArray(current.events) ? current.events : []
+    const stamp = Date.now()
+    const nextEvents = ids.map((docId, index) => {
+      seq += 1
+      return {
+        eventId: `classes:${docId}:bot-${normalizedAction}-${stamp.toString(36)}-${index}`.slice(0, 220),
+        collection: "classes",
+        docId,
+        action: normalizedAction,
+        scope: "public",
+        seq,
+        createdAt: stamp,
+      }
+    })
+    transaction.set(ref, {
+      type: "content-sync",
+      seq,
+      events: [...previousEvents, ...nextEvents].slice(-PUBLIC_SYNC_FEED_LIMIT),
+      updatedAt: Date.now(),
+    }, { merge: true })
+  })
+  return ids.length
+}
+
 async function existingEeClasses(db, eeCourseId) {
   const snap = await db.collection("classes").where("courseId", "==", eeCourseId).get()
   return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+}
+
+async function repairImportedClassSync(db, session, existing) {
+  const targets = existing
+    .filter((item) => importedClassMatches(item, session))
+    .filter((item) => Number(item.eeBotSyncSchema || 0) !== BOT_CLASS_SYNC_SCHEMA || (!item.videoURL && hasPlayableMedia(item)))
+
+  let repaired = 0
+  for (let start = 0; start < targets.length; start += 150) {
+    const chunk = targets.slice(start, start + 150)
+    const batch = db.batch()
+    const changedIds = []
+
+    chunk.forEach((item) => {
+      const videoURL = classVideoUrl(item)
+      batch.set(db.collection("classes").doc(item.id), {
+        ...(item.videoURL || !videoURL ? {} : { videoURL }),
+        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        updatedAt: serverNow(),
+      }, { merge: true })
+      if (!item.videoURL && videoURL) item.videoURL = videoURL
+      item.eeBotSyncSchema = BOT_CLASS_SYNC_SCHEMA
+      changedIds.push(item.id)
+    })
+
+    await batch.commit()
+    await publishClassSyncEvents(db, changedIds)
+    repaired += changedIds.length
+  }
+  return repaired
 }
 
 function selectedSourceClasses(snapshot, session) {
@@ -272,19 +350,20 @@ function selectedSourceClasses(snapshot, session) {
   return snapshot.classes.filter((item) => normalizedSection(item.sectionKey || item.sectionTitle) === key)
 }
 
-async function inspectMapping(db, session) {
+async function inspectMapping(db, session, { repairCache = false } = {}) {
   if (!session.eeCourseId || !session.sourceSnapshotId || !session.sourceSectionKey) {
     throw new Error("Mapping session incomplete। EE UP থেকে আবার mapping খুলুন।")
   }
   const snapshot = await loadSnapshot(db, session.sourceSnapshotId)
   const sourceClasses = selectedSourceClasses(snapshot, session)
   const existing = await existingEeClasses(db, session.eeCourseId)
+  const cacheRepairCount = repairCache ? await repairImportedClassSync(db, session, existing) : 0
   const imported = existing.filter((item) => importedClassMatches(item, session))
   const ready = imported.filter((item) => item.isPublished !== false && hasPlayableMedia(item))
   const readySourceIds = new Set(ready.map((item) => String(item.sourceClassId || "")).filter(Boolean))
   const pending = imported.filter((item) => !readySourceIds.has(String(item.sourceClassId || "")))
   const toSync = sourceClasses.filter((item) => !readySourceIds.has(String(item.sourceClassId)))
-  return { snapshot, sourceClasses, existing, imported, ready, pending, toSync }
+  return { snapshot, sourceClasses, existing, imported, ready, pending, toSync, cacheRepairCount }
 }
 
 function mappingKeyboard(analysis) {
@@ -296,7 +375,7 @@ function mappingKeyboard(analysis) {
 }
 
 async function showMappingAnalysis(db, chatId, session) {
-  const analysis = await inspectMapping(db, session)
+  const analysis = await inspectMapping(db, session, { repairCache: true })
   await setSession(db, chatId, {
     lastSnapshotCount: analysis.snapshot.classCount,
     lastSelectedCount: analysis.sourceClasses.length,
@@ -317,11 +396,12 @@ async function showMappingAnalysis(db, chatId, session) {
     `✅ EE ready: ${analysis.ready.length}`,
     `⏳ Pending/old staged: ${analysis.pending.length}`,
     `Sync লাগবে: ${analysis.toSync.length}`,
+    analysis.cacheRepairCount ? `🔄 EE cache visibility repaired: ${analysis.cacheRepairCount}` : "",
     "",
     analysis.toSync.length
       ? `একবার Sync all চাপলেই ${analysis.toSync.length}টাই check + media resolve + EE write হবে। 20 করে আর চাপতে হবে না।`
       : "এই mapping পুরো synced আছে ✅",
-  ].join("\n")
+  ].filter((line) => line !== "").join("\n")
 
   await sendMessage(chatId, text, mappingKeyboard(analysis))
 }
@@ -366,13 +446,16 @@ async function cleanupLegacyStaged(db, session) {
   let removed = 0
   for (let start = 0; start < candidates.length; start += 150) {
     const batch = db.batch()
+    const deletedIds = []
     candidates.slice(start, start + 150).forEach((item) => {
       batch.delete(db.collection("classes").doc(item.id))
       batch.delete(db.collection(JOB_COLLECTION).doc(`media_${item.id}`))
       batch.delete(db.collection(JOB_COLLECTION).doc(`ee_media_${item.id}`))
+      deletedIds.push(item.id)
       removed += 1
     })
     await batch.commit()
+    await publishClassSyncEvents(db, deletedIds, "deleted")
   }
   return removed
 }
@@ -392,6 +475,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
   for (let start = 0; start < sourceClasses.length; start += 150) {
     const batch = db.batch()
     const chunk = sourceClasses.slice(start, start + 150)
+    const changedIds = []
     chunk.forEach((sourceClass) => {
       if (readySourceIds.has(String(sourceClass.sourceClassId))) return
       const hierarchy = classHierarchy(sourceClass, eeCourse.type)
@@ -429,7 +513,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
         driveLink: "",
         dailymotionLink: "",
         rumbleLink: "",
-        videoURL: "",
+        videoURL: media.youtubeLink || "",
         imageURL: "",
         teacherName: asArray(sourceClass.teacherName),
         teacherImageURL: "",
@@ -456,9 +540,11 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
         sourceSubject: sourceClass.subjectTitle || "",
         sourceChapter: sourceClass.chapterTitle || "",
         sourceVideoHint: sourceClass.sourceVideoLocator || "",
+        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
         updatedAt: serverNow(),
         createdAt: serverNow(),
       }, { merge: true })
+      changedIds.push(classId)
 
       if (!hasYoutube || error) {
         batch.set(db.collection(JOB_COLLECTION).doc(`ee_media_${classId}`), {
@@ -479,6 +565,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
       nextOrder += 1
     })
     await batch.commit()
+    await publishClassSyncEvents(db, changedIds)
   }
 
   return { published, needsUpload, failed }
