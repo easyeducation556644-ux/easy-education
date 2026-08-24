@@ -1,4 +1,4 @@
-import { botToken, telegram } from "./bot/telegram.js"
+import { botToken, telegram } from "../server/bot/telegram.js"
 
 function expectedSetupSecret() {
   return process.env.BOT_SETUP_SECRET || ""
