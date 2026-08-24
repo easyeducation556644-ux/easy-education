@@ -341,6 +341,92 @@ function parseClassMedia(html) {
   }
 }
 
+function documentLines(html = "") {
+  const withBreaks = String(html)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "\n")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|li|div|tr|td|th|section|article|h[1-6]|a)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+  return decodeHtml(withBreaks)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+}
+
+function cleanTopicValue(value = "") {
+  return decodeHtml(String(value || ""))
+    .replace(/\\n/g, "\n")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim()
+}
+
+function parseClassTopic(html) {
+  const dataTopic = ["data-timestamps", "data-topics", "data-topic", "data-class-topic"]
+    .map((name) => cleanTopicValue(attributeValue(html, name)))
+    .find(Boolean)
+  if (dataTopic) return dataTopic
+
+  const lines = documentLines(html)
+  const timestampPattern = /^(?:\d{1,2}:)?\d{1,2}:\d{2}\s*[-–—]\s*\S+/u
+  const timestampLines = lines.filter((line) => timestampPattern.test(line))
+  if (timestampLines.length) return timestampLines.join("\n")
+
+  const markerPattern = /^(?:class\s*)?topics?(?:\s+covered)?|আলোচিত\s*বিষয়|পঠিত\s*বিষয়|ক্লাসের\s*বিষয়/iu
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!markerPattern.test(lines[index])) continue
+    const inline = lines[index].replace(/^.*?(?::|：|[-–—])\s*/u, "").trim()
+    if (inline && inline !== lines[index]) return inline
+    const following = lines.slice(index + 1, index + 18)
+      .filter((line) => !/^(?:video|download|resource|note|pdf|teacher|duration|back|home)$/i.test(line))
+    if (following.length) return following.join("\n")
+  }
+  return ""
+}
+
+function fallbackResourceLabel(url, index) {
+  try {
+    const pathname = decodeURIComponent(new URL(url).pathname)
+    const last = pathname.split("/").filter(Boolean).pop() || ""
+    if (last && /\.(?:pdf|docx?|pptx?|xlsx?)$/i.test(last)) return last
+  } catch {}
+  return `Class note ${index + 1}`
+}
+
+function parseClassResources(html, baseUrl) {
+  const output = []
+  const seen = new Set()
+  for (const anchor of anchors(html)) {
+    let url = ""
+    try { url = absoluteUrl(anchor.href, baseUrl) } catch { continue }
+    if (!/^https?:/i.test(url) || seen.has(url)) continue
+
+    const labelText = textContent(anchor.innerHtml)
+    const noteLikeUrl = /(?:drive|docs)\.google\.com|\.(?:pdf|docx?|pptx?|xlsx?)(?:[?#]|$)|contentbuttontype=(?:pdf|note|notes|sheet|lecturesheet|lecture-sheet)/i.test(url)
+    const noteLikeLabel = /\b(?:pdf|note|notes|sheet|lecture\s*sheet|class\s*note|resource)\b|নোট|শিট|লেকচার\s*শিট/iu.test(labelText)
+    if (!noteLikeUrl && !noteLikeLabel) continue
+
+    seen.add(url)
+    const genericLabel = /^(?:download|open|view|pdf|note|notes|resource)$/i.test(labelText)
+    output.push({
+      label: !labelText || genericLabel ? fallbackResourceLabel(url, output.length) : labelText,
+      url,
+    })
+  }
+  return output
+}
+
+function parseClassDetails(html, baseUrl) {
+  return {
+    ...parseClassMedia(html),
+    topic: parseClassTopic(html),
+    resourceLinks: parseClassResources(html, baseUrl),
+  }
+}
+
 export async function listUdvashCoursesHtmlV2(auth) {
   const jar = parseCookieHeader(auth?.cookie || "")
   const page = await fetchHtml(COURSE_INDEX, jar, ORIGIN)
@@ -395,12 +481,12 @@ export async function getUdvashClassMediaBulkHtml(auth, classes, concurrency = 3
     try {
       if (!item?.sourceVideoLocator) throw new Error("Class details URL missing")
       const page = await fetchHtml(item.sourceVideoLocator, jar, ORIGIN)
-      return { sourceClassId: item.sourceClassId, media: parseClassMedia(page.html), error: "" }
+      return { sourceClassId: item.sourceClassId, media: parseClassDetails(page.html, page.url), error: "" }
     } catch (error) {
       if (error?.code === "UDVASH_SESSION_EXPIRED") throw error
       return {
         sourceClassId: item?.sourceClassId || "",
-        media: { youtubeId: "", youtubeLink: "", directSources: [] },
+        media: { youtubeId: "", youtubeLink: "", directSources: [], topic: "", resourceLinks: [] },
         error: String(error?.message || error).slice(0, 500),
       }
     }

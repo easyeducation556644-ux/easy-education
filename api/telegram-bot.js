@@ -28,7 +28,8 @@ const PLATFORM_IDS = new Set(Object.keys(PLATFORM_LABELS))
 const SNAPSHOT_CHUNK_SIZE = 150
 const MEDIA_CONCURRENCY = 3
 const PUBLIC_SYNC_FEED_LIMIT = 1000
-const BOT_CLASS_SYNC_SCHEMA = 1
+const BOT_CLASS_SYNC_SCHEMA = 2
+const BOT_CLASS_METADATA_SCHEMA = 1
 
 const asArray = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
 const normalizeText = (value) => String(value || "").trim().toLowerCase()
@@ -315,10 +316,44 @@ async function existingEeClasses(db, eeCourseId) {
   return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
 }
 
-async function repairImportedClassSync(db, session, existing) {
+function comparableArray(value) {
+  return asArray(value).map((item) => String(item || "").trim()).filter(Boolean)
+}
+
+function sameArray(left, right) {
+  const a = comparableArray(left)
+  const b = comparableArray(right)
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+function metadataRepairNeeded(item, sourceClass, eeCourseType) {
+  if (!sourceClass) return false
+  const hierarchy = classHierarchy(sourceClass, eeCourseType)
+  return Number(item.eeBotMetadataSchema || 0) !== BOT_CLASS_METADATA_SCHEMA
+    || !sameArray(item.subject, hierarchy.subject)
+    || !sameArray(item.chapter, hierarchy.chapter)
+}
+
+function cleanResourceLinks(value) {
+  return asArray(value)
+    .map((item, index) => ({
+      label: String(item?.label || item?.title || `Class note ${index + 1}`).trim(),
+      url: String(item?.url || item?.link || "").trim(),
+    }))
+    .filter((item) => item.label && item.url)
+}
+
+async function repairImportedClassSync(db, session, existing, sourceClasses, eeCourseType) {
+  const sourceById = new Map(sourceClasses.map((item) => [String(item.sourceClassId || ""), item]))
   const targets = existing
     .filter((item) => importedClassMatches(item, session))
-    .filter((item) => Number(item.eeBotSyncSchema || 0) !== BOT_CLASS_SYNC_SCHEMA || (!item.videoURL && hasPlayableMedia(item)))
+    .map((item) => ({ item, sourceClass: sourceById.get(String(item.sourceClassId || "")) }))
+    .filter(({ item, sourceClass }) => {
+      const hierarchy = sourceClass ? classHierarchy(sourceClass, eeCourseType) : null
+      return Number(item.eeBotSyncSchema || 0) !== BOT_CLASS_SYNC_SCHEMA
+        || (!item.videoURL && hasPlayableMedia(item))
+        || (hierarchy && (!sameArray(item.subject, hierarchy.subject) || !sameArray(item.chapter, hierarchy.chapter)))
+    })
 
   let repaired = 0
   for (let start = 0; start < targets.length; start += 150) {
@@ -326,14 +361,29 @@ async function repairImportedClassSync(db, session, existing) {
     const batch = db.batch()
     const changedIds = []
 
-    chunk.forEach((item) => {
+    chunk.forEach(({ item, sourceClass }) => {
       const videoURL = classVideoUrl(item)
-      batch.set(db.collection("classes").doc(item.id), {
+      const hierarchy = sourceClass ? classHierarchy(sourceClass, eeCourseType) : null
+      const patch = {
         ...(item.videoURL || !videoURL ? {} : { videoURL }),
+        ...(hierarchy ? {
+          subject: hierarchy.subject,
+          chapter: hierarchy.chapter,
+          sourceSubject: sourceClass.subjectTitle || item.sourceSubject || "",
+          sourceChapter: sourceClass.chapterTitle || item.sourceChapter || "",
+        } : {}),
         eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
         updatedAt: serverNow(),
-      }, { merge: true })
+      }
+      batch.set(db.collection("classes").doc(item.id), patch, { merge: true })
       if (!item.videoURL && videoURL) item.videoURL = videoURL
+      if (hierarchy) {
+        item.subject = hierarchy.subject
+        item.chapter = hierarchy.chapter
+        item.sourceSubject = sourceClass.subjectTitle || item.sourceSubject || ""
+        item.sourceChapter = sourceClass.chapterTitle || item.sourceChapter || ""
+      }
       item.eeBotSyncSchema = BOT_CLASS_SYNC_SCHEMA
       changedIds.push(item.id)
     })
@@ -354,21 +404,48 @@ async function inspectMapping(db, session, { repairCache = false } = {}) {
   if (!session.eeCourseId || !session.sourceSnapshotId || !session.sourceSectionKey) {
     throw new Error("Mapping session incomplete। EE UP থেকে আবার mapping খুলুন।")
   }
-  const snapshot = await loadSnapshot(db, session.sourceSnapshotId)
+  const [snapshot, eeCourse] = await Promise.all([
+    loadSnapshot(db, session.sourceSnapshotId),
+    getEeCourse(db, session.eeCourseId),
+  ])
   const sourceClasses = selectedSourceClasses(snapshot, session)
   const existing = await existingEeClasses(db, session.eeCourseId)
-  const cacheRepairCount = repairCache ? await repairImportedClassSync(db, session, existing) : 0
+  const eeCourseType = eeCourse.type || "subject"
+  const cacheRepairCount = repairCache
+    ? await repairImportedClassSync(db, session, existing, sourceClasses, eeCourseType)
+    : 0
   const imported = existing.filter((item) => importedClassMatches(item, session))
   const ready = imported.filter((item) => item.isPublished !== false && hasPlayableMedia(item))
   const readySourceIds = new Set(ready.map((item) => String(item.sourceClassId || "")).filter(Boolean))
   const pending = imported.filter((item) => !readySourceIds.has(String(item.sourceClassId || "")))
   const toSync = sourceClasses.filter((item) => !readySourceIds.has(String(item.sourceClassId)))
-  return { snapshot, sourceClasses, existing, imported, ready, pending, toSync, cacheRepairCount }
+  const sourceById = new Map(sourceClasses.map((item) => [String(item.sourceClassId || ""), item]))
+  const metadataRepair = imported.filter((item) => metadataRepairNeeded(
+    item,
+    sourceById.get(String(item.sourceClassId || "")),
+    eeCourseType,
+  ))
+  return {
+    snapshot,
+    sourceClasses,
+    existing,
+    imported,
+    ready,
+    pending,
+    toSync,
+    metadataRepair,
+    cacheRepairCount,
+    eeCourse,
+    eeCourseType,
+  }
 }
 
 function mappingKeyboard(analysis) {
   const rows = []
   if (analysis.toSync.length) rows.push([button(`🚀 Sync all ${analysis.toSync.length}`, "sync:all")])
+  if (analysis.metadataRepair.length) {
+    rows.push([button(`🧭 Fix hierarchy + topics ${analysis.metadataRepair.length}`, "metadata:repair")])
+  }
   rows.push([button("🔄 Check EE", "mapping:check"), button("♻️ Refresh Udvash", "snapshot:refresh")])
   rows.push([button("🏠 Main", "home")])
   return keyboard(rows)
@@ -377,30 +454,35 @@ function mappingKeyboard(analysis) {
 async function showMappingAnalysis(db, chatId, session) {
   const analysis = await inspectMapping(db, session, { repairCache: true })
   await setSession(db, chatId, {
+    eeCourseType: analysis.eeCourseType,
     lastSnapshotCount: analysis.snapshot.classCount,
     lastSelectedCount: analysis.sourceClasses.length,
     lastReadyCount: analysis.ready.length,
     lastPendingCount: analysis.pending.length,
     lastToSyncCount: analysis.toSync.length,
+    lastMetadataRepairCount: analysis.metadataRepair.length,
   })
 
   const text = [
     `Platform: ${PLATFORM_LABELS[session.platform] || session.platform}`,
     `Source course: ${session.sourceCourseTitle}`,
     `Source type: ${session.sourceSectionTitle}`,
-    `EE course: ${session.eeCourseTitle} (${session.eeCourseType || "subject"})`,
+    `EE course: ${session.eeCourseTitle} (${analysis.eeCourseType})`,
     `Destination: ${destinationLabel(session)}`,
     "",
     `Udvash snapshot total: ${analysis.snapshot.classCount}`,
     `এই content type-এর class: ${analysis.sourceClasses.length}`,
     `✅ EE ready: ${analysis.ready.length}`,
     `⏳ Pending/old staged: ${analysis.pending.length}`,
-    `Sync লাগবে: ${analysis.toSync.length}`,
-    analysis.cacheRepairCount ? `🔄 EE cache visibility repaired: ${analysis.cacheRepairCount}` : "",
+    `Video sync লাগবে: ${analysis.toSync.length}`,
+    `🧭 Hierarchy/topics/notes repair লাগবে: ${analysis.metadataRepair.length}`,
+    analysis.cacheRepairCount ? `🔄 EE hierarchy/cache repaired: ${analysis.cacheRepairCount}` : "",
     "",
     analysis.toSync.length
-      ? `একবার Sync all চাপলেই ${analysis.toSync.length}টাই check + media resolve + EE write হবে। 20 করে আর চাপতে হবে না।`
-      : "এই mapping পুরো synced আছে ✅",
+      ? `একবার Sync all চাপলেই ${analysis.toSync.length}টা missing class sync হবে।`
+      : analysis.metadataRepair.length
+        ? "Video synced আছে। এখন Fix hierarchy + topics চাপলে current EE course type অনুযায়ী Subject → Chapter বসবে, সাথে Udvash topic + notes URL আসবে।"
+        : "এই mapping video + metadata দুইটাই পুরো synced আছে ✅",
   ].filter((line) => line !== "").join("\n")
 
   await sendMessage(chatId, text, mappingKeyboard(analysis))
@@ -482,7 +564,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
       const classId = classDocumentId(session, sourceClass.sourceClassId)
       const classRef = db.collection("classes").doc(classId)
       const mediaResult = mediaById.get(String(sourceClass.sourceClassId))
-      const media = mediaResult?.media || { youtubeLink: "", directSources: [] }
+      const media = mediaResult?.media || { youtubeLink: "", directSources: [], topic: "", resourceLinks: [] }
       const error = String(mediaResult?.error || "")
       const hasYoutube = Boolean(media.youtubeLink)
       const hasDirect = asArray(media.directSources).length > 0
@@ -503,7 +585,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
       batch.set(classRef, {
         courseId: session.eeCourseId,
         title: sourceClass.title || "Untitled class",
-        topic: hierarchy.topic,
+        topic: String(media.topic || hierarchy.topic || "").trim(),
         chapter: hierarchy.chapter,
         subject: hierarchy.subject,
         order: nextOrder,
@@ -517,7 +599,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
         imageURL: "",
         teacherName: asArray(sourceClass.teacherName),
         teacherImageURL: "",
-        resourceLinks: [],
+        resourceLinks: cleanResourceLinks(media.resourceLinks),
         isArchived,
         classGroupId,
         isPublished: hasYoutube && !error,
@@ -569,6 +651,109 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
   }
 
   return { published, needsUpload, failed }
+}
+
+async function repairSelectedMetadata(db, chatId, telegramUserId, session) {
+  const analysis = await inspectMapping(db, session, { repairCache: true })
+  if (!analysis.metadataRepair.length) {
+    await showMappingAnalysis(db, chatId, session)
+    return
+  }
+
+  const account = await getAccount(db, session.accountId)
+  const sourceById = new Map(analysis.sourceClasses.map((item) => [String(item.sourceClassId || ""), item]))
+  const targetBySourceId = new Map(analysis.metadataRepair.map((item) => [String(item.sourceClassId || ""), item]))
+  const sourceTargets = analysis.metadataRepair
+    .map((item) => sourceById.get(String(item.sourceClassId || "")))
+    .filter(Boolean)
+
+  await sendMessage(
+    chatId,
+    [
+      `🧭 ${sourceTargets.length}টা existing class metadata repair করছি।`,
+      `Current EE course type: ${analysis.eeCourseType}`,
+      analysis.eeCourseType === "batch"
+        ? "Udvash Subject → EE Subject, Udvash Chapter → EE Chapter হবে।"
+        : "Subject-type rule অনুযায়ী Udvash Subject → EE Chapter হবে।",
+      "Class detail page থেকে taught topics + note/resource URL-ও তুলছি।",
+      "Saved session/cookie reuse হবে; expire না হলে নতুন login হবে না।",
+    ].join("\n"),
+  )
+
+  const detailResults = await withAccountAuth(
+    db,
+    account,
+    (auth) => getUdvashClassMediaBulk(auth, sourceTargets, MEDIA_CONCURRENCY),
+  )
+  const detailById = new Map(detailResults.map((result) => [String(result.sourceClassId || ""), result]))
+
+  let repaired = 0
+  let topicCount = 0
+  let noteCount = 0
+  let failed = 0
+
+  for (let start = 0; start < sourceTargets.length; start += 150) {
+    const chunk = sourceTargets.slice(start, start + 150)
+    const batch = db.batch()
+    const changedIds = []
+
+    chunk.forEach((sourceClass) => {
+      const sourceId = String(sourceClass.sourceClassId || "")
+      const item = targetBySourceId.get(sourceId)
+      if (!item) return
+      const hierarchy = classHierarchy(sourceClass, analysis.eeCourseType)
+      const result = detailById.get(sourceId)
+      const media = result?.media || { topic: "", resourceLinks: [] }
+      const topic = String(media.topic || "").trim()
+      const resources = cleanResourceLinks(media.resourceLinks)
+      const error = String(result?.error || "")
+
+      const patch = {
+        title: sourceClass.title || item.title || "Untitled class",
+        subject: hierarchy.subject,
+        chapter: hierarchy.chapter,
+        sourceSubject: sourceClass.subjectTitle || item.sourceSubject || "",
+        sourceChapter: sourceClass.chapterTitle || item.sourceChapter || "",
+        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        metadataUpdatedByTelegramUserId: String(telegramUserId),
+        updatedAt: serverNow(),
+      }
+      if (topic) {
+        patch.topic = topic
+        topicCount += 1
+      } else if (!item.topic) {
+        patch.topic = hierarchy.topic
+      }
+      if (resources.length) {
+        patch.resourceLinks = resources
+        noteCount += resources.length
+      }
+      if (!error) patch.eeBotMetadataSchema = BOT_CLASS_METADATA_SCHEMA
+      else failed += 1
+
+      batch.set(db.collection("classes").doc(item.id), patch, { merge: true })
+      changedIds.push(item.id)
+      repaired += 1
+    })
+
+    await batch.commit()
+    await publishClassSyncEvents(db, changedIds)
+  }
+
+  await sendMessage(
+    chatId,
+    [
+      "✅ Metadata repair finished",
+      `Classes updated: ${repaired}`,
+      `Topics found: ${topicCount}`,
+      `Note/resource URLs found: ${noteCount}`,
+      `Detail fetch failed/retry: ${failed}`,
+      analysis.eeCourseType === "batch"
+        ? "এখন Subject → Chapter structure-এ Lecture 1/2 একই নাম হলেও আলাদা chapter-এর ভিতরে থাকবে।"
+        : "Subject-type hierarchy rule apply হয়েছে।",
+    ].join("\n"),
+  )
+  await showMappingAnalysis(db, chatId, { ...session, eeCourseType: analysis.eeCourseType })
 }
 
 async function syncAllSelected(db, chatId, telegramUserId, session) {
@@ -1185,6 +1370,7 @@ async function handleCallback(db, callback) {
   }
   if (data.startsWith("grp:")) return chooseGroup(db, chatId, Number(data.split(":")[1]))
   if (data === "mapping:check") return showMappingAnalysis(db, chatId, await getSession(db, chatId))
+  if (data === "metadata:repair") return repairSelectedMetadata(db, chatId, userId, await getSession(db, chatId))
   if (data === "snapshot:refresh") return refreshSnapshotForSession(db, chatId)
   if (data === "sync:all") return syncAllSelected(db, chatId, userId, await getSession(db, chatId))
   if (data.startsWith("accountinfo:")) return showAccountInfo(db, chatId, Number(data.split(":")[1]))
