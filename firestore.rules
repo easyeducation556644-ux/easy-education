@@ -73,6 +73,14 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ===== Class Groups / Extra Class Cards =====
+    match /classGroups/{groupId} {
+      allow read: if true;
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
     // ===== Categories Collection =====
     match /categories/{categoryId} {
       allow read: if true; // Public reading

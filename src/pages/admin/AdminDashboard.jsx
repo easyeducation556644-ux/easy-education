@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   Gift,
+  Layers3,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -36,6 +37,7 @@ import ManageUsers from "./ManageUsers"
 import ManageTrials from "./ManageTrials"
 import ManageCourses from "./ManageCourses"
 import ManageClasses from "./ManageClasses"
+import ManageClassGroups from "./ManageClassGroups"
 import ManageAnnouncements from "./ManageAnnouncements"
 import ManageCoupons from "./ManageCoupons"
 import ManagePayments from "./ManagePayments"
@@ -117,6 +119,7 @@ export default function AdminDashboard() {
 
   const canReadNotifications = hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.NOTIFICATIONS)
   const canReadBanAlerts = hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.BAN_ALERTS)
+  const canManageClasses = hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.CLASSES)
 
   useEffect(() => {
     if (!canReadNotifications) {
@@ -142,12 +145,22 @@ export default function AdminDashboard() {
       name: page.label,
       icon: ICON_BY_PERMISSION[page.id] || LayoutDashboard,
     })),
+    ...(canManageClasses ? [{
+      id: "__class-groups",
+      label: "Class Cards",
+      name: "Class Cards",
+      path: "/admin/class-groups",
+      description: "Create Foundation/Special class cards and place classes inside them.",
+      icon: Layers3,
+    }] : []),
     ...(fullAdmin ? [{ id: "__trials", label: "Trials", name: "Trials", path: "/admin/trials", description: "Create and manage claim-first trials.", icon: Gift, fullAdminOnly: true }] : []),
   ]
 
-  const visibleNavItems = navItems.filter((item) =>
-    item.id === "__trials" ? fullAdmin : item.fullAdminOnly ? fullAdmin : hasAdminPermission(userProfile, item.id),
-  )
+  const visibleNavItems = navItems.filter((item) => {
+    if (item.id === "__trials") return fullAdmin
+    if (item.id === "__class-groups") return canManageClasses
+    return item.fullAdminOnly ? fullAdmin : hasAdminPermission(userProfile, item.id)
+  })
   const currentPage =
     visibleNavItems
       .filter((item) => item.path === "/admin" ? location.pathname === "/admin" : location.pathname.startsWith(item.path))
@@ -218,6 +231,7 @@ export default function AdminDashboard() {
               <Route path="subjects" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SUBJECTS}><ManageSubjects /></AdminRoute>} />
               <Route path="chapters" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CHAPTERS}><ManageChapters /></AdminRoute>} />
               <Route path="classes" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASSES}><ManageClasses /></AdminRoute>} />
+              <Route path="class-groups" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASSES}><ManageClassGroups /></AdminRoute>} />
               <Route path="class-comments" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CLASS_COMMENTS}><ClassComments /></AdminRoute>} />
               <Route path="exams" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAMS}><ManageExams /></AdminRoute>} />
               <Route path="exams/:examId/questions" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.EXAMS}><ManageExamQuestions /></AdminRoute>} />

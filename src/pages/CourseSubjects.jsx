@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { motion, AnimatePresence } from "framer-motion"
-import { BookOpen, ArrowLeft, Lock, Archive, FileQuestion, Send, CheckCircle2, X, ArrowRight } from "lucide-react"
+import { BookOpen, ArrowLeft, Lock, Archive, FileQuestion, Send, CheckCircle2, X, ArrowRight, Layers3 } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -20,6 +20,7 @@ export default function CourseSubjects() {
   const [actualCourseId, setActualCourseId] = useState(null)
   const [subjects, setSubjects] = useState([])
   const [subjectData, setSubjectData] = useState([])
+  const [classGroups, setClassGroups] = useState([])
   const [hasArchive, setHasArchive] = useState(false)
   const [exams, setExams] = useState([])
   const [loading, setLoading] = useState(true)
@@ -162,12 +163,18 @@ export default function CourseSubjects() {
           }
         }
 
-        const classesQuery = query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))
-        const classesSnapshot = await getDocs(classesQuery)
-        const classesData = classesSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
+        const [classesSnapshot, groupsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))),
+          getDocs(query(collection(db, "classGroups"), where("courseId", "==", resolvedCourseId))),
+        ])
+
+        const allClassesData = classesSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
         }))
+        const classesData = isAdmin
+          ? allClassesData
+          : allClassesData.filter((item) => item.isPublished !== false)
 
         const isClassArchived = (cls) => {
           if (cls.isArchived === true) return true
@@ -180,9 +187,10 @@ export default function CourseSubjects() {
           return subjectIsArchive || chapterIsArchive
         }
 
+        const regularClasses = classesData.filter((cls) => !isClassArchived(cls) && !cls.classGroupId)
         const subjectChapterMap = {}
-        classesData
-          .filter((cls) => !isClassArchived(cls) && cls.subject)
+        regularClasses
+          .filter((cls) => cls.subject)
           .forEach((cls) => {
             const subjects = Array.isArray(cls.subject) ? cls.subject : [cls.subject]
             subjects.forEach((s) => {
@@ -208,11 +216,24 @@ export default function CourseSubjects() {
 
         const subjectsQuery = query(collection(db, "subjects"), where("courseId", "==", resolvedCourseId))
         const subjectsSnapshot = await getDocs(subjectsQuery)
-        const fetchedSubjects = subjectsSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
+        const fetchedSubjects = subjectsSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
         }))
         setSubjectData(fetchedSubjects)
+
+        const groupCounts = new Map()
+        classesData
+          .filter((item) => !isClassArchived(item) && item.classGroupId)
+          .forEach((item) => groupCounts.set(item.classGroupId, (groupCounts.get(item.classGroupId) || 0) + 1))
+
+        setClassGroups(
+          groupsSnapshot.docs
+            .map((item) => ({ id: item.id, ...item.data() }))
+            .filter((group) => (isAdmin || group.isVisible !== false) && (isAdmin || (groupCounts.get(group.id) || 0) > 0))
+            .map((group) => ({ ...group, classCount: groupCounts.get(group.id) || 0 }))
+            .sort((a, b) => Number(a.order || 0) - Number(b.order || 0)),
+        )
 
         const archiveClasses = classesData.filter((cls) => isClassArchived(cls))
         setHasArchive(archiveClasses.length > 0)
@@ -290,7 +311,7 @@ export default function CourseSubjects() {
             Back to Course
           </button>
           <h1 className="text-3xl font-bold mb-2">{course?.title}</h1>
-          <p className="text-muted-foreground">Select a subject to view chapters</p>
+          <p className="text-muted-foreground">Select a subject or class card</p>
         </div>
 
         {course?.telegramLink && currentUser && hasAccess && !telegramJoined && (
@@ -373,11 +394,31 @@ export default function CourseSubjects() {
             )
           })}
 
+          {classGroups.map((group, index) => (
+            <motion.button
+              key={group.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: (subjects.length + index + (exams.length > 0 ? 1 : 0)) * 0.1 }}
+              onClick={() => navigate(`/course/${courseId}/classes/__group__${group.id}`)}
+              className="group relative bg-card border border-border rounded-xl p-6 hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-secondary/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="relative">
+                <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
+                  <Layers3 className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{group.title}</h3>
+                <p className="text-sm text-muted-foreground">{group.classCount} class{group.classCount === 1 ? "" : "es"} · View subjects</p>
+              </div>
+            </motion.button>
+          ))}
+
           {hasArchive && (
             <motion.button
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: (subjects.length + (exams.length > 0 ? 1 : 0)) * 0.1 }}
+              transition={{ delay: (subjects.length + classGroups.length + (exams.length > 0 ? 1 : 0)) * 0.1 }}
               onClick={() => {
                 navigate(`/course/${courseId}/subjects/archive/chapters`)
               }}
@@ -395,9 +436,9 @@ export default function CourseSubjects() {
           )}
         </div>
 
-        {subjects.length === 0 && !hasArchive && (
+        {subjects.length === 0 && classGroups.length === 0 && !hasArchive && (
           <div className="text-center py-12 text-muted-foreground">
-            <p>No subjects or archived classes available for this course yet.</p>
+            <p>No subjects, class cards, or archived classes available for this course yet.</p>
           </div>
         )}
       </div>
