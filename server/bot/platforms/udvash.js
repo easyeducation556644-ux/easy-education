@@ -1,5 +1,6 @@
 import { loginUdvashWeb } from "./udvash-web-login.js"
 import {
+  getUdvashClassMediaHtml,
   getUdvashCourseContentHtml,
   listUdvashCoursesHtml,
 } from "./udvash-html.js"
@@ -14,6 +15,10 @@ export async function listUdvashCourses(auth) {
 
 export async function getUdvashCourseContent(auth, courseId) {
   return getUdvashCourseContentHtml(auth, courseId)
+}
+
+export async function getUdvashClassMedia(auth, detailsUrl) {
+  return getUdvashClassMediaHtml(auth, detailsUrl)
 }
 
 export function udvashConfigured() {

@@ -1,6 +1,9 @@
 const ORIGIN = "https://online.udvash-unmesh.com"
 const COURSE_INDEX = `${ORIGIN}/Content/Index?id=2`
 const USER_AGENT = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36"
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504])
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function decodeHtml(value = "") {
   return String(value)
@@ -94,10 +97,31 @@ function looksLikeLogin(url, html) {
   return lower.includes("registrationnumber") && lower.includes("__requestverificationtoken") && lower.includes("password")
 }
 
+async function fetchWithRetry(url, options, attempts = 4) {
+  let lastError
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options)
+      if (!RETRYABLE_STATUS.has(response.status) || attempt === attempts - 1) return response
+      try {
+        await response.body?.cancel?.()
+      } catch {
+        // Ignore body cleanup failures before retrying.
+      }
+    } catch (error) {
+      lastError = error
+      if (attempt === attempts - 1) throw error
+    }
+    const delay = (600 * (2 ** attempt)) + Math.floor(Math.random() * 300)
+    await sleep(delay)
+  }
+  throw lastError || new Error("Udvash request failed")
+}
+
 async function fetchHtml(url, jar, referer = ORIGIN) {
   let current = absoluteUrl(url, referer)
   for (let hop = 0; hop < 5; hop += 1) {
-    const response = await fetch(current, {
+    const response = await fetchWithRetry(current, {
       method: "GET",
       headers: requestHeaders(jar, referer),
       redirect: "manual",
@@ -278,6 +302,26 @@ function parseClasses(html, baseUrl, context) {
   }).filter((item) => item.sourceContentId && item.title), (item) => item.sourceClassId)
 }
 
+function attributeValue(html, name) {
+  const doubleQuoted = new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i").exec(String(html || ""))
+  if (doubleQuoted) return decodeHtml(doubleQuoted[1] || "")
+  const singleQuoted = new RegExp(`${name}\\s*=\\s*'([^']*)'`, "i").exec(String(html || ""))
+  return decodeHtml(singleQuoted?.[1] || "")
+}
+
+function parseClassMedia(html) {
+  const youtubeId = attributeValue(html, "data-youtube-video").trim()
+  const directSources = attributeValue(html, "data-all-video-source")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return {
+    youtubeId,
+    youtubeLink: youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : "",
+    directSources,
+  }
+}
+
 export async function listUdvashCoursesHtml(auth) {
   const jar = parseCookieHeader(auth?.cookie || "")
   const page = await fetchHtml(COURSE_INDEX, jar, ORIGIN)
@@ -295,13 +339,13 @@ export async function getUdvashCourseContentHtml(auth, courseId) {
   const subjectPage = await fetchHtml(course.url, jar, indexPage.url)
   const subjects = parseSubjects(subjectPage.html, subjectPage.url, course)
 
-  const subjectResults = await mapLimit(subjects, 6, async (subject) => {
+  const subjectResults = await mapLimit(subjects, 2, async (subject) => {
     const page = await fetchHtml(subject.url, jar, subjectPage.url)
     const chapters = parseChapters(page.html, page.url, subject)
-    const chapterResults = await mapLimit(chapters, 6, async (chapter) => {
+    const chapterResults = await mapLimit(chapters, 2, async (chapter) => {
       const chapterPage = await fetchHtml(chapter.url, jar, page.url)
       const contentTypes = parseContentTypes(chapterPage.html, chapterPage.url, chapter)
-      const typeResults = await mapLimit(contentTypes, 6, async (contentType) => {
+      const typeResults = await mapLimit(contentTypes, 1, async (contentType) => {
         const contentPage = await fetchHtml(contentType.url, jar, chapterPage.url)
         return parseClasses(contentPage.html, contentPage.url, { subject, chapter, contentType })
       })
@@ -312,6 +356,14 @@ export async function getUdvashCourseContentHtml(auth, courseId) {
 
   auth.cookie = cookieHeader(jar)
   return uniqueBy(subjectResults.flat(), (item) => item.sourceClassId)
+}
+
+export async function getUdvashClassMediaHtml(auth, detailsUrl) {
+  if (!detailsUrl) throw new Error("Udvash class details URL missing")
+  const jar = parseCookieHeader(auth?.cookie || "")
+  const page = await fetchHtml(detailsUrl, jar, ORIGIN)
+  auth.cookie = cookieHeader(jar)
+  return parseClassMedia(page.html)
 }
 
 export const UDVASH_HTML_DEFAULTS = {
