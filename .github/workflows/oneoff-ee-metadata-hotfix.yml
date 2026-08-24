@@ -17,59 +17,58 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Fix metadata schema write placement
+
+      - name: Repair runtime marker placement
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+
           p = Path('api/telegram-bot.js')
-          text = p.read_text()
+          s = p.read_text()
 
-          wrong = '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-                  eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
-                  updatedAt: serverNow(),'''
-          # indentation in file is 8 spaces for the object keys, but accept either exact variant defensively
-          if wrong in text:
-              text = text.replace(wrong, '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-                  updatedAt: serverNow(),''', 1)
-          else:
-              wrong2 = '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
-        updatedAt: serverNow(),'''
-              if wrong2 not in text:
-                  raise SystemExit('Wrong metadata line not found')
-              text = text.replace(wrong2, '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-        updatedAt: serverNow(),''', 1)
+          # 1) The lightweight hierarchy/cache repair must never reference the
+          # media resolver's local `error` variable.
+          a = s.index('async function repairImportedClassSync')
+          b = s.index('function selectedSourceClasses', a)
+          segment = s[a:b]
+          segment = segment.replace('        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,\n', '')
+          segment = segment.replace('                  eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,\n', '')
+          if 'error ? 0 : BOT_CLASS_METADATA_SCHEMA' in segment:
+              raise SystemExit('Could not remove undefined error reference from repairImportedClassSync')
+          s = s[:a] + segment + s[b:]
 
-          anchor = '''        sourceVideoHint: sourceClass.sourceVideoLocator || "",
-        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-        updatedAt: serverNow(),
-        createdAt: serverNow(),'''
-          replacement = '''        sourceVideoHint: sourceClass.sourceVideoLocator || "",
-        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
-        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
-        updatedAt: serverNow(),
-        createdAt: serverNow(),'''
-          if anchor not in text:
-              raise SystemExit('writeSyncResults metadata anchor not found')
-          text = text.replace(anchor, replacement, 1)
-          p.write_text(text)
+          # 2) New class writes *do* have a local `error`; place the metadata
+          # schema marker there so successful future imports are considered complete.
+          a = s.index('async function writeSyncResults')
+          b = s.index('async function repairSelectedMetadata', a)
+          segment = s[a:b]
+          marker = 'eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA'
+          if marker not in segment:
+              needle = '        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,\n        updatedAt: serverNow(),\n        createdAt: serverNow(),'
+              if needle not in segment:
+                  raise SystemExit('writeSyncResults schema anchor not found')
+              segment = segment.replace(
+                  needle,
+                  '        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,\n        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,\n        updatedAt: serverNow(),\n        createdAt: serverNow(),',
+                  1,
+              )
+          s = s[:a] + segment + s[b:]
+          p.write_text(s)
+
+          # Acceptance checks on the resulting source.
+          s = p.read_text()
+          a = s.index('async function repairImportedClassSync')
+          b = s.index('function selectedSourceClasses', a)
+          assert 'error ? 0 : BOT_CLASS_METADATA_SCHEMA' not in s[a:b]
+          a = s.index('async function writeSyncResults')
+          b = s.index('async function repairSelectedMetadata', a)
+          assert marker in s[a:b]
+          print('PASS: runtime marker placement')
           PY
+
           node --check api/telegram-bot.js
-          grep -q 'sourceVideoHint: sourceClass.sourceVideoLocator' api/telegram-bot.js
-          python - <<'PY'
-          from pathlib import Path
-          s=Path('api/telegram-bot.js').read_text()
-          start=s.index('async function repairImportedClassSync')
-          end=s.index('function selectedSourceClasses', start)
-          if 'error ? 0 : BOT_CLASS_METADATA_SCHEMA' in s[start:end]:
-              raise SystemExit('undefined error reference still exists in hierarchy repair')
-          start=s.index('async function writeSyncResults')
-          end=s.index('async function repairSelectedMetadata', start)
-          if 'eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA' not in s[start:end]:
-              raise SystemExit('metadata schema marker missing from class write')
-          print('PASS')
-          PY
+
       - name: Commit hotfix and remove one-off workflow
         shell: bash
         run: |
