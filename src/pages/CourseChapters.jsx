@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate, useLocation } from "react-router-dom"
 import { motion, AnimatePresence } from "framer-motion"
-import { BookOpen, ArrowLeft, Lock, Archive, Send, CheckCircle2, FileQuestion, X, ArrowRight } from "lucide-react"
+import { BookOpen, ArrowLeft, Lock, Archive, Send, CheckCircle2, FileQuestion, X, ArrowRight, Layers3 } from "lucide-react"
 import { doc, getDoc, collection, query, where, getDocs, addDoc, onSnapshot, serverTimestamp } from "firebase/firestore"
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
@@ -44,6 +44,7 @@ export default function CourseChapters() {
   const [chapterData, setChapterData] = useState([])
   const [subjects, setSubjects] = useState([])
   const [subjectData, setSubjectData] = useState([])
+  const [classGroups, setClassGroups] = useState([])
   const [exams, setExams] = useState([])
   const [hasArchive, setHasArchive] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -190,12 +191,17 @@ export default function CourseChapters() {
           }
         }
 
-        const classesQuery = query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))
-        const classesSnapshot = await getDocs(classesQuery)
-        let classesData = classesSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
+        const [classesSnapshot, groupsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "classes"), where("courseId", "==", resolvedCourseId))),
+          getDocs(query(collection(db, "classGroups"), where("courseId", "==", resolvedCourseId))),
+        ])
+        const allClassesData = classesSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
         }))
+        let classesData = isAdmin
+          ? allClassesData
+          : allClassesData.filter((item) => item.isPublished !== false)
 
         const isClassArchived = (cls) => {
           if (cls.isArchived === true) return true
@@ -207,6 +213,18 @@ export default function CourseChapters() {
             : cls.chapter === "archive"
           return subjectIsArchive || chapterIsArchive
         }
+
+        const groupCounts = new Map()
+        classesData
+          .filter((item) => !isClassArchived(item) && item.classGroupId)
+          .forEach((item) => groupCounts.set(item.classGroupId, (groupCounts.get(item.classGroupId) || 0) + 1))
+        setClassGroups(
+          groupsSnapshot.docs
+            .map((item) => ({ id: item.id, ...item.data() }))
+            .filter((group) => (isAdmin || group.isVisible !== false) && (isAdmin || (groupCounts.get(group.id) || 0) > 0))
+            .map((group) => ({ ...group, classCount: groupCounts.get(group.id) || 0 }))
+            .sort((a, b) => Number(a.order || 0) - Number(b.order || 0)),
+        )
 
         const allArchivedClasses = classesData.filter((cls) => isClassArchived(cls))
         setHasArchive(allArchivedClasses.length > 0)
@@ -251,44 +269,38 @@ export default function CourseChapters() {
               ),
             )
           } else {
-          const subjectChapterMap = {}
-          archivedClasses.forEach((cls) => {
-            const subjects = Array.isArray(cls.subject) ? cls.subject : [cls.subject]
-            subjects.forEach((s) => {
-              if (s && s !== "archive") {
-                if (!subjectChapterMap[s]) {
-                  subjectChapterMap[s] = new Set()
-                }
-                const chapters = Array.isArray(cls.chapter) ? cls.chapter : [cls.chapter || "General"]
-                chapters.forEach((ch) => {
-                  if (ch && ch !== "archive") {
-                    subjectChapterMap[s].add(ch)
+            const subjectChapterMap = {}
+            archivedClasses.forEach((cls) => {
+              const subjects = Array.isArray(cls.subject) ? cls.subject : [cls.subject]
+              subjects.forEach((s) => {
+                if (s && s !== "archive") {
+                  if (!subjectChapterMap[s]) {
+                    subjectChapterMap[s] = new Set()
                   }
-                })
-              }
+                  const chapters = Array.isArray(cls.chapter) ? cls.chapter : [cls.chapter || "General"]
+                  chapters.forEach((ch) => {
+                    if (ch && ch !== "archive") {
+                      subjectChapterMap[s].add(ch)
+                    }
+                  })
+                }
+              })
             })
-          })
 
-          const subjectsWithClasses = Object.keys(subjectChapterMap).filter(subject => {
-            return subjectChapterMap[subject].size > 0
-          })
-          const uniqueSubjects = subjectsWithClasses.sort()
-          setSubjects(uniqueSubjects)
-          setChapters([])
-          
-          const subjectsSnapshot = await getDocs(collection(db, "subjects"))
-          const fetchedSubjects = subjectsSnapshot.docs
-            .map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }))
-            .filter((s) => {
-              if (s.courseIds && Array.isArray(s.courseIds)) {
-                return s.courseIds.includes(resolvedCourseId) || s.courseIds.includes('archive')
-              }
-              return s.courseId === resolvedCourseId
-            })
-          setSubjectData(fetchedSubjects)
+            const subjectsWithClasses = Object.keys(subjectChapterMap).filter((subjectName) => subjectChapterMap[subjectName].size > 0)
+            setSubjects(subjectsWithClasses.sort())
+            setChapters([])
+            
+            const subjectsSnapshot = await getDocs(collection(db, "subjects"))
+            const fetchedSubjects = subjectsSnapshot.docs
+              .map((item) => ({ id: item.id, ...item.data() }))
+              .filter((s) => {
+                if (s.courseIds && Array.isArray(s.courseIds)) {
+                  return s.courseIds.includes(resolvedCourseId) || s.courseIds.includes("archive")
+                }
+                return s.courseId === resolvedCourseId
+              })
+            setSubjectData(fetchedSubjects)
           }
         } else if (isArchiveSubject && subject) {
           const decodedSubject = decodeURIComponent(subject)
@@ -311,30 +323,24 @@ export default function CourseChapters() {
             })
           })
 
-          const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses
+          const uniqueChapters = Object.keys(chapterClassCount).filter((ch) => chapterClassCount[ch] > 0)
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
           const fetchedChapters = chaptersSnapshot.docs
-            .map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }))
+            .map((item) => ({ id: item.id, ...item.data() }))
             .filter((c) => {
               if (c.courseIds && Array.isArray(c.courseIds)) {
-                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes('archive')
+                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes("archive")
               }
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
-          setChapters(
-            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
-          )
+          setChapters(sortChapterNamesByOrder(uniqueChapters, fetchedChapters))
         } else if (subject) {
           const decodedSubject = decodeURIComponent(subject)
           const filteredClasses = classesData.filter((cls) => {
-            if (isClassArchived(cls)) return false
+            if (isClassArchived(cls) || cls.classGroupId) return false
             if (Array.isArray(cls.subject)) {
               return cls.subject.includes(decodedSubject)
             }
@@ -352,28 +358,22 @@ export default function CourseChapters() {
             })
           })
 
-          const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses
+          const uniqueChapters = Object.keys(chapterClassCount).filter((ch) => chapterClassCount[ch] > 0)
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
           const fetchedChapters = chaptersSnapshot.docs
-            .map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }))
+            .map((item) => ({ id: item.id, ...item.data() }))
             .filter((c) => {
               if (c.courseIds && Array.isArray(c.courseIds)) {
-                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes('archive')
+                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes("archive")
               }
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
-          setChapters(
-            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
-          )
+          setChapters(sortChapterNamesByOrder(uniqueChapters, fetchedChapters))
         } else {
-          const filteredClasses = classesData.filter((cls) => !isClassArchived(cls))
+          const filteredClasses = classesData.filter((cls) => !isClassArchived(cls) && !cls.classGroupId)
           classesData = filteredClasses
 
           const chapterClassCount = {}
@@ -386,26 +386,20 @@ export default function CourseChapters() {
             })
           })
 
-          const chaptersWithClasses = Object.keys(chapterClassCount).filter(ch => chapterClassCount[ch] > 0)
-          const uniqueChapters = chaptersWithClasses
+          const uniqueChapters = Object.keys(chapterClassCount).filter((ch) => chapterClassCount[ch] > 0)
           setSubjects([])
           
           const chaptersSnapshot = await getDocs(collection(db, "chapters"))
           const fetchedChapters = chaptersSnapshot.docs
-            .map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }))
+            .map((item) => ({ id: item.id, ...item.data() }))
             .filter((c) => {
               if (c.courseIds && Array.isArray(c.courseIds)) {
-                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes('archive')
+                return c.courseIds.includes(resolvedCourseId) || c.courseIds.includes("archive")
               }
               return c.courseId === resolvedCourseId
             })
           setChapterData(fetchedChapters)
-          setChapters(
-            sortChapterNamesByOrder(uniqueChapters, fetchedChapters),
-          )
+          setChapters(sortChapterNamesByOrder(uniqueChapters, fetchedChapters))
         }
 
         const examsData = await getExamsByCourse(resolvedCourseId)
@@ -502,7 +496,7 @@ export default function CourseChapters() {
             ) : subject ? (
               `Subject: ${decodeURIComponent(subject)} - Select a chapter`
             ) : (
-              "Select a chapter to view classes"
+              "Select a chapter or class card"
             )}
           </p>
         </div>
@@ -540,6 +534,26 @@ export default function CourseChapters() {
               </div>
             </motion.button>
           )}
+
+          {!isArchive && !subject && (course?.type || "subject") === "subject" && classGroups.map((group, index) => (
+            <motion.button
+              key={group.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: (index + (exams.length > 0 ? 1 : 0)) * 0.1 }}
+              onClick={() => navigate(`/course/${courseId}/classes/__group__${group.id}`)}
+              className="group relative bg-card border border-border rounded-xl p-6 hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-secondary/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="relative">
+                <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
+                  <Layers3 className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{group.title}</h3>
+                <p className="text-sm text-muted-foreground">{group.classCount} class{group.classCount === 1 ? "" : "es"} · View chapters</p>
+              </div>
+            </motion.button>
+          ))}
 
           {!isArchive && !subject && (course?.type || "subject") === "subject" && hasArchive && (
             <motion.button
@@ -609,29 +623,29 @@ export default function CourseChapters() {
                   </motion.button>
                 )
               })
-            : chapters.map((chapter, index) => {
-                const chapterInfo = chapterData.find(c => c.title === chapter)
+            : chapters.map((chapterName, index) => {
+                const chapterInfo = chapterData.find(c => c.title === chapterName)
                 const hasImage = chapterInfo?.imageUrl
                 
                 return (
                   <motion.button
-                    key={chapter}
+                    key={chapterName}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.1 }}
                     onClick={() => {
                       if (isArchiveRoot && (course?.type || "subject") === "subject") {
-                        navigate(`/course/${courseId}/archive/${encodeURIComponent(chapter)}/classes`)
+                        navigate(`/course/${courseId}/archive/${encodeURIComponent(chapterName)}/classes`)
                       } else if (isArchiveSubject && subject) {
                         navigate(
-                          `/course/${courseId}/archive/${encodeURIComponent(subject)}/${encodeURIComponent(chapter)}/classes`,
+                          `/course/${courseId}/archive/${encodeURIComponent(subject)}/${encodeURIComponent(chapterName)}/classes`,
                         )
                       } else if (subject) {
                         navigate(
-                          `/course/${courseId}/classes/${encodeURIComponent(subject)}/${encodeURIComponent(chapter)}`,
+                          `/course/${courseId}/classes/${encodeURIComponent(subject)}/${encodeURIComponent(chapterName)}`,
                         )
                       } else {
-                        navigate(`/course/${courseId}/classes/${encodeURIComponent(chapter)}`)
+                        navigate(`/course/${courseId}/classes/${encodeURIComponent(chapterName)}`)
                       }
                     }}
                     className="group relative bg-card border border-border rounded-xl overflow-hidden hover:border-primary/50 hover:shadow-lg transition-all duration-300 text-left"
@@ -642,13 +656,13 @@ export default function CourseChapters() {
                         <div className="aspect-video bg-gradient-to-br from-primary/20 to-secondary/20 relative overflow-hidden">
                           <img
                             src={chapterInfo.imageUrl}
-                            alt={chapter}
+                            alt={chapterName}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             loading="lazy"
                           />
                         </div>
                         <div className="p-6">
-                          <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{chapter}</h3>
+                          <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{chapterName}</h3>
                           {chapterInfo.description && (
                             <p className="text-sm text-muted-foreground line-clamp-2">{chapterInfo.description}</p>
                           )}
@@ -659,7 +673,7 @@ export default function CourseChapters() {
                         <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
                           <BookOpen className="w-6 h-6 text-primary" />
                         </div>
-                        <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{chapter}</h3>
+                        <h3 className="text-xl font-bold mb-2 group-hover:text-primary transition-colors">{chapterName}</h3>
                         <p className="text-sm text-muted-foreground">Click to view classes</p>
                       </div>
                     )}
@@ -668,7 +682,7 @@ export default function CourseChapters() {
               })}
         </div>
 
-        {!isArchive && chapters.length === 0 && (
+        {!isArchive && chapters.length === 0 && classGroups.length === 0 && (
           <div className="text-center py-12 text-muted-foreground">
             <p>No chapters available {subject ? "for this subject" : ""} yet.</p>
           </div>
