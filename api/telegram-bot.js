@@ -1,6 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore"
 import { getAdminServices } from "./utils/firebase-admin.js"
-import { decryptSecret, encryptSecret, stableId } from "./bot/crypto.js"
+import { decryptSecret, encryptSecret, stableId } from "../server/bot/crypto.js"
 import {
   answerCallback,
   button,
@@ -9,13 +9,13 @@ import {
   keyboard,
   mainMenu,
   sendMessage,
-} from "./bot/telegram.js"
+} from "../server/bot/telegram.js"
 import {
   getUdvashCourseContent,
   listUdvashCourses,
   loginUdvash,
   udvashConfigured,
-} from "./bot/platforms/udvash.js"
+} from "../server/bot/platforms/udvash.js"
 
 const SESSION_COLLECTION = "botSessions"
 const ACCOUNT_COLLECTION = "botPlatformAccounts"
@@ -60,8 +60,7 @@ async function showMain(chatId, prefix = "") {
 
 function platformKeyboard(prefix = "platform") {
   return keyboard([
-    [button("Udvash", `${prefix}:udvash`)],
-    [button("⬅️ Main menu", "home")],
+    [button("Udvash", `${prefix}:udvash`)],[button("⬅️ Main menu", "home")],
   ])
 }
 
