@@ -1,0 +1,410 @@
+name: Agent media repair patch
+
+on:
+  push:
+    branches:
+      - agent/telegram-ee-up-media-repair
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/telegram-ee-up-media-repair
+          fetch-depth: 0
+
+      - name: Patch Udvash sync and Telegram bot
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f"missing patch target: {label}")
+              if text.count(old) != 1:
+                  raise SystemExit(f"patch target not unique: {label} ({text.count(old)})")
+              return text.replace(old, new, 1)
+
+          # --- Udvash HTML crawler: retry/backoff, lower concurrency, media resolver ---
+          p = Path('server/bot/platforms/udvash-html.js')
+          s = p.read_text()
+
+          old = '''async function fetchHtml(url, jar, referer = ORIGIN) {
+            let current = absoluteUrl(url, referer)
+            for (let hop = 0; hop < 5; hop += 1) {
+              const response = await fetch(current, {
+                method: "GET",
+                headers: requestHeaders(jar, referer),
+                redirect: "manual",
+              })'''
+          new = '''const RETRYABLE_STATUS = new Set([429, 502, 503, 504])
+
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+          async function fetchWithRetry(url, options, attempts = 4) {
+            let lastError
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+              try {
+                const response = await fetch(url, options)
+                if (!RETRYABLE_STATUS.has(response.status) || attempt === attempts - 1) return response
+                try { await response.body?.cancel?.() } catch {}
+              } catch (error) {
+                lastError = error
+                if (attempt === attempts - 1) throw error
+              }
+              const delay = 600 * (2 ** attempt) + Math.floor(Math.random() * 250)
+              await sleep(delay)
+            }
+            throw lastError || new Error("Udvash request failed")
+          }
+
+          async function fetchHtml(url, jar, referer = ORIGIN) {
+            let current = absoluteUrl(url, referer)
+            for (let hop = 0; hop < 5; hop += 1) {
+              const response = await fetchWithRetry(current, {
+                method: "GET",
+                headers: requestHeaders(jar, referer),
+                redirect: "manual",
+              })'''
+          s = replace_once(s, old, new, 'fetch retry')
+
+          s = replace_once(s, 'const subjectResults = await mapLimit(subjects, 6, async (subject) => {', 'const subjectResults = await mapLimit(subjects, 2, async (subject) => {', 'subject concurrency')
+          s = replace_once(s, 'const chapterResults = await mapLimit(chapters, 6, async (chapter) => {', 'const chapterResults = await mapLimit(chapters, 2, async (chapter) => {', 'chapter concurrency')
+          s = replace_once(s, 'const typeResults = await mapLimit(contentTypes, 6, async (contentType) => {', 'const typeResults = await mapLimit(contentTypes, 1, async (contentType) => {', 'content type concurrency')
+
+          marker = '''export const UDVASH_HTML_DEFAULTS = {
+            origin: ORIGIN,
+            courseIndex: COURSE_INDEX,
+          }
+          '''
+          media_code = '''function htmlAttribute(html, name) {
+            const safe = String(name).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")
+            const regex = new RegExp(`\\\\b${safe}\\\\s*=\\\\s*(?:"([^"]*)"|'([^']*)'|([^\\\\s>]+))`, "i")
+            const match = String(html || "").match(regex)
+            return decodeHtml(match?.[1] ?? match?.[2] ?? match?.[3] ?? "")
+          }
+
+          function parseMediaDetails(html) {
+            const youtubeId = htmlAttribute(html, "data-youtube-video").trim()
+            const directSources = htmlAttribute(html, "data-all-video-source")
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean)
+            return {
+              youtubeId,
+              youtubeLink: youtubeId ? `https://www.youtube.com/watch?v=${youtubeId}` : "",
+              directSources,
+            }
+          }
+
+          export async function getUdvashClassMediaHtml(auth, detailsUrl) {
+            const jar = parseCookieHeader(auth?.cookie || "")
+            const page = await fetchHtml(detailsUrl, jar, ORIGIN)
+            auth.cookie = cookieHeader(jar)
+            return parseMediaDetails(page.html)
+          }
+
+          export const UDVASH_HTML_DEFAULTS = {
+            origin: ORIGIN,
+            courseIndex: COURSE_INDEX,
+          }
+          '''
+          s = replace_once(s, marker, media_code, 'media resolver export')
+          p.write_text(s)
+
+          # --- Udvash adapter export ---
+          p = Path('server/bot/platforms/udvash.js')
+          s = p.read_text()
+          s = replace_once(
+              s,
+              '''import {
+            getUdvashCourseContentHtml,
+            listUdvashCoursesHtml,
+          } from "./udvash-html.js"''',
+              '''import {
+            getUdvashClassMediaHtml,
+            getUdvashCourseContentHtml,
+            listUdvashCoursesHtml,
+          } from "./udvash-html.js"''',
+              'adapter import',
+          )
+          s = replace_once(
+              s,
+              '''export async function getUdvashCourseContent(auth, courseId) {
+            return getUdvashCourseContentHtml(auth, courseId)
+          }
+
+          export function udvashConfigured()''',
+              '''export async function getUdvashCourseContent(auth, courseId) {
+            return getUdvashCourseContentHtml(auth, courseId)
+          }
+
+          export async function getUdvashClassMedia(auth, detailsUrl) {
+            return getUdvashClassMediaHtml(auth, detailsUrl)
+          }
+
+          export function udvashConfigured()''',
+              'adapter media export',
+          )
+          p.write_text(s)
+
+          # --- Telegram controller: distinguish metadata/staged/ready and repair YouTube links ---
+          p = Path('api/telegram-bot.js')
+          s = p.read_text()
+          s = replace_once(
+              s,
+              '''import {
+            getUdvashCourseContent,
+            listUdvashCourses,
+            loginUdvash,
+          } from "../server/bot/platforms/udvash.js"''',
+              '''import {
+            getUdvashClassMedia,
+            getUdvashCourseContent,
+            listUdvashCourses,
+            loginUdvash,
+          } from "../server/bot/platforms/udvash.js"''',
+              'bot media import',
+          )
+
+          old = '''function importedClassMatches(item, session) {
+            return item.sourcePlatform === session.platform
+              && String(item.sourceCourseId || "") === String(session.sourceCourseId || "")
+          }
+
+          async function inspectMapping(db, session) {
+            const account = await getAccount(db, session.accountId)
+            const sourceClasses = await platformContent(db, account, session.sourceCourseId)
+            const snap = await db.collection("classes").where("courseId", "==", session.eeCourseId).get()
+            const existing = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+            const imported = existing.filter((item) => importedClassMatches(item, session))
+            const importedIds = new Set(imported.map((item) => String(item.sourceClassId || "")).filter(Boolean))
+            const missing = sourceClasses.filter((item) => !importedIds.has(String(item.sourceClassId)))
+            return { sourceClasses, imported, missing, allEeClasses: existing }
+          }'''
+          new = '''function classMatchesDestination(item, session) {
+            if (session.destinationType === "archive") return item.isArchived === true
+            if (session.destinationType === "group") {
+              return item.isArchived !== true
+                && String(item.classGroupId || "") === String(session.classGroupId || "")
+            }
+            return item.isArchived !== true && !item.classGroupId
+          }
+
+          function importedClassMatches(item, session) {
+            return item.sourcePlatform === session.platform
+              && String(item.sourceCourseId || "") === String(session.sourceCourseId || "")
+              && classMatchesDestination(item, session)
+          }
+
+          function hasPlayableMedia(item) {
+            return Boolean(
+              item.youtubeLink || item.hlsLink || item.driveLink || item.dailymotionLink
+              || item.rumbleLink || item.videoURL,
+            )
+          }
+
+          async function inspectMapping(db, session) {
+            const account = await getAccount(db, session.accountId)
+            const sourceClasses = await platformContent(db, account, session.sourceCourseId)
+            const snap = await db.collection("classes").where("courseId", "==", session.eeCourseId).get()
+            const existing = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+            const imported = existing.filter((item) => importedClassMatches(item, session))
+            const ready = imported.filter((item) => item.isPublished !== false && hasPlayableMedia(item))
+            const readyIds = new Set(ready.map((item) => item.id))
+            const staged = imported.filter((item) => !readyIds.has(item.id))
+            const importedIds = new Set(imported.map((item) => String(item.sourceClassId || "")).filter(Boolean))
+            const missing = sourceClasses.filter((item) => !importedIds.has(String(item.sourceClassId)))
+            return { sourceClasses, imported, ready, staged, missing, allEeClasses: existing }
+          }'''
+          s = replace_once(s, old, new, 'mapping classification')
+
+          old = '''    `EE-তে Udvash থেকে আগে add করা: ${analysis.imported.length}`,
+            `Udvash-এ current class: ${analysis.sourceClasses.length}`,
+            `Missing: ${analysis.missing.length}`,
+            "",
+            analysis.missing.length
+              ? `এই ${analysis.missing.length}টা class EE-তে add করে দিই?`
+              : "সব class synced আছে ✅",
+          ].join("\\n")
+
+          const rows = analysis.missing.length
+            ? [
+                [button(`✅ Add ${analysis.missing.length} missing`, "import:yes")],
+                [button("🔄 Re-check", "mapping:check"), button("❌ Cancel", "home")],
+              ]
+            : [[button("🔄 Re-check", "mapping:check"), button("🏠 Main", "home")]]'''
+          new = '''    `Udvash-এ current class: ${analysis.sourceClasses.length}`,
+            `Metadata imported: ${analysis.imported.length}`,
+            `✅ EE ready/published: ${analysis.ready.length}`,
+            `⏳ Waiting media: ${analysis.staged.length}`,
+            `Missing metadata: ${analysis.missing.length}`,
+            "",
+            analysis.missing.length
+              ? `এই ${analysis.missing.length}টা class metadata EE-তে stage করে দিই?`
+              : analysis.staged.length
+                ? `${analysis.staged.length}টা class metadata আছে, কিন্তু media link ready না—এগুলো এখনো student view-তে visible না।`
+                : "সব class media-সহ synced আছে ✅",
+          ].join("\\n")
+
+          const rows = []
+          if (analysis.missing.length) rows.push([button(`✅ Stage ${analysis.missing.length} missing`, "import:yes")])
+          if (analysis.staged.length) rows.push([button(`🔗 Resolve media (${Math.min(25, analysis.staged.length)})`, "media:resolve")])
+          rows.push([button("🔄 Re-check", "mapping:check"), button("🏠 Main", "home")])'''
+          s = replace_once(s, old, new, 'mapping message')
+
+          old = '''  await sendMessage(
+            chatId,
+            [
+              `✅ ${analysis.missing.length}টা class Easy-Education-এ add হয়েছে।`,
+              `Course: ${session.eeCourseTitle}`,
+              `Destination: ${destinationLabel(session)}`,
+              "",
+              "Media job এখন waiting_worker placeholder-এ আছে।",
+              "Video ready না হওয়া পর্যন্ত classগুলো isPublished:false থাকবে।",
+            ].join("\\n"),
+            keyboard([[button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")]]),
+          )
+          }'''
+          new = '''  const stagedCount = analysis.staged.length + analysis.missing.length
+            await sendMessage(
+              chatId,
+              [
+                `✅ ${analysis.missing.length}টা class metadata Easy-Education-এ staged হয়েছে।`,
+                `Course: ${session.eeCourseTitle}`,
+                `Destination: ${destinationLabel(session)}`,
+                "",
+                "এখন Udvash details page থেকে YouTube media link resolve করতে হবে।",
+                "Media ready না হওয়া পর্যন্ত student view-তে class publish হবে না।",
+              ].join("\\n"),
+              keyboard([
+                ...(stagedCount ? [[button(`🔗 Resolve media (${Math.min(25, stagedCount)})`, "media:resolve")]] : []),
+                [button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")],
+              ]),
+            )
+          }'''
+          s = replace_once(s, old, new, 'import confirmation')
+
+          insert_before = '''async function showEeAccounts(db, chatId, platform) {'''
+          resolver = '''async function resolveStagedMedia(db, chatId, session, limit = 25) {
+            if (!session.accountId || !session.eeCourseId || !session.sourceCourseId) {
+              throw new Error("Mapping session expired. EE UP থেকে mapping আবার খুলুন।")
+            }
+
+            const account = await getAccount(db, session.accountId)
+            const password = decryptSecret(account.passwordEncrypted)
+            await sendMessage(chatId, `Udvash-এ fresh login করে সর্বোচ্চ ${limit}টা staged class-এর media resolve করছি…`)
+            const auth = await loginUdvash({ roll: account.roll, password })
+
+            const snap = await db.collection("classes").where("courseId", "==", session.eeCourseId).get()
+            const imported = snap.docs
+              .map((doc) => ({ id: doc.id, ...doc.data() }))
+              .filter((item) => importedClassMatches(item, session))
+            const staged = imported
+              .filter((item) => item.isPublished === false || !hasPlayableMedia(item))
+              .filter((item) => item.sourceVideoHint)
+              .slice(0, limit)
+
+            if (!staged.length) {
+              await sendMessage(chatId, "Resolve করার মতো staged class নেই ✅", keyboard([[button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")]]))
+              return
+            }
+
+            let resolved = 0
+            let noYoutube = 0
+            let failed = 0
+            for (const item of staged) {
+              try {
+                const media = await getUdvashClassMedia(auth, item.sourceVideoHint)
+                if (media.youtubeLink) {
+                  await db.collection("classes").doc(item.id).set({
+                    youtubeLink: media.youtubeLink,
+                    isPublished: true,
+                    mediaStatus: "ee_ready_waiting_tg",
+                    mediaResolveError: "",
+                    updatedAt: serverNow(),
+                  }, { merge: true })
+                  resolved += 1
+                } else {
+                  await db.collection("classes").doc(item.id).set({
+                    mediaStatus: "needs_youtube_upload",
+                    mediaResolveError: "No YouTube source on Udvash",
+                    updatedAt: serverNow(),
+                  }, { merge: true })
+                  noYoutube += 1
+                }
+              } catch (error) {
+                failed += 1
+                await db.collection("classes").doc(item.id).set({
+                  mediaStatus: "media_resolve_failed",
+                  mediaResolveError: String(error?.message || error).slice(0, 500),
+                  updatedAt: serverNow(),
+                }, { merge: true }).catch(() => {})
+              }
+              await new Promise((resolve) => setTimeout(resolve, 120))
+            }
+
+            await db.collection(ACCOUNT_COLLECTION).doc(account.id).set({
+              cookieEncrypted: auth.cookie ? encryptSecret(auth.cookie) : account.cookieEncrypted || "",
+              status: "ready",
+              lastLoginAt: serverNow(),
+              lastError: "",
+              updatedAt: serverNow(),
+            }, { merge: true })
+
+            const afterSnap = await db.collection("classes").where("courseId", "==", session.eeCourseId).get()
+            const remaining = afterSnap.docs
+              .map((doc) => ({ id: doc.id, ...doc.data() }))
+              .filter((item) => importedClassMatches(item, session))
+              .filter((item) => item.isPublished === false || !hasPlayableMedia(item))
+              .length
+
+            await sendMessage(
+              chatId,
+              [
+                `✅ YouTube resolve + publish: ${resolved}`,
+                `🟡 YouTube source নেই (worker লাগবে): ${noYoutube}`,
+                `❌ Failed: ${failed}`,
+                `⏳ Staged remaining: ${remaining}`,
+                "",
+                "YouTube source পাওয়া classগুলো এখন Easy-Education-এ visible হবে।",
+              ].join("\\n"),
+              keyboard([
+                ...(remaining ? [[button(`🔗 Resolve next ${Math.min(limit, remaining)}`, "media:resolve")]] : []),
+                [button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")],
+              ]),
+            )
+          }
+
+          async function showEeAccounts(db, chatId, platform) {'''
+          s = replace_once(s, insert_before, resolver, 'resolver function')
+
+          old = '''  if (data === "mapping:check") return showMappingAnalysis(db, chatId, await getSession(db, chatId))
+            if (data === "import:yes") {'''
+          new = '''  if (data === "mapping:check") return showMappingAnalysis(db, chatId, await getSession(db, chatId))
+            if (data === "media:resolve") return resolveStagedMedia(db, chatId, await getSession(db, chatId))
+            if (data === "import:yes") {'''
+          s = replace_once(s, old, new, 'resolver callback')
+          p.write_text(s)
+          PY
+
+      - name: Syntax check
+        run: |
+          node --check api/telegram-bot.js
+          node --check server/bot/platforms/udvash.js
+          node --check server/bot/platforms/udvash-html.js
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add api/telegram-bot.js server/bot/platforms/udvash.js server/bot/platforms/udvash-html.js
+          git commit -m "Fix staged EE imports and Udvash media repair"
+          git push origin HEAD:agent/telegram-ee-up-media-repair
