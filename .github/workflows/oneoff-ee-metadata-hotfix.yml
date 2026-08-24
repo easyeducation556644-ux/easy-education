@@ -1,0 +1,81 @@
+name: One-off EE metadata runtime hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/oneoff-ee-metadata-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Fix metadata schema write placement
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('api/telegram-bot.js')
+          text = p.read_text()
+
+          wrong = '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+                  eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
+                  updatedAt: serverNow(),'''
+          # indentation in file is 8 spaces for the object keys, but accept either exact variant defensively
+          if wrong in text:
+              text = text.replace(wrong, '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+                  updatedAt: serverNow(),''', 1)
+          else:
+              wrong2 = '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
+        updatedAt: serverNow(),'''
+              if wrong2 not in text:
+                  raise SystemExit('Wrong metadata line not found')
+              text = text.replace(wrong2, '''        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        updatedAt: serverNow(),''', 1)
+
+          anchor = '''        sourceVideoHint: sourceClass.sourceVideoLocator || "",
+        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        updatedAt: serverNow(),
+        createdAt: serverNow(),'''
+          replacement = '''        sourceVideoHint: sourceClass.sourceVideoLocator || "",
+        eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
+        eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
+        updatedAt: serverNow(),
+        createdAt: serverNow(),'''
+          if anchor not in text:
+              raise SystemExit('writeSyncResults metadata anchor not found')
+          text = text.replace(anchor, replacement, 1)
+          p.write_text(text)
+          PY
+          node --check api/telegram-bot.js
+          grep -q 'sourceVideoHint: sourceClass.sourceVideoLocator' api/telegram-bot.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('api/telegram-bot.js').read_text()
+          start=s.index('async function repairImportedClassSync')
+          end=s.index('function selectedSourceClasses', start)
+          if 'error ? 0 : BOT_CLASS_METADATA_SCHEMA' in s[start:end]:
+              raise SystemExit('undefined error reference still exists in hierarchy repair')
+          start=s.index('async function writeSyncResults')
+          end=s.index('async function repairSelectedMetadata', start)
+          if 'eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA' not in s[start:end]:
+              raise SystemExit('metadata schema marker missing from class write')
+          print('PASS')
+          PY
+      - name: Commit hotfix and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/oneoff-ee-metadata-hotfix.yml
+          git add api/telegram-bot.js
+          git commit -m "Fix EE metadata repair runtime marker"
+          git push origin main
