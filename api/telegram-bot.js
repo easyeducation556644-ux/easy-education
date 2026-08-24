@@ -11,6 +11,7 @@ import {
   sendMessage,
 } from "../server/bot/telegram.js"
 import {
+  getUdvashClassMedia,
   getUdvashCourseContent,
   listUdvashCourses,
   loginUdvash,
@@ -20,6 +21,7 @@ const SESSION_COLLECTION = "botSessions"
 const ACCOUNT_COLLECTION = "botPlatformAccounts"
 const MAPPING_COLLECTION = "botCourseMappings"
 const JOB_COLLECTION = "botJobs"
+const MEDIA_RESOLVE_BATCH = 20
 
 const PLATFORM_LABELS = { udvash: "Udvash" }
 const PLATFORM_IDS = new Set(Object.keys(PLATFORM_LABELS))
@@ -27,6 +29,7 @@ const PLATFORM_IDS = new Set(Object.keys(PLATFORM_LABELS))
 const normalizeText = (value) => String(value || "").trim().toLowerCase()
 const asArray = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
 const serverNow = () => FieldValue.serverTimestamp()
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function sessionRef(db, chatId) {
   return db.collection(SESSION_COLLECTION).doc(String(chatId))
@@ -79,29 +82,38 @@ async function getAccount(db, accountId) {
   return { id: snap.id, ...snap.data() }
 }
 
-async function refreshAccountAuth(db, account) {
-  if (account.platform !== "udvash") throw new Error(`Unsupported platform: ${account.platform}`)
-  const password = decryptSecret(account.passwordEncrypted)
-  const auth = await loginUdvash({ roll: account.roll, password })
+async function saveAuthState(db, account, auth, extra = {}) {
   await db.collection(ACCOUNT_COLLECTION).doc(account.id).set({
-    cookieEncrypted: auth.cookie ? encryptSecret(auth.cookie) : "",
-    tokenEncrypted: auth.token ? encryptSecret(auth.token) : "",
+    cookieEncrypted: auth.cookie ? encryptSecret(auth.cookie) : account.cookieEncrypted || "",
+    tokenEncrypted: auth.token ? encryptSecret(auth.token) : account.tokenEncrypted || "",
     status: "ready",
     lastLoginAt: serverNow(),
     lastError: "",
     updatedAt: serverNow(),
+    ...extra,
   }, { merge: true })
+}
+
+async function refreshAccountAuth(db, account) {
+  if (account.platform !== "udvash") throw new Error(`Unsupported platform: ${account.platform}`)
+  const password = decryptSecret(account.passwordEncrypted)
+  const auth = await loginUdvash({ roll: account.roll, password })
+  await saveAuthState(db, account, auth)
   return auth
 }
 
 async function platformCourses(db, account) {
   const auth = await refreshAccountAuth(db, account)
-  return listUdvashCourses(auth)
+  const courses = await listUdvashCourses(auth)
+  await saveAuthState(db, account, auth, { courseCount: courses.length })
+  return courses
 }
 
 async function platformContent(db, account, sourceCourseId) {
   const auth = await refreshAccountAuth(db, account)
-  return getUdvashCourseContent(auth, sourceCourseId)
+  const classes = await getUdvashCourseContent(auth, sourceCourseId)
+  await saveAuthState(db, account, auth)
+  return classes
 }
 
 function courseScore(course, queryText) {
@@ -140,20 +152,67 @@ function destinationLabel(session) {
   return "Regular"
 }
 
+function classMatchesDestination(item, session) {
+  if (session.destinationType === "archive") return item.isArchived === true
+  if (session.destinationType === "group") {
+    return item.isArchived !== true
+      && String(item.classGroupId || "") === String(session.classGroupId || "")
+  }
+  return item.isArchived !== true && !item.classGroupId
+}
+
 function importedClassMatches(item, session) {
   return item.sourcePlatform === session.platform
     && String(item.sourceCourseId || "") === String(session.sourceCourseId || "")
+    && classMatchesDestination(item, session)
+}
+
+function hasPlayableMedia(item) {
+  return Boolean(
+    item.youtubeLink
+    || item.hlsLink
+    || item.driveLink
+    || item.dailymotionLink
+    || item.rumbleLink
+    || item.videoURL,
+  )
+}
+
+async function existingEeClasses(db, eeCourseId) {
+  const snap = await db.collection("classes").where("courseId", "==", eeCourseId).get()
+  return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
 }
 
 async function inspectMapping(db, session) {
+  if (!session.accountId || !session.sourceCourseId || !session.eeCourseId) {
+    throw new Error("Mapping session expired. EE UP থেকে আবার mapping খুলুন।")
+  }
   const account = await getAccount(db, session.accountId)
   const sourceClasses = await platformContent(db, account, session.sourceCourseId)
-  const snap = await db.collection("classes").where("courseId", "==", session.eeCourseId).get()
-  const existing = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  const existing = await existingEeClasses(db, session.eeCourseId)
   const imported = existing.filter((item) => importedClassMatches(item, session))
-  const importedIds = new Set(imported.map((item) => String(item.sourceClassId || "")).filter(Boolean))
-  const missing = sourceClasses.filter((item) => !importedIds.has(String(item.sourceClassId)))
-  return { sourceClasses, imported, missing, allEeClasses: existing }
+  const ready = imported.filter((item) => item.isPublished !== false && hasPlayableMedia(item))
+  const readyIds = new Set(ready.map((item) => item.id))
+  const staged = imported.filter((item) => !readyIds.has(item.id))
+  const importedSourceIds = new Set(
+    imported.map((item) => String(item.sourceClassId || "")).filter(Boolean),
+  )
+  const missing = sourceClasses.filter(
+    (item) => !importedSourceIds.has(String(item.sourceClassId || "")),
+  )
+  return { sourceClasses, imported, ready, staged, missing, allEeClasses: existing }
+}
+
+function mappingKeyboard(analysis) {
+  const rows = []
+  if (analysis.missing.length) {
+    rows.push([button(`✅ Stage ${analysis.missing.length} missing`, "import:yes")])
+  }
+  if (analysis.staged.length) {
+    rows.push([button(`🔗 Resolve media (${Math.min(MEDIA_RESOLVE_BATCH, analysis.staged.length)})`, "media:resolve")])
+  }
+  rows.push([button("🔄 Re-check", "mapping:check"), button("🏠 Main", "home")])
+  return keyboard(rows)
 }
 
 async function showMappingAnalysis(db, chatId, session) {
@@ -162,6 +221,8 @@ async function showMappingAnalysis(db, chatId, session) {
   await setSession(db, chatId, {
     lastSourceCount: analysis.sourceClasses.length,
     lastImportedCount: analysis.imported.length,
+    lastReadyCount: analysis.ready.length,
+    lastStagedCount: analysis.staged.length,
     lastMissingCount: analysis.missing.length,
   })
 
@@ -174,6 +235,12 @@ async function showMappingAnalysis(db, chatId, session) {
     .map(([title, count]) => `• ${title}: ${count}`)
     .slice(0, 12)
 
+  const stateLine = analysis.missing.length
+    ? `${analysis.missing.length}টা class metadata এখনো EE-তে নেই।`
+    : analysis.staged.length
+      ? `${analysis.staged.length}টা class metadata আছে, কিন্তু media link ready না—এগুলো এখনো student view-তে hidden।`
+      : "সব class media-সহ synced আছে ✅"
+
   const text = [
     `Platform: ${PLATFORM_LABELS[session.platform] || session.platform}`,
     `Source course: ${session.sourceCourseTitle}`,
@@ -181,22 +248,16 @@ async function showMappingAnalysis(db, chatId, session) {
     `Destination: ${destinationLabel(session)}`,
     "",
     ...(sectionText.length ? ["Udvash content:", ...sectionText, ""] : []),
-    `EE-তে Udvash থেকে আগে add করা: ${analysis.imported.length}`,
-    `Udvash-এ current class: ${analysis.sourceClasses.length}`,
-    `Missing: ${analysis.missing.length}`,
+    `Udvash current class: ${analysis.sourceClasses.length}`,
+    `Metadata imported: ${analysis.imported.length}`,
+    `✅ EE ready/published: ${analysis.ready.length}`,
+    `⏳ Waiting media: ${analysis.staged.length}`,
+    `Missing metadata: ${analysis.missing.length}`,
     "",
-    analysis.missing.length
-      ? `এই ${analysis.missing.length}টা class EE-তে add করে দিই?`
-      : "সব class synced আছে ✅",
+    stateLine,
   ].join("\n")
 
-  const rows = analysis.missing.length
-    ? [
-        [button(`✅ Add ${analysis.missing.length} missing`, "import:yes")],
-        [button("🔄 Re-check", "mapping:check"), button("❌ Cancel", "home")],
-      ]
-    : [[button("🔄 Re-check", "mapping:check"), button("🏠 Main", "home")]]
-  await sendMessage(chatId, text, keyboard(rows))
+  await sendMessage(chatId, text, mappingKeyboard(analysis))
 }
 
 function classHierarchy(sourceClass, eeCourseType) {
@@ -222,7 +283,7 @@ async function importMissingClasses(db, chatId, telegramUserId, session) {
   const eeCourse = await getEeCourse(db, session.eeCourseId)
   const analysis = await inspectMapping(db, session)
   if (!analysis.missing.length) {
-    await showMain(chatId, "সব class আগেই add করা আছে ✅")
+    await showMappingAnalysis(db, chatId, session)
     return
   }
 
@@ -262,7 +323,7 @@ async function importMissingClasses(db, chatId, telegramUserId, session) {
         isArchived,
         classGroupId,
         isPublished: false,
-        mediaStatus: "waiting_worker",
+        mediaStatus: "staged_waiting_media",
         importedBy: "telegram-bot",
         importedByTelegramUserId: String(telegramUserId),
         sourcePlatform: session.platform,
@@ -320,6 +381,8 @@ async function importMissingClasses(db, chatId, telegramUserId, session) {
     classGroupTitle: session.classGroupTitle || "",
     sourceCount: analysis.sourceClasses.length,
     importedCount: analysis.imported.length + analysis.missing.length,
+    readyCount: analysis.ready.length,
+    stagedCount: analysis.staged.length + analysis.missing.length,
     missingCount: 0,
     updatedByTelegramUserId: String(telegramUserId),
     updatedAt: serverNow(),
@@ -330,20 +393,127 @@ async function importMissingClasses(db, chatId, telegramUserId, session) {
     step: "mapping_ready",
     lastSourceCount: analysis.sourceClasses.length,
     lastImportedCount: analysis.imported.length + analysis.missing.length,
+    lastReadyCount: analysis.ready.length,
+    lastStagedCount: analysis.staged.length + analysis.missing.length,
     lastMissingCount: 0,
+  })
+
+  const stagedTotal = analysis.staged.length + analysis.missing.length
+  await sendMessage(
+    chatId,
+    [
+      `✅ ${analysis.missing.length}টা class metadata Easy-Education-এ staged হয়েছে।`,
+      `Course: ${session.eeCourseTitle}`,
+      `Destination: ${destinationLabel(session)}`,
+      "",
+      "এখন Udvash details page থেকে YouTube media link resolve করতে হবে।",
+      "Media ready না হওয়া পর্যন্ত student view-তে class publish হবে না।",
+    ].join("\n"),
+    keyboard([
+      ...(stagedTotal ? [[button(`🔗 Resolve media (${Math.min(MEDIA_RESOLVE_BATCH, stagedTotal)})`, "media:resolve")]] : []),
+      [button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")],
+    ]),
+  )
+}
+
+async function resolveStagedMedia(db, chatId, session) {
+  if (!session.accountId || !session.eeCourseId || !session.sourceCourseId) {
+    throw new Error("Mapping session expired. EE UP থেকে mapping আবার খুলুন।")
+  }
+
+  const account = await getAccount(db, session.accountId)
+  if (account.platform !== "udvash") throw new Error("এই media resolver এখন শুধু Udvash support করে।")
+
+  const imported = (await existingEeClasses(db, session.eeCourseId))
+    .filter((item) => importedClassMatches(item, session))
+  const staged = imported
+    .filter((item) => item.isPublished === false || !hasPlayableMedia(item))
+    .filter((item) => item.sourceVideoHint)
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    .slice(0, MEDIA_RESOLVE_BATCH)
+
+  if (!staged.length) {
+    await sendMessage(
+      chatId,
+      "Resolve করার মতো staged class নেই ✅",
+      keyboard([[button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")]]),
+    )
+    return
+  }
+
+  await sendMessage(chatId, `Fresh Udvash login করে ${staged.length}টা class-এর media resolve করছি…`)
+  const password = decryptSecret(account.passwordEncrypted)
+  const auth = await loginUdvash({ roll: account.roll, password })
+
+  let resolved = 0
+  let needsUpload = 0
+  let failed = 0
+
+  for (const item of staged) {
+    try {
+      const media = await getUdvashClassMedia(auth, item.sourceVideoHint)
+      if (media.youtubeLink) {
+        await db.collection("classes").doc(item.id).set({
+          youtubeLink: media.youtubeLink,
+          isPublished: true,
+          mediaStatus: "ee_ready_waiting_tg",
+          mediaResolveError: "",
+          sourceHasDirectVideo: media.directSources.length > 0,
+          updatedAt: serverNow(),
+        }, { merge: true })
+        resolved += 1
+      } else {
+        await db.collection("classes").doc(item.id).set({
+          isPublished: false,
+          mediaStatus: "needs_youtube_upload",
+          mediaResolveError: "No YouTube source on Udvash",
+          sourceHasDirectVideo: media.directSources.length > 0,
+          updatedAt: serverNow(),
+        }, { merge: true })
+        needsUpload += 1
+      }
+    } catch (error) {
+      failed += 1
+      await db.collection("classes").doc(item.id).set({
+        isPublished: false,
+        mediaStatus: "media_resolve_failed",
+        mediaResolveError: String(error?.message || error).slice(0, 500),
+        updatedAt: serverNow(),
+      }, { merge: true }).catch(() => {})
+    }
+    await delay(120)
+  }
+
+  await saveAuthState(db, account, auth)
+
+  const afterImported = (await existingEeClasses(db, session.eeCourseId))
+    .filter((item) => importedClassMatches(item, session))
+  const remaining = afterImported.filter(
+    (item) => item.isPublished === false || !hasPlayableMedia(item),
+  ).length
+  const readyNow = afterImported.length - remaining
+
+  await setSession(db, chatId, {
+    lastImportedCount: afterImported.length,
+    lastReadyCount: readyNow,
+    lastStagedCount: remaining,
   })
 
   await sendMessage(
     chatId,
     [
-      `✅ ${analysis.missing.length}টা class Easy-Education-এ add হয়েছে।`,
-      `Course: ${session.eeCourseTitle}`,
-      `Destination: ${destinationLabel(session)}`,
+      `✅ YouTube resolve + published: ${resolved}`,
+      `🟡 YouTube নেই, পরে upload worker লাগবে: ${needsUpload}`,
+      `❌ Failed: ${failed}`,
+      `✅ EE ready total: ${readyNow}`,
+      `⏳ Staged remaining: ${remaining}`,
       "",
-      "Media job এখন waiting_worker placeholder-এ আছে।",
-      "Video ready না হওয়া পর্যন্ত classগুলো isPublished:false থাকবে।",
+      "YouTube source পাওয়া classগুলো এখন Easy-Education-এ visible হবে।",
     ].join("\n"),
-    keyboard([[button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")]]),
+    keyboard([
+      ...(remaining ? [[button(`🔗 Resolve next ${Math.min(MEDIA_RESOLVE_BATCH, remaining)}`, "media:resolve")]] : []),
+      [button("🔄 Check mapping", "mapping:check"), button("🏠 Main", "home")],
+    ]),
   )
 }
 
@@ -484,7 +654,13 @@ async function chooseGroup(db, chatId, index) {
   const session = await getSession(db, chatId)
   const group = asArray(session.classGroupOptions)[index]
   if (!group) throw new Error("Class Card selection expired")
-  const next = { ...session, destinationType: "group", classGroupId: group.id, classGroupTitle: group.title, step: "mapping_ready" }
+  const next = {
+    ...session,
+    destinationType: "group",
+    classGroupId: group.id,
+    classGroupTitle: group.title,
+    step: "mapping_ready",
+  }
   await setSession(db, chatId, {
     destinationType: "group",
     classGroupId: group.id,
@@ -515,7 +691,13 @@ async function createClassGroupFromText(db, chatId, title) {
     })
     group = { id: ref.id, title: String(title).trim() }
   }
-  const next = { ...session, destinationType: "group", classGroupId: group.id, classGroupTitle: group.title, step: "mapping_ready" }
+  const next = {
+    ...session,
+    destinationType: "group",
+    classGroupId: group.id,
+    classGroupTitle: group.title,
+    step: "mapping_ready",
+  }
   await setSession(db, chatId, {
     destinationType: "group",
     classGroupId: group.id,
@@ -565,8 +747,35 @@ async function showAccountInfo(db, chatId, index) {
       account.courseCount !== undefined ? `Courses: ${account.courseCount}` : "",
       account.lastError ? `Last error: ${account.lastError}` : "",
     ].filter(Boolean).join("\n"),
-    keyboard([[button("🗑 Delete account", `accountdelete:${index}`)], [button("⬅️ Accounts", "account:list")]]),
+    keyboard([
+      [button("🔄 Re-test login", `accountrefresh:${index}`)],
+      [button("🗑 Delete account", `accountdelete:${index}`)],
+      [button("⬅️ Accounts", "account:list")],
+    ]),
   )
+}
+
+async function refreshSavedAccount(db, chatId, index) {
+  const session = await getSession(db, chatId)
+  const option = asArray(session.accountManageOptions)[index]
+  if (!option) throw new Error("Account selection expired")
+  const account = await getAccount(db, option.id)
+  await sendMessage(chatId, `${account.label || account.roll} দিয়ে login re-test করছি…`)
+  try {
+    const courses = await platformCourses(db, account)
+    await sendMessage(
+      chatId,
+      `✅ Login successful\n📚 ${courses.length}টা course পাওয়া গেছে।`,
+      keyboard([[button("⬅️ Accounts", "account:list"), button("🏠 Main", "home")]]),
+    )
+  } catch (error) {
+    await db.collection(ACCOUNT_COLLECTION).doc(account.id).set({
+      status: "login_failed",
+      lastError: String(error?.message || error).slice(0, 500),
+      updatedAt: serverNow(),
+    }, { merge: true }).catch(() => {})
+    throw error
+  }
 }
 
 async function confirmDeleteAccount(db, chatId, index) {
@@ -724,6 +933,7 @@ async function handleCallback(db, callback) {
 
   if (data.startsWith("accountadd:")) return startAccountAdd(db, chatId, data.split(":")[1])
   if (data.startsWith("accountinfo:")) return showAccountInfo(db, chatId, Number(data.split(":")[1]))
+  if (data.startsWith("accountrefresh:")) return refreshSavedAccount(db, chatId, Number(data.split(":")[1]))
   if (data.startsWith("accountdeleteconfirm:")) return deleteSavedAccount(db, chatId, Number(data.split(":")[1]))
   if (data.startsWith("accountdelete:")) return confirmDeleteAccount(db, chatId, Number(data.split(":")[1]))
 
@@ -749,8 +959,9 @@ async function handleCallback(db, callback) {
   }
   if (data.startsWith("grp:")) return chooseGroup(db, chatId, Number(data.split(":")[1]))
   if (data === "mapping:check") return showMappingAnalysis(db, chatId, await getSession(db, chatId))
+  if (data === "media:resolve") return resolveStagedMedia(db, chatId, await getSession(db, chatId))
   if (data === "import:yes") {
-    await sendMessage(chatId, "Missing classes import করছি…")
+    await sendMessage(chatId, "Missing class metadata import করছি…")
     return importMissingClasses(db, chatId, userId, await getSession(db, chatId))
   }
 
