@@ -1,4 +1,5 @@
 import { stableId } from "../crypto.js"
+import { loginUdvashWeb } from "./udvash-web-login.js"
 
 function required(name) {
   const value = process.env[name]
@@ -123,9 +124,8 @@ async function fetchJson(url, options = {}) {
   return { payload, headers: response.headers }
 }
 
-export async function loginUdvash({ roll, password }) {
+async function loginUdvashApi({ roll, password, mode }) {
   const url = required("UDVASH_LOGIN_URL")
-  const mode = (process.env.UDVASH_LOGIN_MODE || "json").toLowerCase()
   const rollField = process.env.UDVASH_ROLL_FIELD || "roll"
   const passwordField = process.env.UDVASH_PASSWORD_FIELD || "password"
   const bodyObject = { [rollField]: roll, [passwordField]: password }
@@ -169,6 +169,14 @@ export async function loginUdvash({ roll, password }) {
     }
   }
   return { cookie, token, raw: payload }
+}
+
+export async function loginUdvash({ roll, password }) {
+  const mode = (process.env.UDVASH_LOGIN_MODE || "aspnet").toLowerCase()
+  if (mode === "aspnet" || mode === "web") {
+    return loginUdvashWeb({ roll, password })
+  }
+  return loginUdvashApi({ roll, password, mode })
 }
 
 export async function listUdvashCourses(auth) {
@@ -290,5 +298,7 @@ export async function getUdvashCourseContent(auth, courseId) {
 }
 
 export function udvashConfigured() {
-  return Boolean(process.env.UDVASH_LOGIN_URL && process.env.UDVASH_COURSES_URL && process.env.UDVASH_COURSE_CONTENT_URL)
+  // Login has a known safe default for the official ASP.NET web flow.
+  // Course/content endpoints are intentionally still required when those operations are requested.
+  return true
 }
