@@ -41,28 +41,23 @@ The response includes `openTelegram`, for example `https://t.me/easy_education_u
 
 ## 4. Udvash source adapter
 
-The current repository did not contain Udvash's login/course/content API URLs, so the bot does not guess or hard-code them. Configure the actual JSON endpoints:
+Udvash is hardcoded to the captured official web flow. No Udvash endpoint environment variables are required.
+
+Authentication:
+
+`GET /Account/Password` (or login page fallback) -> fresh ASP.NET anti-forgery token/cookie -> `POST /Account/Login` using `RegistrationNumber`, `Password`, `RememberMe`, `returnUrl`, and `__RequestVerificationToken`.
+
+Content crawl:
+
+`/Content/Index?id=2` -> Course -> Subject -> Chapter -> Content Type -> Class.
+
+The bot performs a fresh Udvash login before reading a selected account's courses/content. Direct signed media URLs are intentionally not stored during EE UP; the later media worker will fetch fresh class details just before download.
+
+Optional only if Udvash later rejects the default browser signature:
 
 ```text
-UDVASH_LOGIN_URL=https://...
-UDVASH_COURSES_URL=https://...
-UDVASH_COURSE_CONTENT_URL=https://.../{courseId}
-UDVASH_LOGIN_MODE=json
-UDVASH_LOGIN_METHOD=POST
-UDVASH_ROLL_FIELD=roll
-UDVASH_PASSWORD_FIELD=password
+UDVASH_USER_AGENT=Mozilla/5.0 ...
 ```
-
-Optional variables for a different API shape:
-
-```text
-UDVASH_LOGIN_MODE=form
-UDVASH_COURSES_DATA_PATH=data.courses
-UDVASH_CONTENT_DATA_PATH=data
-UDVASH_EXTRA_HEADERS_JSON={"X-App-Version":"..."}
-```
-
-The adapter understands common JSON names for course, subject, chapter, class, lecture, video, duration, and teacher fields. If Udvash uses an unusual response shape, adjust only `api/bot/platforms/udvash.js`; the Telegram flow and EE mapping do not need to change.
 
 ## 5. Bot flow
 
@@ -70,7 +65,9 @@ The adapter understands common JSON names for course, subject, chapter, class, l
 
 `Accounts` -> `Add account` -> `Udvash` -> label -> roll -> password.
 
-The password is encrypted using AES-256-GCM before Firestore storage. The bot attempts to delete the Telegram password message after processing it. A successful source login stores the returned cookie/token encrypted too.
+The password is encrypted using AES-256-GCM before Firestore storage. The bot attempts to delete the Telegram password message after processing it. A successful login also verifies the account by fetching the current course list.
+
+The Accounts screen shows every saved account with a delete button. Delete requires confirmation. Deleting an account removes its saved credential/session record, but does not delete classes already imported into Easy-Education.
 
 ### EE UP
 
@@ -89,7 +86,7 @@ Mapping rules:
 
 - Easy-Education **batch** course: source Subject -> EE Subject, source Chapter -> EE Chapter.
 - Easy-Education **subject** course: source Subject -> EE Chapter, then classes directly inside it (no extra subject level).
-- Every imported class includes source metadata such as `sourcePlatform`, `sourceCourseId`, `sourceClassId`, `sourceSubject`, and `sourceChapter`.
+- Every imported class includes source metadata such as `sourcePlatform`, `sourceCourseId`, `sourceClassId`, `sourceContentId`, `sourceContentTypeId`, `sourceSubjectId`, `sourceChapterId`, `sourceSubject`, and `sourceChapter`.
 
 New imported classes are created with `isPublished:false`, `mediaStatus:waiting_worker`, and no playable video URL. Therefore students do not see them before the later phone/PC download worker finishes the media step.
 
