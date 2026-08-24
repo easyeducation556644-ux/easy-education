@@ -454,13 +454,23 @@ private fun Cps4WatchHost(viewModel: NativeAppViewModel, state: NativeUiState, c
 
 @Composable
 private fun Cps4Exams(state: NativeUiState, courseId: String, onBack: () -> Unit) {
-    val context = LocalContext.current
     val exams = state.cpsCourseExtras[courseId]?.exams.orEmpty()
+    var selectedExamId by rememberSaveable(courseId) { mutableStateOf("") }
+    val selectedExam = exams.firstOrNull { it.id == selectedExamId }
+    if (selectedExam != null) {
+        NativeCpsExamAttemptsScreen(
+            courseId = courseId,
+            exam = selectedExam,
+            online = state.online,
+            onBack = { selectedExamId = "" },
+        )
+        return
+    }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Spacer(Modifier.height(4.dp)); Cps4Back(onBack, "Exams") }
         if (exams.isEmpty()) item { Cps4Message("No exam is available for this course yet.") }
         items(exams, key = { it.id }) { exam ->
-            Card(Modifier.fillMaxWidth().clickable { NativeCpsExamSafeActivity.open(context, courseId, exam.id) }, shape = Cps4Small, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Card(Modifier.fillMaxWidth().clickable { selectedExamId = exam.id }, shape = Cps4Small, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Quiz, null); Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(exam.title, fontWeight = FontWeight.Bold); Text(buildList { if (exam.duration > 0) add("${exam.duration} min"); if (exam.questionsCount > 0) add("${exam.questionsCount} questions"); if (exam.status.isNotBlank()) add(exam.status) }.joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Icon(Icons.Default.ArrowForward, null) }
             }
         }
