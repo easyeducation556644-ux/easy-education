@@ -1,0 +1,65 @@
+name: One-off current Android APK
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/oneoff-current-android-apk.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout current Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Restore release keystore
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Verify expected current source
+        run: |
+          grep -q 'versionName = "2.10.25"' app/build.gradle.kts
+          grep -q 'versionCode = 2102500' app/build.gradle.kts
+          grep -q 'NativeCpsExamAttemptsScreen' app/src/main/java/com/easyeducation/app/NativeCpsCourseExperienceV4.kt
+          grep -q 'Retake Exam' app/src/main/java/com/easyeducation/app/NativeCpsExamAttemptsUi.kt
+          grep -q 'Leaderboard' app/src/main/java/com/easyeducation/app/NativeCpsExamAttemptsUi.kt
+          grep -q 'First attempt only' app/src/main/java/com/easyeducation/app/NativeCpsExamAttemptsUi.kt
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Stage APK
+        run: cp app/build/outputs/apk/release/app-release.apk Easy-Education-2.10.25-current.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.25-current-signed-apk
+          path: Easy-Education-2.10.25-current.apk
+          retention-days: 30
