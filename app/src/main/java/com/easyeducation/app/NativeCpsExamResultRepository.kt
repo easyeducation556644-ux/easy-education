@@ -61,25 +61,10 @@ data class NativeCpsExamResultDraft(
     val answers: List<NativeCpsExamAnswerResult>,
 )
 
-data class NativeCpsLeaderboardRow(
-    val rank: Int,
-    val userName: String,
-    val marks: Double,
-    val maxScore: Double,
-    val correct: Int,
-    val wrong: Int,
-    val answered: Int,
-    val timeTakenSeconds: Int,
-    val submittedAtMs: Long,
-    val isYou: Boolean,
-)
-
 data class NativeCpsExamOverview(
     val attempts: List<NativeCpsExamResult>,
     val firstAttempt: NativeCpsExamResult?,
     val retakeCount: Int,
-    val leaderboard: List<NativeCpsLeaderboardRow>,
-    val firstAttemptOnly: Boolean = true,
 )
 
 class NativeCpsExamResultRepository(context: Context) {
@@ -103,7 +88,7 @@ class NativeCpsExamResultRepository(context: Context) {
         examId: String,
         uid: String = auth.currentUser?.uid.orEmpty(),
     ): NativeCpsExamOverview {
-        if (uid.isBlank() || examId.isBlank()) return NativeCpsExamOverview(emptyList(), null, 0, emptyList())
+        if (uid.isBlank() || examId.isBlank()) return NativeCpsExamOverview(emptyList(), null, 0)
         val key = overviewCacheKey(uid, courseId, examId)
         prefs.getString(key, null)?.let { raw ->
             runCatching { parseOverview(JSONObject(raw)) }.getOrNull()?.let { return it }
@@ -116,7 +101,6 @@ class NativeCpsExamResultRepository(context: Context) {
             attempts = attempts,
             firstAttempt = attempts.firstOrNull(),
             retakeCount = (attempts.size - 1).coerceAtLeast(0),
-            leaderboard = emptyList(),
         )
     }
 
@@ -143,7 +127,7 @@ class NativeCpsExamResultRepository(context: Context) {
             "maxScore" to maxScore.toString(),
             "questionCount" to questionCount.toString(),
         )
-        val payload = request("exam", null, query, includeCpsSession = true)
+        val payload = request("exam", null, query)
         val parsed = parseOverview(payload)
         prefs.edit().putString(overviewCacheKey(uid, courseId, examId), payload.toString()).apply()
         return parsed
@@ -189,7 +173,6 @@ class NativeCpsExamResultRepository(context: Context) {
         action: String,
         body: JSONObject?,
         query: Map<String, String> = emptyMap(),
-        includeCpsSession: Boolean = false,
     ): JSONObject {
         val user = auth.currentUser ?: error("Sign in to continue")
         val token = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() }
@@ -207,11 +190,6 @@ class NativeCpsExamResultRepository(context: Context) {
             .header("Authorization", "Bearer $token")
             .header("Accept", "application/json")
             .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
-        if (includeCpsSession) {
-            CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = true)
-                ?.takeIf { it.isNotBlank() }
-                ?.let { builder.header("X-CPS-Firebase-Token", it) }
-        }
         if (body == null) builder.get()
         else builder.post(body.toString().toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
@@ -227,11 +205,6 @@ class NativeCpsExamResultRepository(context: Context) {
         }
     }
 
-    /**
-     * Result ids from older server rows are not guaranteed to be present or unique. Compose
-     * lists require unique keys. Normalize every row before it reaches UI and skip a malformed row
-     * instead of taking down the whole attempt screen.
-     */
     private fun parseResults(payload: JSONObject): List<NativeCpsExamResult> =
         parseResultArray(payload.optJSONArray("results")).sortedByDescending { it.submittedAtMs }
 
@@ -267,35 +240,10 @@ class NativeCpsExamResultRepository(context: Context) {
         val first = payload.optJSONObject("firstAttempt")?.let {
             runCatching { parseResult(it) }.getOrNull()
         } ?: attempts.firstOrNull()
-        val leaderboardJson = payload.optJSONArray("leaderboard")
-        val leaderboard = buildList {
-            if (leaderboardJson != null) {
-                for (index in 0 until leaderboardJson.length()) {
-                    val item = leaderboardJson.optJSONObject(index) ?: continue
-                    add(
-                        NativeCpsLeaderboardRow(
-                            rank = item.optInt("rank", index + 1).coerceAtLeast(1),
-                            userName = item.optString("userName").ifBlank { "Student" },
-                            marks = finiteDouble(item, "marks"),
-                            maxScore = finiteDouble(item, "maxScore").coerceAtLeast(0.0),
-                            correct = item.optInt("correct", 0).coerceAtLeast(0),
-                            wrong = item.optInt("wrong", 0).coerceAtLeast(0),
-                            answered = item.optInt("answered", 0).coerceAtLeast(0),
-                            timeTakenSeconds = item.optInt("timeTakenSeconds", 0).coerceAtLeast(0),
-                            submittedAtMs = item.optLong("submittedAtMs", 0L).coerceAtLeast(0L),
-                            isYou = item.optBoolean("isYou", false),
-                        ),
-                    )
-                }
-            }
-        }
-        val rule = payload.optJSONObject("leaderboardRule")
         return NativeCpsExamOverview(
             attempts = attempts,
             firstAttempt = first,
             retakeCount = payload.optInt("retakeCount", (attempts.size - 1).coerceAtLeast(0)).coerceAtLeast(0),
-            leaderboard = leaderboard,
-            firstAttemptOnly = rule?.optString("attemptsUsed").orEmpty().ifBlank { "first-only" } == "first-only",
         )
     }
 
