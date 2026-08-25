@@ -2,9 +2,7 @@ package com.easyeducation.app
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Quiz
@@ -30,7 +27,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -40,7 +36,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,7 +69,6 @@ fun NativeCpsExamAttemptsScreen(
     }
     var loading by remember(courseId, exam.id) { mutableStateOf(false) }
     var error by remember(courseId, exam.id) { mutableStateOf<String?>(null) }
-    var leaderboard by rememberSaveable(courseId, exam.id) { mutableStateOf(false) }
     var resumeTick by remember(courseId, exam.id) { mutableIntStateOf(0) }
 
     DisposableEffect(lifecycleOwner, courseId, exam.id) {
@@ -108,20 +102,7 @@ fun NativeCpsExamAttemptsScreen(
         loading = false
     }
 
-    BackHandler {
-        if (leaderboard) leaderboard = false else onBack()
-    }
-
-    if (leaderboard) {
-        CpsExamLeaderboard(
-            exam = exam,
-            overview = overview,
-            loading = loading,
-            error = error,
-            onBack = { leaderboard = false },
-        )
-        return
-    }
+    BackHandler(onBack = onBack)
 
     val first = overview.firstAttempt
     LazyColumn(
@@ -173,7 +154,7 @@ fun NativeCpsExamAttemptsScreen(
                     Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("No attempt yet", fontWeight = FontWeight.ExtraBold)
                         Text(
-                            "Your first submitted attempt will be the only attempt used for this exam's leaderboard.",
+                            "Take the exam to see your result and attempt history here.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Button(
@@ -203,17 +184,8 @@ fun NativeCpsExamAttemptsScreen(
                         Spacer(Modifier.size(7.dp))
                         Text("Retake Exam")
                     }
-                    OutlinedButton(
-                        onClick = { leaderboard = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = CpsAttemptPill,
-                    ) {
-                        Icon(Icons.Default.EmojiEvents, null, Modifier.size(18.dp))
-                        Spacer(Modifier.size(7.dp))
-                        Text("Leaderboard")
-                    }
                     Text(
-                        "Retakes taken: ${overview.retakeCount} • Retake scores never change leaderboard rank.",
+                        "Retakes taken: ${overview.retakeCount}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -259,24 +231,12 @@ private fun CpsFirstAttemptCard(first: NativeCpsExamResult, retakeCount: Int) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
     ) {
         Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("First Attempt", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        "${cpsAttemptNumber(first.marks)} / ${cpsAttemptNumber(first.maxScore)}",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                    )
-                }
-                Surface(shape = CpsAttemptPill, color = MaterialTheme.colorScheme.surface) {
-                    Text(
-                        "Leaderboard score",
-                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-            }
+            Text("First Attempt", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "${cpsAttemptNumber(first.marks)} / ${cpsAttemptNumber(first.maxScore)}",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.ExtraBold,
+            )
             Text(
                 "${first.correct} correct • ${first.wrong} wrong • ${first.unanswered} unanswered",
                 fontWeight = FontWeight.SemiBold,
@@ -299,23 +259,10 @@ private fun CpsAttemptResultCard(attempt: NativeCpsExamResult, index: Int) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (first) "Attempt 1" else "Retake $index",
-                    Modifier.weight(1f),
-                    fontWeight = FontWeight.ExtraBold,
-                )
-                if (first) {
-                    Surface(shape = CpsAttemptPill, color = MaterialTheme.colorScheme.primaryContainer) {
-                        Text(
-                            "Leaderboard",
-                            Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-            }
+            Text(
+                if (first) "Attempt 1" else "Retake $index",
+                fontWeight = FontWeight.ExtraBold,
+            )
             Text(
                 "${cpsAttemptNumber(attempt.marks)} / ${cpsAttemptNumber(attempt.maxScore)}",
                 style = MaterialTheme.typography.titleLarge,
@@ -332,132 +279,6 @@ private fun CpsAttemptResultCard(attempt: NativeCpsExamResult, index: Int) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CpsExamLeaderboard(
-    exam: NativeCpsExamSummary,
-    overview: NativeCpsExamOverview,
-    loading: Boolean,
-    error: String?,
-    onBack: () -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item {
-            Spacer(Modifier.height(4.dp))
-            CpsAttemptBack(onBack, "Leaderboard")
-        }
-        item {
-            Card(
-                shape = CpsAttemptCard,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(exam.title, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleLarge)
-                    Text("First attempt only", fontWeight = FontWeight.Bold)
-                    Text(
-                        "Every student appears once. Retake results are excluded from ranking.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-            }
-        }
-
-        if (loading && overview.leaderboard.isEmpty()) {
-            item {
-                Box(Modifier.fillMaxWidth().padding(28.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            }
-        } else if (overview.leaderboard.isEmpty()) {
-            item {
-                Card(
-                    shape = CpsAttemptSmall,
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                ) {
-                    Text(
-                        error ?: "Leaderboard is not available yet.",
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        } else {
-            itemsIndexed(
-                overview.leaderboard,
-                key = { _, row -> "rank-${row.rank}-${row.userName}-${row.submittedAtMs}" },
-            ) { _, row ->
-                CpsLeaderboardRowCard(row)
-            }
-        }
-
-        error?.takeIf { it.isNotBlank() && overview.leaderboard.isNotEmpty() }?.let { message ->
-            item {
-                Text(
-                    "Showing the last saved leaderboard. $message",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-        item { Spacer(Modifier.height(16.dp)) }
-    }
-}
-
-@Composable
-private fun CpsLeaderboardRowCard(row: NativeCpsLeaderboardRow) {
-    val podium = row.rank <= 3
-    Card(
-        shape = if (podium) CpsAttemptCard else CpsAttemptSmall,
-        border = BorderStroke(
-            if (row.isYou) 2.dp else 1.dp,
-            if (row.isYou) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-        ),
-        colors = CardDefaults.cardColors(
-            containerColor = if (row.isYou) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        ),
-    ) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                shape = CircleShape,
-                color = if (podium) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            ) {
-                Box(Modifier.size(42.dp), contentAlignment = Alignment.Center) {
-                    Text("#${row.rank}", fontWeight = FontWeight.ExtraBold)
-                }
-            }
-            Spacer(Modifier.size(11.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        row.userName,
-                        Modifier.weight(1f),
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (row.isYou) {
-                        Text("You", fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-                Text(
-                    "${row.correct} correct • ${cpsAttemptDuration(row.timeTakenSeconds)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(cpsAttemptNumber(row.marks), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-                if (row.maxScore > 0.0) {
-                    Text("/ ${cpsAttemptNumber(row.maxScore)}", style = MaterialTheme.typography.labelSmall)
-                }
             }
         }
     }
