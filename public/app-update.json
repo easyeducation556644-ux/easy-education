@@ -1,8 +1,8 @@
 {
-  "versionCode": 2102500,
-  "versionName": "2.10.25",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.25/Easy-Education-2.10.25.apk",
-  "sha256": "6f5ca690a2cb0379a1b51f49470386f9deca0d30f7adcdf47b19b590f1d0764e",
+  "versionCode": 2102600,
+  "versionName": "2.10.26",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.26/Easy-Education-2.10.26.apk",
+  "sha256": "e7247d4db7bf512b908132c5cfd7bb55cce8d59b660586d9c3157506007ce65e",
   "force": false,
-  "notes": "Exam Results stability fixes and built-in background updates for future releases."
+  "notes": "Per-exam leaderboard now uses first attempts only. Existing attempts, retake count, Retake Exam and Leaderboard are shown from the exam detail page."
 }
