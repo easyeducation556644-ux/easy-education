@@ -1,0 +1,120 @@
+name: Android 2.10.27 signed release
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.27-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: "2.10.27"
+      VERSION_CODE: "2102700"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout web/main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Checkout native Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+
+      - name: Verify merged leaderboard and CPS session repair
+        shell: bash
+        run: |
+          grep -q 'versionCode = 2102700' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.27"' native/app/build.gradle.kts
+          grep -q 'silentSignIn().await()' native/app/src/main/java/com/easyeducation/app/CpsFirebaseSession.kt
+          grep -q 'forceRefresh || System.currentTimeMillis() >= retryAfterMs' native/app/src/main/java/com/easyeducation/app/CpsFirebaseSession.kt
+          grep -q 'includeCpsSession = true' native/app/src/main/java/com/easyeducation/app/NativeCpsExamResultRepository.kt
+          grep -Fq 'const allRows = [...easyRows, ...cpsRows]' server/api-resources/exam-results.js
+          grep -q 'const people = mergedPeople(allRows)' server/api-resources/exam-results.js
+          grep -q 'const first = person.first' server/api-resources/exam-results.js
+          grep -q 'attemptsUsed: "first-only"' server/api-resources/exam-results.js
+          grep -q 'retakeCount: Math.max(0, viewerAttempts.length - 1)' server/api-resources/exam-results.js
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Restore signing keystore
+        shell: bash
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+        working-directory: native
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp native/app/build/outputs/apk/release/app-release.apk "$APK"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "Repairs CPS session refresh so leaderboard can merge Easy Education and CPS submissions while ranking first attempts only."
+          fi
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Publish in-app update metadata
+        shell: bash
+        run: |
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "Leaderboard now refreshes the CPS source session silently and merges Easy Education submissions with CPS submissions. Ranking still uses each student's first attempt only."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          if git diff --cached --quiet; then
+            echo "Update metadata already current"
+          else
+            git commit -m "Publish Android $VERSION update metadata"
+            git push origin HEAD:main
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.27-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
