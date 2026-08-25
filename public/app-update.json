@@ -1,8 +1,8 @@
 {
-  "versionCode": 2102700,
-  "versionName": "2.10.27",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.27/Easy-Education-2.10.27.apk",
-  "sha256": "4ea7265263b59195b0f7165c18cffc8c585359af713a1cbf56590d5b9e1375d5",
+  "versionCode": 2102800,
+  "versionName": "2.10.28",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.28/Easy-Education-2.10.28.apk",
+  "sha256": "720fd5cb14a0f32a01f5fd2d4b17816df526b976d535a56571750071843cf899",
   "force": false,
-  "notes": "Leaderboard now refreshes the CPS source session silently and merges Easy Education submissions with CPS submissions. Ranking still uses each student's first attempt only."
+  "notes": "Leaderboard has been removed. Exam results, attempt history and retakes remain available."
 }
