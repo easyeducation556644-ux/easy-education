@@ -1,4 +1,4 @@
-import legacyHandler from "./telegram-bot-core.js"
+import legacyHandler from "../server/telegram-bot-core.js"
 import { getAdminServices } from "./utils/firebase-admin.js"
 import {
   answerCallback,
