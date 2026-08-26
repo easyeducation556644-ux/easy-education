@@ -5,6 +5,10 @@ import { continueManualDriveRepair } from "./server/bot/manual-drive-repair.js"
 const continuationScope = new AsyncLocalStorage()
 const nativeFetch = globalThis.fetch.bind(globalThis)
 const OUTER_WORKER_BUDGET_MS = 245_000
+const JOB_COLLECTION = "botJobs"
+const CONTROL_COLLECTION = "botManualRepairControls"
+const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
+const CANCELLED_MANUAL_JOB_TYPE = "manual_drive_resource_repair_cancelled"
 
 function authorized(request) {
   const expected = String(process.env.AUTOMATION_SECRET || "")
@@ -68,11 +72,40 @@ async function triggerDirectWorker(request, jobId) {
   }
 }
 
+async function stopIfCancelled(db, jobId) {
+  const jobRef = db.collection(JOB_COLLECTION).doc(String(jobId))
+  const jobSnapshot = await jobRef.get()
+  if (!jobSnapshot.exists) return true
+
+  const job = jobSnapshot.data()
+  if (job.type !== MANUAL_JOB_TYPE || !["queued", "running"].includes(String(job.status || ""))) return true
+
+  const chatId = String(job.notificationChatId || "").trim()
+  if (!chatId) return false
+
+  const controlSnapshot = await db.collection(CONTROL_COLLECTION).doc(chatId).get()
+  if (!controlSnapshot.exists || controlSnapshot.data()?.cancelRequested !== true) return false
+
+  await jobRef.set({
+    type: CANCELLED_MANUAL_JOB_TYPE,
+    status: "cancelled",
+    cancelledAt: new Date(),
+    cancelEpochMs: Number(controlSnapshot.data()?.cancelEpochMs || Date.now()),
+    updatedAt: new Date(),
+  }, { merge: true })
+  return true
+}
+
 async function runFlattenedManualRepair(db, jobId, request) {
   const startedAt = Date.now()
   let continuationRequested = false
 
   do {
+    // A durable /cancel marker is checked before each continuation window.
+    // During normal quota availability /cancel also marks the active job directly,
+    // which makes the current worker stop after the in-flight batch.
+    if (await stopIfCancelled(db, jobId)) return
+
     const state = {
       captureContinuation: true,
       continuationRequested: false,
@@ -83,9 +116,9 @@ async function runFlattenedManualRepair(db, jobId, request) {
   } while (continuationRequested && Date.now() - startedAt < OUTER_WORKER_BUDGET_MS)
 
   // If the job still needs work after this invocation's budget, create only
-  // one direct worker hop. This keeps Vercel's recursion depth tiny even for
-  // hundreds of classes and large retry queues.
-  if (continuationRequested) {
+  // one direct worker hop. Check cancellation again first so a stop request
+  // cannot race with the handoff.
+  if (continuationRequested && !(await stopIfCancelled(db, jobId))) {
     await triggerDirectWorker(request, jobId)
   }
 }
