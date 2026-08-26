@@ -61,13 +61,28 @@ function sessionExpiredError() {
   return error
 }
 
+function parsedUrl(value) {
+  try { return new URL(String(value || ""), ORIGIN) } catch { return null }
+}
+
 function isRoutineClassDetails(url) {
-  try {
-    const parsed = new URL(String(url || ""), ORIGIN)
-    return parsed.origin === ORIGIN && parsed.pathname.toLowerCase() === "/routine/classdetails"
-  } catch {
-    return false
-  }
+  const parsed = parsedUrl(url)
+  return parsed?.origin === ORIGIN && parsed.pathname.toLowerCase() === "/routine/classdetails"
+}
+
+function isDirectPdfUrl(url) {
+  const parsed = parsedUrl(url)
+  return !!parsed && /\.pdf$/i.test(parsed.pathname)
+}
+
+function isUdvashResourcePage(resource) {
+  const parsed = parsedUrl(resource?.url)
+  if (!parsed || parsed.origin !== ORIGIN || isDirectPdfUrl(parsed.toString())) return false
+  const label = String(resource?.label || "")
+  const noteLikeLabel = /\b(?:pdf|note|notes|sheet|solve\s*sheet|lecture\s*sheet|class\s*note|resource)\b|নোট|শিট|সলভ/iu.test(label)
+  const noteLikePath = /\/(?:routine|content)\//i.test(parsed.pathname)
+  const noteLikeQuery = /(?:pdf|note|notes|sheet|solve|lecturesheet|lecture-sheet)/i.test(parsed.search)
+  return noteLikeLabel || noteLikePath || noteLikeQuery
 }
 
 function notesUrlFor(value) {
@@ -77,14 +92,14 @@ function notesUrlFor(value) {
   return url.toString()
 }
 
-async function fetchUdvashHtml(url, jar, referer = ORIGIN) {
+async function fetchUdvashResourcePage(url, jar, referer = ORIGIN) {
   let current = new URL(url, referer).toString()
   let currentReferer = referer
-  for (let hop = 0; hop < 5; hop += 1) {
+  for (let hop = 0; hop < 7; hop += 1) {
     const response = await fetch(current, {
       method: "GET",
       headers: {
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/pdf,application/octet-stream,*/*;q=0.8",
         "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
         Pragma: "no-cache",
@@ -98,7 +113,7 @@ async function fetchUdvashHtml(url, jar, referer = ORIGIN) {
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location")
-      if (!location) throw new Error(`Udvash notes redirect failed: HTTP ${response.status}`)
+      if (!location) throw new Error(`Udvash resource redirect failed: HTTP ${response.status}`)
       const next = new URL(location, current).toString()
       if (looksLikeLogin(next)) throw sessionExpiredError()
       currentReferer = current
@@ -106,17 +121,34 @@ async function fetchUdvashHtml(url, jar, referer = ORIGIN) {
       continue
     }
 
+    if (!response.ok) throw new Error(`Udvash resource page request failed: HTTP ${response.status}`)
+    const contentType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase()
+    const disposition = String(response.headers.get("content-disposition") || "")
+    const binaryDownload = contentType === "application/pdf"
+      || contentType === "application/octet-stream"
+      || /attachment/i.test(disposition)
+    if (binaryDownload) {
+      try { await response.body?.cancel?.() } catch {}
+      return { html: "", url: current, directDownloadUrl: current, contentType }
+    }
+
     const body = await response.text()
-    if (!response.ok) throw new Error(`Udvash notes page request failed: HTTP ${response.status}`)
     if (looksLikeLogin(current, body)) throw sessionExpiredError()
-    return { html: body, url: current }
+    return { html: body, url: current, directDownloadUrl: "", contentType }
   }
-  throw new Error("Udvash notes page redirected too many times")
+  throw new Error("Udvash resource page redirected too many times")
 }
 
-function cleanPdfUrl(value) {
+function normalizeCandidate(value = "") {
+  return decodeHtml(String(value || ""))
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\\//g, "/")
+    .trim()
+}
+
+function cleanPdfUrl(value, baseUrl = ORIGIN) {
   try {
-    const url = new URL(decodeHtml(value))
+    const url = new URL(normalizeCandidate(value), baseUrl)
     if (!/^https?:$/i.test(url.protocol) || !/\.pdf$/i.test(url.pathname)) return ""
     url.hash = ""
     return url.toString()
@@ -125,23 +157,33 @@ function cleanPdfUrl(value) {
   }
 }
 
-function extractSignedPdfUrls(html) {
+function extractSignedPdfUrls(html, baseUrl = ORIGIN) {
   const source = decodeHtml(html)
   const output = []
   const seen = new Set()
   const add = (value) => {
-    const url = cleanPdfUrl(value)
+    const url = cleanPdfUrl(value, baseUrl)
     if (!url || seen.has(url)) return
     seen.add(url)
     output.push(url)
   }
 
-  const forceDownload = /forceDownload\(\s*(['"])(https?:\/\/.+?)\1\s*,/gi
   let match
+  const forceDownload = /forceDownload\(\s*(['"])(https?:\/\/.+?)\1\s*,/gi
   while ((match = forceDownload.exec(source))) add(match[2])
 
-  const embed = /<embed\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/gi
-  while ((match = embed.exec(source))) add(match[1] || match[2])
+  const attrPatterns = [
+    /<embed\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/gi,
+    /<iframe\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/gi,
+    /<object\b[^>]*\bdata\s*=\s*(?:"([^"]+)"|'([^']+)')/gi,
+    /<a\b[^>]*\bhref\s*=\s*(?:"([^"]+)"|'([^']+)')/gi,
+  ]
+  for (const regex of attrPatterns) {
+    while ((match = regex.exec(source))) add(match[1] || match[2])
+  }
+
+  const rawPdf = /(https?:\\?\/\\?\/[^\s"'<>]+?\.pdf(?:\?[^\s"'<>]*)?)/gi
+  while ((match = rawPdf.exec(source))) add(match[1])
 
   return output
 }
@@ -162,17 +204,23 @@ async function mapLimit(items, limit, mapper) {
 }
 
 async function resolveResource(resource, jar) {
-  if (!isRoutineClassDetails(resource?.url)) return [resource]
+  if (!isUdvashResourcePage(resource)) return [resource]
 
-  const notesUrl = notesUrlFor(resource.url)
-  const page = await fetchUdvashHtml(notesUrl, jar, resource.url)
-  const pdfUrls = extractSignedPdfUrls(page.html)
-  if (!pdfUrls.length) {
-    const routineId = new URL(notesUrl).searchParams.get("routineId") || "unknown"
-    throw new Error(`Udvash ClassDetails notes page did not return a downloadable PDF (routineId ${routineId})`)
+  const requestUrl = isRoutineClassDetails(resource.url) ? notesUrlFor(resource.url) : resource.url
+  const page = await fetchUdvashResourcePage(requestUrl, jar, resource.url)
+  const baseLabel = String(resource?.label || "Class Note").trim() || "Class Note"
+
+  if (page.directDownloadUrl) {
+    return [{ ...resource, label: baseLabel, url: page.directDownloadUrl }]
   }
 
-  const baseLabel = String(resource?.label || "Class Note").trim() || "Class Note"
+  const pdfUrls = extractSignedPdfUrls(page.html, page.url)
+  if (!pdfUrls.length) {
+    const parsed = parsedUrl(requestUrl)
+    const route = parsed ? `${parsed.pathname}${parsed.search}`.slice(0, 260) : String(requestUrl).slice(0, 260)
+    throw new Error(`Udvash resource page returned HTML but no downloadable PDF was found (${route})`)
+  }
+
   return pdfUrls.map((url, index) => ({
     ...resource,
     label: pdfUrls.length > 1 ? `${baseLabel} ${index + 1}` : baseLabel,
@@ -185,7 +233,7 @@ export async function resolveUdvashRoutineNoteResources(auth, results, concurren
   const resolved = await mapLimit(Array.isArray(results) ? results : [], Math.max(1, Math.min(5, Number(concurrency) || 3)), async (result) => {
     if (!result || result.error) return result
     const resources = Array.isArray(result.media?.resourceLinks) ? result.media.resourceLinks : []
-    if (!resources.some((resource) => isRoutineClassDetails(resource?.url))) return result
+    if (!resources.some((resource) => isUdvashResourcePage(resource))) return result
 
     try {
       const groups = []
