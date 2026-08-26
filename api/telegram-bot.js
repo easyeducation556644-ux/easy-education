@@ -1,14 +1,16 @@
 import { FieldValue } from "firebase-admin/firestore"
 import { getAdminServices } from "./utils/firebase-admin.js"
-import { decryptSecret, encryptSecret, stableId } from "../server/bot/crypto.js"
+import { createSignedState, decryptSecret, encryptSecret, stableId, verifySignedState } from "../server/bot/crypto.js"
 import {
   answerCallback,
   button,
+  clearInlineKeyboard,
   deleteMessage,
   isAllowedTelegramUser,
   keyboard,
   mainMenu,
   sendMessage,
+  urlButton,
 } from "../server/bot/telegram.js"
 import {
   getUdvashClassMediaBulk,
@@ -17,6 +19,19 @@ import {
   loginUdvashV2,
   normalizeContentTypeTitle,
 } from "../server/bot/platforms/udvash-v2.js"
+import {
+  connectGoogleDriveAccount,
+  googleAuthorizationUrl,
+  listGoogleDriveAccounts,
+  persistResourceLinksToDrive,
+} from "../server/bot/google-drive.js"
+import {
+  enqueueDueMappings,
+  getAutomationSettings,
+  setSchedule,
+  timeSlots,
+  toggleSchedule,
+} from "../server/bot/automation.js"
 
 const SESSION_COLLECTION = "botSessions"
 const ACCOUNT_COLLECTION = "botPlatformAccounts"
@@ -37,6 +52,11 @@ const serverNow = () => FieldValue.serverTimestamp()
 
 function normalizedSection(value) {
   return normalizeContentTypeTitle(String(value || "")).toLowerCase()
+}
+
+function optionByToken(options, token) {
+  const values = asArray(options)
+  return values.find((item) => String(item.id) === String(token)) || values[Number(token)]
 }
 
 function sessionRef(db, chatId) {
@@ -61,7 +81,103 @@ async function clearSession(db, chatId) {
 }
 
 async function showMain(chatId, prefix = "") {
-  await sendMessage(chatId, [prefix, "কি করতে চান?"].filter(Boolean).join("\n\n"), mainMenu())
+  await sendMessage(
+    chatId,
+    [prefix, "Select an operation to continue."].filter(Boolean).join("\n\n"),
+    mainMenu(),
+  )
+}
+
+function publicBaseUrl() {
+  return String(process.env.PUBLIC_APP_URL || process.env.TELEGRAM_WEBHOOK_URL || "")
+    .replace(/\/api\/telegram-bot\/?$/, "")
+    .replace(/\/$/, "")
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0)
+  if (!bytes) return "Not reported"
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / (1024 ** index)).toFixed(index > 2 ? 1 : 0)} ${units[index]}`
+}
+
+function scheduleLabel(minuteOfDay) {
+  return timeSlots().find((slot) => slot.minuteOfDay === Number(minuteOfDay))?.label || "08:00 AM"
+}
+
+async function showStorageAccounts(db, chatId, telegramUserId, { refresh = false } = {}) {
+  const accounts = await listGoogleDriveAccounts(db, { refresh })
+  const state = createSignedState({ purpose: "google-drive", telegramUserId: String(telegramUserId) })
+  const baseUrl = publicBaseUrl()
+  const connectUrl = baseUrl ? `${baseUrl}/api/telegram-bot?action=drive-connect&state=${encodeURIComponent(state)}` : ""
+  const details = accounts.map((account, index) => {
+    const free = account.quotaLimit ? Math.max(0, account.quotaLimit - account.quotaUsage) : 0
+    return [
+      `${account.isDefault ? "⭐" : "☁️"} ${index + 1}. ${account.email}`,
+      `Status: ${account.status || "ready"}${account.isFull ? " (storage full)" : ""}`,
+      `Available: ${formatBytes(free)}${account.quotaLimit ? ` of ${formatBytes(account.quotaLimit)}` : ""}`,
+    ].join("\n")
+  })
+  const rows = []
+  if (connectUrl) rows.push([urlButton("➕ Connect Google Drive", connectUrl)])
+  rows.push([button("↻ Refresh storage", "storage:refresh")])
+  rows.push([button("‹ Main menu", "home")])
+  await sendMessage(
+    chatId,
+    [
+      "☁️ Storage accounts",
+      "",
+      accounts.length ? details.join("\n\n") : "No Google Drive account is connected.",
+      "",
+      "The default account is used first. If it has insufficient storage, the next available account is promoted automatically.",
+      !connectUrl ? "\nConfiguration required: set PUBLIC_APP_URL or TELEGRAM_WEBHOOK_URL." : "",
+    ].filter(Boolean).join("\n"),
+    keyboard(rows),
+  )
+}
+
+async function showAutomationMenu(db, chatId) {
+  const settings = await getAutomationSettings(db)
+  const overall = settings.overall || { enabled: false, minuteOfDay: 480 }
+  const udvash = settings.platforms?.udvash
+  await sendMessage(
+    chatId,
+    [
+      "🔄 Automated synchronization",
+      "",
+      `Overall schedule: ${overall.enabled ? `Enabled · ${scheduleLabel(overall.minuteOfDay)}` : "Disabled"}`,
+      `Udvash override: ${udvash ? `${udvash.enabled ? "Enabled" : "Disabled"} · ${scheduleLabel(udvash.minuteOfDay)}` : "Uses overall schedule"}`,
+      "Timezone: Asia/Dhaka",
+      "",
+      "Schedules run in 30-minute time slots. Platform-specific schedules override the overall schedule.",
+    ].join("\n"),
+    keyboard([
+      [button("🕒 Overall schedule", "automation:scope:overall")],
+      [button("🕒 Udvash schedule", "automation:scope:udvash")],
+      [button(overall.enabled ? "⏸ Disable overall" : "▶ Enable overall", "automation:toggle:overall")],
+      [button(udvash?.enabled ? "⏸ Disable Udvash override" : "▶ Enable Udvash override", "automation:toggle:udvash")],
+      [button("‹ Main menu", "home")],
+    ]),
+  )
+}
+
+async function showTimeSelector(db, chatId, scope, page = 0) {
+  const slots = timeSlots()
+  const pageSize = 16
+  const lastPage = Math.ceil(slots.length / pageSize) - 1
+  const safePage = Math.max(0, Math.min(lastPage, Number(page) || 0))
+  const visible = slots.slice(safePage * pageSize, (safePage + 1) * pageSize)
+  const rows = []
+  for (let index = 0; index < visible.length; index += 2) {
+    rows.push(visible.slice(index, index + 2).map((slot) => button(slot.label, `automation:set:${scope}:${slot.minuteOfDay}`)))
+  }
+  rows.push([
+    ...(safePage > 0 ? [button("‹ Earlier", `automation:times:${scope}:${safePage - 1}`)] : []),
+    ...(safePage < lastPage ? [button("Later ›", `automation:times:${scope}:${safePage + 1}`)] : []),
+  ])
+  rows.push([button("‹ Automation", "automation:menu")])
+  await sendMessage(chatId, `Select the daily synchronization time for ${scope === "overall" ? "all platforms" : PLATFORM_LABELS[scope] || scope}.\n\nTimezone: Asia/Dhaka`, keyboard(rows))
 }
 
 function platformKeyboard(prefix) {
@@ -82,7 +198,7 @@ async function listAccounts(db, platform = "") {
 
 async function getAccount(db, accountId) {
   const snap = await db.collection(ACCOUNT_COLLECTION).doc(accountId).get()
-  if (!snap.exists) throw new Error("Account পাওয়া যায়নি")
+  if (!snap.exists) throw new Error("The selected source account could not be found")
   return { id: snap.id, ...snap.data() }
 }
 
@@ -194,10 +310,10 @@ async function saveSnapshot(db, account, sourceCourse, snapshot) {
 }
 
 async function loadSnapshot(db, id) {
-  if (!id) throw new Error("Source snapshot নেই। Source course আবার select করুন।")
+  if (!id) throw new Error("The source snapshot is unavailable. Select the source course again")
   const ref = db.collection(SNAPSHOT_COLLECTION).doc(id)
   const [summarySnap, chunksSnap] = await Promise.all([ref.get(), ref.collection("chunks").get()])
-  if (!summarySnap.exists) throw new Error("Source snapshot expire হয়েছে। Source course আবার scan করুন।")
+  if (!summarySnap.exists) throw new Error("The source snapshot has expired. Scan the source course again")
   const chunks = chunksSnap.docs
     .map((doc) => doc.data())
     .sort((a, b) => Number(a.index || 0) - Number(b.index || 0))
@@ -232,7 +348,7 @@ async function searchEeCourses(db, queryText) {
 
 async function getEeCourse(db, courseId) {
   const snap = await db.collection("courses").doc(courseId).get()
-  if (!snap.exists) throw new Error("Easy-Education course পাওয়া যায়নি")
+  if (!snap.exists) throw new Error("The selected Easy Education course could not be found")
   return { id: snap.id, ...snap.data() }
 }
 
@@ -339,8 +455,29 @@ function cleanResourceLinks(value) {
     .map((item, index) => ({
       label: String(item?.label || item?.title || `Class note ${index + 1}`).trim(),
       url: String(item?.url || item?.link || "").trim(),
+      ...(item?.driveFileId ? { driveFileId: String(item.driveFileId) } : {}),
+      ...(item?.storageStatus ? { storageStatus: String(item.storageStatus) } : {}),
     }))
     .filter((item) => item.label && item.url)
+}
+
+async function storeResolvedResources(db, session, sourceClasses, mediaResults, sourceCookie) {
+  const sourceById = new Map(sourceClasses.map((item) => [String(item.sourceClassId || ""), item]))
+  for (const result of mediaResults) {
+    const resources = cleanResourceLinks(result?.media?.resourceLinks)
+    if (!resources.length) continue
+    const sourceClass = sourceById.get(String(result.sourceClassId || "")) || {}
+    result.media.resourceLinks = await persistResourceLinksToDrive(db, resources, {
+      platform: session.platform,
+      sourceCourseId: session.sourceCourseId,
+      sourceCourseTitle: session.sourceCourseTitle,
+      sourceClassId: result.sourceClassId,
+      subjectTitle: sourceClass.subjectTitle,
+      chapterTitle: sourceClass.chapterTitle,
+      sourceCookie,
+    })
+  }
+  return mediaResults
 }
 
 async function repairImportedClassSync(db, session, existing, sourceClasses, eeCourseType) {
@@ -401,7 +538,7 @@ function selectedSourceClasses(snapshot, session) {
 
 async function inspectMapping(db, session, { repairCache = false } = {}) {
   if (!session.eeCourseId || !session.sourceSnapshotId || !session.sourceSectionKey) {
-    throw new Error("Mapping session incomplete। EE UP থেকে আবার mapping খুলুন।")
+    throw new Error("The import mapping is incomplete. Start the content import again")
   }
   const [snapshot, eeCourse] = await Promise.all([
     loadSnapshot(db, session.sourceSnapshotId),
@@ -433,6 +570,7 @@ async function inspectMapping(db, session, { repairCache = false } = {}) {
     pending,
     toSync,
     metadataRepair,
+    resourceRepairCount: imported.length,
     cacheRepairCount,
     eeCourse,
     eeCourseType,
@@ -441,12 +579,15 @@ async function inspectMapping(db, session, { repairCache = false } = {}) {
 
 function mappingKeyboard(analysis) {
   const rows = []
-  if (analysis.toSync.length) rows.push([button(`🚀 Sync all ${analysis.toSync.length}`, "sync:all")])
+  if (analysis.toSync.length) rows.push([button(`🚀 Import ${analysis.toSync.length} classes`, "sync:confirm")])
   if (analysis.metadataRepair.length) {
-    rows.push([button(`🧭 Fix hierarchy + topics ${analysis.metadataRepair.length}`, "metadata:repair")])
+    rows.push([button(`🧭 Repair metadata · ${analysis.metadataRepair.length}`, "metadata:repair")])
   }
-  rows.push([button("🔄 Check EE", "mapping:check"), button("♻️ Refresh Udvash", "snapshot:refresh")])
-  rows.push([button("🏠 Main", "home")])
+  if (analysis.resourceRepairCount) {
+    rows.push([button(`☁️ Repair Drive resources · ${analysis.resourceRepairCount}`, "resources:repair")])
+  }
+  rows.push([button("↻ Check destination", "mapping:check"), button("↻ Refresh source", "snapshot:refresh")])
+  rows.push([button("‹ Main menu", "home")])
   return keyboard(rows)
 }
 
@@ -463,25 +604,28 @@ async function showMappingAnalysis(db, chatId, session) {
   })
 
   const text = [
+    "📋 Import analysis",
+    "",
     `Platform: ${PLATFORM_LABELS[session.platform] || session.platform}`,
     `Source course: ${session.sourceCourseTitle}`,
     `Source type: ${session.sourceSectionTitle}`,
     `EE course: ${session.eeCourseTitle} (${analysis.eeCourseType})`,
     `Destination: ${destinationLabel(session)}`,
     "",
-    `Udvash snapshot total: ${analysis.snapshot.classCount}`,
-    `এই content type-এর class: ${analysis.sourceClasses.length}`,
-    `✅ EE ready: ${analysis.ready.length}`,
-    `⏳ Pending/old staged: ${analysis.pending.length}`,
-    `Video sync লাগবে: ${analysis.toSync.length}`,
-    `🧭 Hierarchy/topics/notes repair লাগবে: ${analysis.metadataRepair.length}`,
-    analysis.cacheRepairCount ? `🔄 EE hierarchy/cache repaired: ${analysis.cacheRepairCount}` : "",
+    `Source snapshot: ${analysis.snapshot.classCount} classes`,
+    `Selected content type: ${analysis.sourceClasses.length} classes`,
+    `Ready in Easy Education: ${analysis.ready.length}`,
+    `Pending: ${analysis.pending.length}`,
+    `New classes: ${analysis.toSync.length}`,
+    `Metadata repairs: ${analysis.metadataRepair.length}`,
+    `Drive resource repair scope: ${analysis.resourceRepairCount}`,
+    analysis.cacheRepairCount ? `Cached records repaired: ${analysis.cacheRepairCount}` : "",
     "",
     analysis.toSync.length
-      ? `একবার Sync all চাপলেই ${analysis.toSync.length}টা missing class sync হবে।`
+      ? `${analysis.toSync.length} new classes are ready to import.`
       : analysis.metadataRepair.length
-        ? "Video synced আছে। এখন Fix hierarchy + topics চাপলে current EE course type অনুযায়ী Subject → Chapter বসবে, সাথে Udvash topic + notes URL আসবে।"
-        : "এই mapping video + metadata দুইটাই পুরো synced আছে ✅",
+        ? "Videos are available. Metadata and class resources still require repair."
+        : "This mapping is fully synchronized.",
   ].filter((line) => line !== "").join("\n")
 
   await sendMessage(chatId, text, mappingKeyboard(analysis))
@@ -520,6 +664,7 @@ async function cleanupLegacyStaged(db, session) {
     if (item.importedBy !== "telegram-bot") return false
     if (item.sourcePlatform !== session.platform) return false
     if (String(item.sourceCourseId || "") !== String(session.sourceCourseId || "")) return false
+    if (sourceSectionOfClass(item) !== normalizedSection(session.sourceSectionKey || session.sourceSectionTitle)) return false
     if (!classMatchesDestination(item, session)) return false
     return item.isPublished === false && !hasPlayableMedia(item)
   })
@@ -545,6 +690,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
   const mediaById = new Map(mediaResults.map((result) => [String(result.sourceClassId), result]))
   const readySourceIds = new Set(existingReady.map((item) => String(item.sourceClassId || "")).filter(Boolean))
   const allExisting = await existingEeClasses(db, session.eeCourseId)
+  const existingIds = new Set(allExisting.map((item) => item.id))
   let nextOrder = allExisting.length
     ? Math.max(...allExisting.map((item) => Number(item.order || 0))) + 1
     : 0
@@ -624,7 +770,7 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
         eeBotSyncSchema: BOT_CLASS_SYNC_SCHEMA,
         eeBotMetadataSchema: error ? 0 : BOT_CLASS_METADATA_SCHEMA,
         updatedAt: serverNow(),
-        createdAt: serverNow(),
+        ...(existingIds.has(classId) ? {} : { createdAt: serverNow() }),
       }, { merge: true })
       changedIds.push(classId)
 
@@ -643,6 +789,8 @@ async function writeSyncResults(db, telegramUserId, session, eeCourse, sourceCla
           createdAt: serverNow(),
           updatedAt: serverNow(),
         }, { merge: true })
+      } else {
+        batch.delete(db.collection(JOB_COLLECTION).doc(`ee_media_${classId}`))
       }
       nextOrder += 1
     })
@@ -670,20 +818,24 @@ async function repairSelectedMetadata(db, chatId, telegramUserId, session) {
   await sendMessage(
     chatId,
     [
-      `🧭 ${sourceTargets.length}টা existing class metadata repair করছি।`,
-      `Current EE course type: ${analysis.eeCourseType}`,
+      "🧭 Metadata repair started",
+      "",
+      `Classes: ${sourceTargets.length}`,
+      `Destination course type: ${analysis.eeCourseType}`,
       analysis.eeCourseType === "batch"
-        ? "Udvash Subject → EE Subject, Udvash Chapter → EE Chapter হবে।"
-        : "Subject-type rule অনুযায়ী Udvash Subject → EE Chapter হবে।",
-      "Class detail page থেকে taught topics + note/resource URL-ও তুলছি।",
-      "Saved session/cookie reuse হবে; expire না হলে নতুন login হবে না।",
+        ? "Mapping rule: Udvash subject → EE subject; Udvash chapter → EE chapter."
+        : "Mapping rule: Udvash subject → EE chapter.",
+      "Topics and class resources will be refreshed from the source.",
     ].join("\n"),
   )
 
   const detailResults = await withAccountAuth(
     db,
     account,
-    (auth) => getUdvashClassMediaBulk(auth, sourceTargets, MEDIA_CONCURRENCY),
+    async (auth) => {
+      const results = await getUdvashClassMediaBulk(auth, sourceTargets, MEDIA_CONCURRENCY)
+      return storeResolvedResources(db, session, sourceTargets, results, auth.cookie)
+    },
   )
   const detailById = new Map(detailResults.map((result) => [String(result.sourceClassId || ""), result]))
 
@@ -749,11 +901,55 @@ async function repairSelectedMetadata(db, chatId, telegramUserId, session) {
       `Note/resource URLs found: ${noteCount}`,
       `Detail fetch failed/retry: ${failed}`,
       analysis.eeCourseType === "batch"
-        ? "এখন Subject → Chapter structure-এ Lecture 1/2 একই নাম হলেও আলাদা chapter-এর ভিতরে থাকবে।"
-        : "Subject-type hierarchy rule apply হয়েছে।",
+        ? "The Subject → Chapter hierarchy has been applied."
+        : "The subject-course hierarchy has been applied.",
     ].join("\n"),
   )
   await showMappingAnalysis(db, chatId, { ...session, eeCourseType: analysis.eeCourseType })
+}
+
+function mappingIdForSession(session) {
+  return stableId(
+    session.platform,
+    session.sourceCourseId,
+    session.eeCourseId,
+    session.sourceSectionKey,
+    session.destinationType,
+    session.classGroupId || "",
+  )
+}
+
+async function enqueueResourceRepair(db, chatId, telegramUserId, session) {
+  const analysis = await inspectMapping(db, session)
+  if (!analysis.imported.length) throw new Error("No imported classes were found for this mapping")
+  const accounts = await listGoogleDriveAccounts(db, { refresh: true })
+  if (!accounts.some((account) => account.status === "ready")) {
+    throw new Error("Connect a Google Drive account with available storage before starting resource repair")
+  }
+  const mappingId = mappingIdForSession(session)
+  const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(mappingId).get()
+  if (!mappingSnapshot.exists) throw new Error("Save this mapping by completing one synchronization check first")
+  const jobRef = db.collection(JOB_COLLECTION).doc(`drive_repair_${mappingId}`)
+  await jobRef.set({
+    type: "drive_resource_repair",
+    status: "queued",
+    mappingId,
+    cursor: 0,
+    total: analysis.sourceClasses.length,
+    repaired: 0,
+    failed: 0,
+    requestedByTelegramUserId: String(telegramUserId),
+    notificationChatId: String(chatId),
+    updatedAt: serverNow(),
+    createdAt: serverNow(),
+  }, { merge: true })
+  await sendMessage(chatId, [
+    "☁️ Drive resource repair scheduled",
+    "",
+    `Classes queued: ${analysis.sourceClasses.length}`,
+    "Fresh Udvash resource links will be retrieved and copied to the first Google Drive account with sufficient storage.",
+    "Progress will continue automatically in safe batches.",
+  ].join("\n"), keyboard([[button("‹ Main menu", "home")]]))
 }
 
 async function syncAllSelected(db, chatId, telegramUserId, session) {
@@ -768,10 +964,11 @@ async function syncAllSelected(db, chatId, telegramUserId, session) {
   await sendMessage(
     chatId,
     [
-      `🚀 ${analysisBefore.toSync.length}টা class একবারেই sync করছি।`,
-      `Full Udvash snapshot: ${analysisBefore.snapshot.classCount}`,
-      "একই saved session/cookie ব্যবহার হবে; session expire না হলে আবার login হবে না।",
-      "এখন আর কোনো Next 20 চাপতে হবে না।",
+      "🚀 Content import started",
+      "",
+      `Classes to import: ${analysisBefore.toSync.length}`,
+      `Source snapshot: ${analysisBefore.snapshot.classCount}`,
+      "The saved source session will be reused securely.",
     ].join("\n"),
   )
 
@@ -786,7 +983,10 @@ async function syncAllSelected(db, chatId, telegramUserId, session) {
   const mediaResults = await withAccountAuth(
     db,
     account,
-    (auth) => getUdvashClassMediaBulk(auth, toResolve, MEDIA_CONCURRENCY),
+    async (auth) => {
+      const results = await getUdvashClassMediaBulk(auth, toResolve, MEDIA_CONCURRENCY)
+      return storeResolvedResources(db, session, toResolve, results, auth.cookie)
+    },
   )
 
   const result = await writeSyncResults(
@@ -808,7 +1008,9 @@ async function syncAllSelected(db, chatId, telegramUserId, session) {
     session.destinationType,
     session.classGroupId || "",
   )
-  await db.collection(MAPPING_COLLECTION).doc(mappingId).set({
+  const mappingRef = db.collection(MAPPING_COLLECTION).doc(mappingId)
+  const mappingExists = (await mappingRef.get()).exists
+  await mappingRef.set({
     platform: session.platform,
     accountId: session.accountId,
     sourceCourseId: String(session.sourceCourseId),
@@ -826,25 +1028,26 @@ async function syncAllSelected(db, chatId, telegramUserId, session) {
     readyCount: finalAnalysis.ready.length,
     pendingCount: finalAnalysis.pending.length,
     updatedByTelegramUserId: String(telegramUserId),
+    notificationChatId: String(chatId),
     updatedAt: serverNow(),
-    createdAt: serverNow(),
+    ...(!mappingExists ? { createdAt: serverNow() } : {}),
   }, { merge: true })
 
   await sendMessage(
     chatId,
     [
       "✅ Sync finished",
-      `Old wrong staged cleaned: ${removed}`,
-      `YouTube পাওয়া + EE published: ${result.published}`,
-      `YouTube নেই, upload worker লাগবে: ${result.needsUpload}`,
-      `Resolve failed/retry: ${result.failed}`,
-      `EE ready total: ${finalAnalysis.ready.length}/${finalAnalysis.sourceClasses.length}`,
+      `Obsolete staged records removed: ${removed}`,
+      `Published: ${result.published}`,
+      `Pending media processing: ${result.needsUpload}`,
+      `Failed: ${result.failed}`,
+      `Ready in Easy Education: ${finalAnalysis.ready.length}/${finalAnalysis.sourceClasses.length}`,
       "",
       result.needsUpload || result.failed
-        ? "যেগুলো ready হয়নি সেগুলো worker queue-তে আছে; fake synced দেখানো হবে না।"
-        : "Selected content type পুরো ready ✅",
+        ? "Incomplete items remain in the processing queue and have not been published."
+        : "The selected content type is fully synchronized.",
     ].join("\n"),
-    keyboard([[button("🔄 Check EE", "mapping:check"), button("🏠 Main", "home")]]),
+    keyboard([[button("↻ Check destination", "mapping:check"), button("‹ Main menu", "home")]]),
   )
 }
 
@@ -854,8 +1057,8 @@ async function showEeAccounts(db, chatId, platform) {
     await replaceSession(db, chatId, { mode: "ee", platform, step: "choose_account" })
     await sendMessage(
       chatId,
-      `${PLATFORM_LABELS[platform]} account add করা নেই।`,
-      keyboard([[button("➕ Add account", `accountadd:${platform}`)], [button("🏠 Main", "home")]]),
+      `No ${PLATFORM_LABELS[platform]} source account is connected.`,
+      keyboard([[button("➕ Connect account", `accountadd:${platform}`)], [button("‹ Main menu", "home")]]),
     )
     return
   }
@@ -863,13 +1066,13 @@ async function showEeAccounts(db, chatId, platform) {
   const options = accounts.map((item) => ({ id: item.id, label: item.label || item.roll, roll: item.roll }))
   await replaceSession(db, chatId, { mode: "ee", platform, step: "choose_account", accountOptions: options })
   const rows = options.slice(0, 20).map((item, index) => [button(`👤 ${item.label} · ${item.roll}`, `acct:${index}`)])
-  rows.push([button("➕ Add account", `accountadd:${platform}`), button("🏠 Main", "home")])
-  await sendMessage(chatId, `${PLATFORM_LABELS[platform]} — কোন account use হবে?`, keyboard(rows))
+  rows.push([button("➕ Connect account", `accountadd:${platform}`), button("‹ Main menu", "home")])
+  await sendMessage(chatId, `Select the ${PLATFORM_LABELS[platform]} account to use.`, keyboard(rows))
 }
 
 async function loadSourceCourses(db, chatId, accountId) {
   const account = await getAccount(db, accountId)
-  await sendMessage(chatId, `${account.label || account.roll} account-এর saved session দিয়ে courses load করছি…`)
+  await sendMessage(chatId, `Loading available courses from ${account.label || account.roll}…`)
   const courses = await platformCourses(db, account)
   const options = courses.slice(0, 50).map((course) => ({
     id: String(course.id),
@@ -879,21 +1082,21 @@ async function loadSourceCourses(db, chatId, accountId) {
   await setSession(db, chatId, { accountId, step: "choose_source_course", sourceCourseOptions: options })
 
   if (!options.length) {
-    await sendMessage(chatId, "এই account-এ কোনো course পাওয়া যায়নি।", keyboard([[button("🏠 Main", "home")]]))
+    await sendMessage(chatId, "No courses are available for this account.", keyboard([[button("‹ Main menu", "home")]]))
     return
   }
   const rows = options.slice(0, 20).map((course, index) => [button(course.title, `src:${index}`)])
-  if (options.length > 20) rows.push([button(`আরও ${options.length - 20}টা course`, "source:more")])
-  rows.push([button("🏠 Main", "home")])
-  await sendMessage(chatId, `${options.length}টা course পাওয়া গেছে। কোন course?`, keyboard(rows))
+  if (options.length > 20) rows.push([button(`View ${options.length - 20} more`, "source:more")])
+  rows.push([button("‹ Main menu", "home")])
+  await sendMessage(chatId, `${options.length} courses found. Select a source course.`, keyboard(rows))
 }
 
 async function showMoreSourceCourses(db, chatId) {
   const session = await getSession(db, chatId)
   const options = asArray(session.sourceCourseOptions)
   const rows = options.slice(20, 50).map((course, index) => [button(course.title, `src:${index + 20}`)])
-  rows.push([button("🏠 Main", "home")])
-  await sendMessage(chatId, "বাকি courses:", keyboard(rows))
+  rows.push([button("‹ Main menu", "home")])
+  await sendMessage(chatId, "Additional source courses", keyboard(rows))
 }
 
 async function chooseSourceCourse(db, chatId, index) {
@@ -904,7 +1107,7 @@ async function chooseSourceCourse(db, chatId, index) {
 
   await sendMessage(
     chatId,
-    `📡 ${course.title}\nপুরো course একবার scan করছি—Subject → Chapter → Content Type → সব class। এরপর এই snapshot-ই reuse হবে।`,
+    `📡 Source scan started\n\nCourse: ${course.title}\nRetrieving subjects, chapters, content types, and classes. The completed snapshot will be reused for this import.`,
   )
   const snapshot = await scanSourceCourse(db, account, course)
   const sectionOptions = asArray(snapshot.sections).map((item) => ({
@@ -929,10 +1132,10 @@ async function chooseSourceCourse(db, chatId, index) {
   await sendMessage(
     chatId,
     [
-      `✅ Full snapshot ready: ${snapshot.classCount} classes`,
+      `✅ Source scan completed: ${snapshot.classCount} classes`,
       ...summary,
       "",
-      "এখন Easy-Education-এর course নামের কিছু অংশ লিখুন।",
+      "Enter part of the destination course name in Easy Education.",
     ].join("\n"),
   )
 }
@@ -946,12 +1149,12 @@ async function handleEeSearch(db, chatId, text) {
   }))
   await setSession(db, chatId, { eeSearchQuery: text, eeCourseOptions: options })
   if (!options.length) {
-    await sendMessage(chatId, "Matching EE course পাইনি। আরেকটা keyword লিখুন।")
+    await sendMessage(chatId, "No matching Easy Education course was found. Try a different keyword.")
     return
   }
   const rows = options.map((course, index) => [button(`${course.title} · ${course.type}`, `ee:${index}`)])
-  rows.push([button("❌ Cancel", "home")])
-  await sendMessage(chatId, `${options.length}টা matching course পেয়েছি:`, keyboard(rows))
+  rows.push([button("Cancel", "home")])
+  await sendMessage(chatId, `${options.length} matching courses found. Select the destination course.`, keyboard(rows))
 }
 
 async function showSourceSections(db, chatId, session) {
@@ -965,17 +1168,17 @@ async function showSourceSections(db, chatId, session) {
     }))
     await setSession(db, chatId, { sourceSectionOptions: options })
   }
-  if (!options.length) throw new Error("Source content type পাওয়া যায়নি")
+  if (!options.length) throw new Error("No content types were found in the source snapshot")
   const rows = options.slice(0, 20).map((item, index) => [button(`${item.title} · ${item.count}`, `sect:${index}`)])
-  rows.push([button("🏠 Main", "home")])
+  rows.push([button("‹ Main menu", "home")])
   await sendMessage(
     chatId,
     [
       `EE course: ${session.eeCourseTitle} (${session.eeCourseType || "subject"})`,
       `Udvash snapshot: ${session.sourceSnapshotCount || "?"} classes`,
       "",
-      "কোন Udvash content type map করবেন?",
-      "প্রতিটা type আলাদা destination-এ map করা যাবে।",
+      "Select the Udvash content type to import.",
+      "Each content type can be mapped to a separate destination.",
     ].join("\n"),
     keyboard(rows),
   )
@@ -1016,12 +1219,12 @@ async function chooseSourceSection(db, chatId, index) {
       `Source type: ${option.title}`,
       `Classes: ${option.count}`,
       "",
-      "EE-তে কোথায় যাবে?",
+      "Select the destination in Easy Education.",
     ].join("\n"),
     keyboard([
       [button("📚 Regular", "dest:regular"), button("🗄 Archive", "dest:archive")],
       [button("🧩 Class Card", "dest:groups")],
-      [button("⬅️ Content types", "sections:show"), button("🏠 Main", "home")],
+      [button("‹ Content types", "sections:show"), button("Main menu", "home")],
     ]),
   )
 }
@@ -1035,8 +1238,8 @@ async function showClassGroups(db, chatId, session) {
   await setSession(db, chatId, { classGroupOptions: options, step: "choose_group" })
   const rows = options.slice(0, 20).map((group, index) => [button(`🧩 ${group.title}`, `grp:${index}`)])
   rows.push([button("➕ Create new card", "grp:new")])
-  rows.push([button("🏠 Main", "home")])
-  await sendMessage(chatId, options.length ? "কোন Class Card?" : "এই course-এ Class Card নেই।", keyboard(rows))
+  rows.push([button("‹ Main menu", "home")])
+  await sendMessage(chatId, options.length ? "Select a Class Card." : "No Class Cards exist for this course.", keyboard(rows))
 }
 
 async function chooseDestination(db, chatId, type) {
@@ -1075,7 +1278,7 @@ async function chooseGroup(db, chatId, index) {
 
 async function createClassGroupFromText(db, chatId, title) {
   const session = await getSession(db, chatId)
-  if (!session.eeCourseId) throw new Error("EE course select করা নেই")
+  if (!session.eeCourseId) throw new Error("No Easy Education course is selected")
   const snap = await db.collection("classGroups").where("courseId", "==", session.eeCourseId).get()
   const existing = snap.docs.find((doc) => normalizeText(doc.data().title) === normalizeText(title))
   let group
@@ -1107,16 +1310,16 @@ async function createClassGroupFromText(db, chatId, title) {
     classGroupTitle: group.title,
     step: "mapping_ready",
   })
-  await sendMessage(chatId, `Class Card ready: ${group.title} ✅`)
+  await sendMessage(chatId, `✅ Class Card ready\n${group.title}`)
   await showMappingAnalysis(db, chatId, next)
 }
 
 async function refreshSnapshotForSession(db, chatId) {
   const session = await getSession(db, chatId)
-  if (!session.accountId || !session.sourceCourseId) throw new Error("Source course select করা নেই")
+  if (!session.accountId || !session.sourceCourseId) throw new Error("No source course is selected")
   const account = await getAccount(db, session.accountId)
   const sourceCourse = { id: session.sourceCourseId, title: session.sourceCourseTitle }
-  await sendMessage(chatId, "♻️ Udvash source explicitly refresh করছি—পুরো course আবার একবার scan হবে।")
+  await sendMessage(chatId, "↻ Refreshing the Udvash source snapshot. The complete course will be scanned again.")
   const snapshot = await scanSourceCourse(db, account, sourceCourse)
   const sectionOptions = asArray(snapshot.sections).map((item) => ({
     key: normalizedSection(item.key || item.title),
@@ -1130,7 +1333,7 @@ async function refreshSnapshotForSession(db, chatId) {
     sourceSectionOptions: sectionOptions,
     ...(selectedStillExists ? {} : { sourceSectionKey: "", sourceSectionTitle: "", step: "choose_source_section" }),
   })
-  await sendMessage(chatId, `✅ New snapshot ready: ${snapshot.classCount} classes`)
+  await sendMessage(chatId, `✅ Source snapshot refreshed\nClasses found: ${snapshot.classCount}`)
   if (selectedStillExists && session.destinationType) {
     await showMappingAnalysis(db, chatId, { ...session, sourceSnapshotId: snapshot.id, sourceSnapshotCount: snapshot.classCount, sourceSectionOptions: sectionOptions })
   } else {
@@ -1148,22 +1351,22 @@ async function showAccountMenu(db, chatId) {
     status: item.status || "saved",
   }))
   await replaceSession(db, chatId, { mode: "account_manage", step: "account_list", accountManageOptions: options })
-  const rows = options.map((item, index) => [
-    button(`👤 ${item.label} · ${item.roll}`, `accountinfo:${index}`),
-    button("🗑", `accountdelete:${index}`),
+  const rows = options.map((item) => [
+    button(`👤 ${item.label} · ${item.roll}`, `accountinfo:${item.id}`),
+    button("🗑", `accountdelete:${item.id}`),
   ])
-  rows.push([button("➕ Add account", "account:add")])
-  rows.push([button("🏠 Main", "home")])
+  rows.push([button("➕ Connect source account", "account:add")])
+  rows.push([button("‹ Main menu", "home")])
   await sendMessage(
     chatId,
-    options.length ? `Saved accounts: ${options.length}\n\nAccount-এর পাশের 🗑 দিয়ে delete করা যাবে।` : "কোনো account add করা নেই।",
+    options.length ? `🔐 Source accounts\n\nConnected accounts: ${options.length}\nSelect an account to inspect its status or remove it.` : "🔐 Source accounts\n\nNo source account is connected.",
     keyboard(rows),
   )
 }
 
-async function showAccountInfo(db, chatId, index) {
+async function showAccountInfo(db, chatId, token) {
   const session = await getSession(db, chatId)
-  const option = asArray(session.accountManageOptions)[index]
+  const option = optionByToken(session.accountManageOptions, token)
   if (!option) throw new Error("Account selection expired")
   const account = await getAccount(db, option.id)
   await sendMessage(
@@ -1177,51 +1380,51 @@ async function showAccountInfo(db, chatId, index) {
       account.lastError ? `Last error: ${account.lastError}` : "",
     ].filter(Boolean).join("\n"),
     keyboard([
-      [button("🔄 Check session", `accountrefresh:${index}`)],
-      [button("🗑 Delete account", `accountdelete:${index}`)],
-      [button("⬅️ Accounts", "account:list")],
+      [button("↻ Verify connection", `accountrefresh:${option.id}`)],
+      [button("🗑 Delete account", `accountdelete:${option.id}`)],
+      [button("‹ Source accounts", "account:list")],
     ]),
   )
 }
 
-async function refreshSavedAccount(db, chatId, index) {
+async function refreshSavedAccount(db, chatId, token) {
   const session = await getSession(db, chatId)
-  const option = asArray(session.accountManageOptions)[index]
+  const option = optionByToken(session.accountManageOptions, token)
   if (!option) throw new Error("Account selection expired")
   const account = await getAccount(db, option.id)
-  await sendMessage(chatId, `${account.label || account.roll} saved session check করছি…`)
+  await sendMessage(chatId, `Verifying the saved session for ${account.label || account.roll}…`)
   const courses = await platformCourses(db, account)
   await sendMessage(
     chatId,
-    `✅ Session/account valid\n📚 ${courses.length}টা course পাওয়া গেছে।`,
-    keyboard([[button("⬅️ Accounts", "account:list"), button("🏠 Main", "home")]]),
+    `✅ Source account verified\nAvailable courses: ${courses.length}`,
+    keyboard([[button("‹ Source accounts", "account:list"), button("Main menu", "home")]]),
   )
 }
 
-async function confirmDeleteAccount(db, chatId, index) {
+async function confirmDeleteAccount(db, chatId, token) {
   const session = await getSession(db, chatId)
-  const option = asArray(session.accountManageOptions)[index]
+  const option = optionByToken(session.accountManageOptions, token)
   if (!option) throw new Error("Account selection expired")
   await sendMessage(
     chatId,
-    `⚠️ ${option.label} (${option.roll}) account delete করবেন?\n\nSaved credential/session delete হবে। EE classes delete হবে না।`,
-    keyboard([[button("🗑 Yes, delete", `accountdeleteconfirm:${index}`)], [button("❌ Cancel", "account:list")]]),
+    `⚠️ Remove source account?\n\nAccount: ${option.label}\nUser ID: ${option.roll}\n\nSaved credentials and sessions will be removed. Existing Easy Education classes will not be deleted.`,
+    keyboard([[button("🗑 Confirm removal", `accountdeleteconfirm:${option.id}`)], [button("Cancel", "account:list")]]),
   )
 }
 
-async function deleteSavedAccount(db, chatId, index) {
+async function deleteSavedAccount(db, chatId, token) {
   const session = await getSession(db, chatId)
-  const option = asArray(session.accountManageOptions)[index]
+  const option = optionByToken(session.accountManageOptions, token)
   if (!option) throw new Error("Account selection expired")
   await db.collection(ACCOUNT_COLLECTION).doc(option.id).delete()
-  await sendMessage(chatId, `✅ ${option.label} account delete হয়েছে।`)
+  await sendMessage(chatId, `✅ Source account removed\n${option.label}`)
   await showAccountMenu(db, chatId)
 }
 
 async function startAccountAdd(db, chatId, platform) {
   if (!PLATFORM_IDS.has(platform)) throw new Error("Unsupported platform")
   await replaceSession(db, chatId, { mode: "account_add", platform, step: "add_account_label" })
-  await sendMessage(chatId, `${PLATFORM_LABELS[platform]} account-এর একটা নাম দিন। যেমন: UDVASH-1`)
+  await sendMessage(chatId, `Enter a recognizable name for this ${PLATFORM_LABELS[platform]} account.\nExample: Udvash Primary`)
 }
 
 async function saveAccountPassword(db, chatId, telegramUserId, password) {
@@ -1235,7 +1438,7 @@ async function saveAccountPassword(db, chatId, telegramUserId, password) {
     courses = await listUdvashCoursesV2(auth)
   } catch (error) {
     await clearSession(db, chatId)
-    await showMain(chatId, `❌ Udvash login failed:\n${error.message || "Unknown error"}\n\nAccount save করা হয়নি।`)
+    await showMain(chatId, `❌ Account verification failed\n${error.message || "Unknown error"}\n\nNo credentials were saved.`)
     return
   }
 
@@ -1259,7 +1462,7 @@ async function saveAccountPassword(db, chatId, telegramUserId, password) {
   }, { merge: true })
 
   await clearSession(db, chatId)
-  await showMain(chatId, `✅ Login successful\n📚 ${courses.length}টা course পাওয়া গেছে।\nCredential encrypted করে save হয়েছে।`)
+  await showMain(chatId, `✅ Source account connected\nAvailable courses: ${courses.length}\nCredentials were encrypted and stored securely.`)
 }
 
 async function showStatus(db, chatId) {
@@ -1279,9 +1482,189 @@ async function showStatus(db, chatId) {
     : "none"
   await sendMessage(
     chatId,
-    `Accounts: ${accounts.size}\nSource snapshots: ${snapshots.size}\nCourse mappings: ${mappings.size}\nWorker jobs: ${jobsText}`,
-    keyboard([[button("🏠 Main", "home")]]),
+    `📊 Operations overview\n\nSource accounts: ${accounts.size}\nSource snapshots: ${snapshots.size}\nCourse mappings: ${mappings.size}\nProcessing jobs: ${jobsText}`,
+    keyboard([[button("‹ Main menu", "home")]]),
   )
+}
+
+async function claimScheduledJob(db) {
+  const snapshot = await db.collection(JOB_COLLECTION).where("status", "==", "queued").limit(20).get()
+  const supported = new Set(["drive_resource_repair", "scheduled_mapping_sync"])
+  const candidate = snapshot.docs.find((doc) => supported.has(doc.data().type))
+  if (!candidate) return null
+  return db.runTransaction(async (transaction) => {
+    const current = await transaction.get(candidate.ref)
+    if (!current.exists || current.data().status !== "queued") return null
+    transaction.update(candidate.ref, {
+      status: "running",
+      attempts: FieldValue.increment(1),
+      startedAt: serverNow(),
+      updatedAt: serverNow(),
+    })
+    return { id: candidate.id, ref: candidate.ref, ...current.data() }
+  })
+}
+
+async function runDriveRepairJob(db, job) {
+  const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(job.mappingId).get()
+  if (!mappingSnapshot.exists) throw new Error("Resource repair mapping no longer exists")
+  const mapping = mappingSnapshot.data()
+  const account = await getAccount(db, mapping.accountId)
+  const sourceSnapshot = job.sourceSnapshotId
+    ? await loadSnapshot(db, job.sourceSnapshotId)
+    : await scanSourceCourse(db, account, { id: mapping.sourceCourseId, title: mapping.sourceCourseTitle })
+  const session = { ...mapping, sourceSnapshotId: sourceSnapshot.id, sourceSnapshotCount: sourceSnapshot.classCount }
+  const analysis = await inspectMapping(db, session)
+  const cursor = Number(job.cursor || 0)
+  const targets = analysis.sourceClasses.slice(cursor, cursor + 10)
+  const existingBySourceId = new Map(analysis.imported.map((item) => [String(item.sourceClassId || ""), item]))
+  let repaired = 0
+  let failed = 0
+
+  if (targets.length) {
+    const details = await withAccountAuth(db, account, async (auth) => {
+      const resolved = await getUdvashClassMediaBulk(auth, targets, MEDIA_CONCURRENCY)
+      return storeResolvedResources(db, session, targets, resolved, auth.cookie)
+    })
+    const batch = db.batch()
+    const changedIds = []
+    details.forEach((result) => {
+      const existing = existingBySourceId.get(String(result.sourceClassId || ""))
+      if (!existing || result.error) {
+        failed += 1
+        return
+      }
+      const resources = cleanResourceLinks(result.media?.resourceLinks)
+      const permanent = resources.filter((item) => item.driveFileId && item.url)
+      if (!permanent.length && (resources.length || asArray(existing.resourceLinks).length)) {
+        failed += 1
+        return
+      }
+      batch.set(db.collection("classes").doc(existing.id), {
+        resourceLinks: permanent,
+        resourceStorage: permanent.length ? "google-drive" : "none",
+        resourceStorageUpdatedAt: serverNow(),
+        updatedAt: serverNow(),
+      }, { merge: true })
+      changedIds.push(existing.id)
+      repaired += 1
+    })
+    await batch.commit()
+    await publishClassSyncEvents(db, changedIds)
+  }
+
+  const nextCursor = cursor + targets.length
+  const complete = nextCursor >= analysis.sourceClasses.length
+  await job.ref.set({
+    status: complete ? "completed" : "queued",
+    cursor: nextCursor,
+    total: analysis.sourceClasses.length,
+    repaired: Number(job.repaired || 0) + repaired,
+    failed: Number(job.failed || 0) + failed,
+    sourceSnapshotId: sourceSnapshot.id,
+    updatedAt: serverNow(),
+    ...(complete ? { completedAt: serverNow() } : {}),
+  }, { merge: true })
+  if (job.notificationChatId) {
+    await sendMessage(job.notificationChatId, [
+      complete ? "✅ Drive resource repair completed" : "☁️ Drive resource repair progress",
+      `Course: ${mapping.eeCourseTitle}`,
+      `Processed: ${nextCursor}/${analysis.sourceClasses.length}`,
+      `Updated in this batch: ${repaired}`,
+      `Requires retry: ${failed}`,
+    ].join("\n")).catch(() => {})
+  }
+  return { jobId: job.id, complete, cursor: nextCursor, total: analysis.sourceClasses.length, repaired, failed }
+}
+
+async function runScheduledJob(db, job) {
+  const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(job.mappingId).get()
+  if (!mappingSnapshot.exists) throw new Error("Automation mapping no longer exists")
+  const mapping = mappingSnapshot.data()
+  if (mapping.platform !== "udvash") throw new Error(`Automation adapter is not available for ${mapping.platform}`)
+
+  const account = await getAccount(db, mapping.accountId)
+  const sourceCourse = { id: mapping.sourceCourseId, title: mapping.sourceCourseTitle }
+  const snapshot = await scanSourceCourse(db, account, sourceCourse)
+  const session = {
+    ...mapping,
+    sourceSnapshotId: snapshot.id,
+    sourceSnapshotCount: snapshot.classCount,
+  }
+  const analysis = await inspectMapping(db, session, { repairCache: true })
+  let result = { published: 0, needsUpload: 0, failed: 0 }
+
+  if (analysis.toSync.length) {
+    const mediaResults = await withAccountAuth(db, account, async (auth) => {
+      const resolved = await getUdvashClassMediaBulk(auth, analysis.toSync, MEDIA_CONCURRENCY)
+      return storeResolvedResources(db, session, analysis.toSync, resolved, auth.cookie)
+    })
+    result = await writeSyncResults(
+      db,
+      mapping.updatedByTelegramUserId || "automation",
+      session,
+      analysis.eeCourse,
+      analysis.toSync,
+      mediaResults,
+      analysis.ready,
+    )
+  }
+
+  const finalAnalysis = await inspectMapping(db, session)
+  await mappingSnapshot.ref.set({
+    snapshotCount: finalAnalysis.snapshot.classCount,
+    selectedCount: finalAnalysis.sourceClasses.length,
+    readyCount: finalAnalysis.ready.length,
+    pendingCount: finalAnalysis.pending.length,
+    lastAutomatedRunAt: serverNow(),
+    lastAutomationStatus: "completed",
+    updatedAt: serverNow(),
+  }, { merge: true })
+  await job.ref.set({
+    status: "completed",
+    discoveredCount: analysis.toSync.length,
+    publishedCount: result.published,
+    pendingCount: result.needsUpload,
+    failedCount: result.failed,
+    completedAt: serverNow(),
+    updatedAt: serverNow(),
+  }, { merge: true })
+
+  if (mapping.notificationChatId && (analysis.toSync.length || result.failed)) {
+    await sendMessage(mapping.notificationChatId, [
+      "✅ Automated synchronization completed",
+      `Platform: ${PLATFORM_LABELS[mapping.platform] || mapping.platform}`,
+      `Source: ${mapping.sourceCourseTitle}`,
+      `Destination: ${mapping.eeCourseTitle}`,
+      "",
+      `New classes discovered: ${analysis.toSync.length}`,
+      `Published: ${result.published}`,
+      `Pending storage/media: ${result.needsUpload}`,
+      `Failed: ${result.failed}`,
+    ].join("\n")).catch(() => {})
+  }
+  return { jobId: job.id, discovered: analysis.toSync.length, ...result }
+}
+
+async function runAutomationTick(db) {
+  const enqueued = await enqueueDueMappings(db)
+  const job = await claimScheduledJob(db)
+  if (!job) return { enqueued: enqueued.length, processed: null }
+  try {
+    const processed = job.type === "drive_resource_repair"
+      ? await runDriveRepairJob(db, job)
+      : await runScheduledJob(db, job)
+    return { enqueued: enqueued.length, processed }
+  } catch (error) {
+    const retry = Number(job.attempts || 0) + 1 < 3
+    await job.ref.set({
+      status: retry ? "queued" : "failed",
+      lastError: String(error.message || error).slice(0, 500),
+      ...(retry ? {} : { failedAt: serverNow() }),
+      updatedAt: serverNow(),
+    }, { merge: true }).catch(() => {})
+    throw error
+  }
 }
 
 async function handleText(db, message) {
@@ -1292,7 +1675,7 @@ async function handleText(db, message) {
 
   if (["/start", "/menu", "/cancel"].includes(command)) {
     await clearSession(db, chatId)
-    await showMain(chatId, "Easy-Education Upload Bot")
+    await showMain(chatId, "Easy Education · Content Operations")
     return
   }
   if (command === "/accounts") return showAccountMenu(db, chatId)
@@ -1301,24 +1684,55 @@ async function handleText(db, message) {
   const session = await getSession(db, chatId)
   if (session.step === "add_account_label") {
     await setSession(db, chatId, { accountLabel: text.slice(0, 60), step: "add_account_roll" })
-    await sendMessage(chatId, "Roll / user ID দিন:")
+    await sendMessage(chatId, "Enter the account roll or user ID.")
     return
   }
   if (session.step === "add_account_roll") {
     await setSession(db, chatId, { accountRoll: text.slice(0, 120), step: "add_account_password" })
-    await sendMessage(chatId, "Password দিন। Process হওয়ার পর password message delete করার চেষ্টা করব।")
+    await sendMessage(chatId, "Enter the account password. The message will be removed immediately after it is received.")
     return
   }
   if (session.step === "add_account_password") {
     await deleteMessage(chatId, message.message_id)
-    await sendMessage(chatId, "Credential পেয়েছি। Login verify করছি…")
+    await sendMessage(chatId, "Credentials received. Verifying the account securely…")
     await saveAccountPassword(db, chatId, userId, text)
     return
   }
   if (session.step === "ee_search") return handleEeSearch(db, chatId, text)
   if (session.step === "new_group_title") return createClassGroupFromText(db, chatId, text)
 
-  await showMain(chatId, "Command বুঝিনি। নিচের menu ব্যবহার করুন।")
+  await showMain(chatId, "That command is not available. Please use the menu below.")
+}
+
+function callbackNotice(data) {
+  if (data === "home") return "Opening main menu"
+  if (data === "mode:ee") return "Opening content import"
+  if (data === "account:list") return "Opening source accounts"
+  if (data === "account:add") return "Starting account connection"
+  if (data === "status") return "Loading operation status"
+  if (data === "storage:list") return "Opening storage accounts"
+  if (data === "storage:refresh") return "Checking Drive storage"
+  if (data === "automation:menu") return "Opening automation settings"
+  if (data.startsWith("automation:set:")) return "Saving schedule"
+  if (data.startsWith("automation:toggle:")) return "Updating automation"
+  if (data.startsWith("automation:")) return "Opening schedule selector"
+  if (data.startsWith("platform:")) return "Loading connected accounts"
+  if (data.startsWith("acct:")) return "Loading source courses"
+  if (data.startsWith("src:")) return "Starting course scan"
+  if (data.startsWith("ee:")) return "Selecting destination course"
+  if (data.startsWith("sect:")) return "Selecting content type"
+  if (data.startsWith("dest:")) return "Preparing import analysis"
+  if (data.startsWith("grp:")) return "Selecting class card"
+  if (data === "mapping:check") return "Checking synchronization status"
+  if (data === "metadata:repair") return "Starting resource repair"
+  if (data === "resources:repair") return "Scheduling Drive resource repair"
+  if (data === "snapshot:refresh") return "Refreshing source snapshot"
+  if (data === "sync:all") return "Starting content import"
+  if (data === "sync:confirm") return "Opening import confirmation"
+  if (data.startsWith("accountrefresh:")) return "Checking account session"
+  if (data.startsWith("accountdeleteconfirm:")) return "Deleting source account"
+  if (data.startsWith("accountdelete:")) return "Opening deletion confirmation"
+  return "Request received"
 }
 
 async function handleCallback(db, callback) {
@@ -1326,7 +1740,8 @@ async function handleCallback(db, callback) {
   const userId = callback.from?.id
   const data = String(callback.data || "")
   if (!chatId) return
-  await answerCallback(callback.id).catch(() => {})
+  await answerCallback(callback.id, callbackNotice(data)).catch(() => {})
+  await clearInlineKeyboard(chatId, callback.message?.message_id).catch(() => {})
 
   if (data === "home") {
     await clearSession(db, chatId)
@@ -1334,19 +1749,37 @@ async function handleCallback(db, callback) {
   }
   if (data === "mode:ee") {
     await replaceSession(db, chatId, { mode: "ee", step: "choose_platform" })
-    return sendMessage(chatId, "কোন platform থেকে EE UP করবেন?", platformKeyboard("platform"))
+    return sendMessage(chatId, "Select the platform from which content will be imported.", platformKeyboard("platform"))
+  }
+  if (data === "storage:list") return showStorageAccounts(db, chatId, userId)
+  if (data === "storage:refresh") return showStorageAccounts(db, chatId, userId, { refresh: true })
+  if (data === "automation:menu") return showAutomationMenu(db, chatId)
+  if (data.startsWith("automation:scope:")) return showTimeSelector(db, chatId, data.split(":")[2], 0)
+  if (data.startsWith("automation:times:")) {
+    const [, , scope, page] = data.split(":")
+    return showTimeSelector(db, chatId, scope, Number(page))
+  }
+  if (data.startsWith("automation:set:")) {
+    const [, , scope, minute] = data.split(":")
+    await setSchedule(db, scope, Number(minute))
+    await sendMessage(chatId, `✅ Schedule saved\n${scope === "overall" ? "All platforms" : PLATFORM_LABELS[scope] || scope}: ${scheduleLabel(Number(minute))}\nTimezone: Asia/Dhaka`)
+    return showAutomationMenu(db, chatId)
+  }
+  if (data.startsWith("automation:toggle:")) {
+    await toggleSchedule(db, data.split(":")[2])
+    return showAutomationMenu(db, chatId)
   }
   if (data === "mode:tg") {
     return sendMessage(
       chatId,
-      "TG UP এখন media worker phase placeholder। EE UP source/mapping engine আলাদা রাখা হয়েছে।",
-      keyboard([[button("🏠 Main", "home")]]),
+      "This legacy action is no longer available. Use Content Import or Storage from the main menu.",
+      keyboard([[button("‹ Main menu", "home")]]),
     )
   }
   if (data === "account:list") return showAccountMenu(db, chatId)
   if (data === "account:add") {
     await replaceSession(db, chatId, { mode: "account_add", step: "choose_platform" })
-    return sendMessage(chatId, "কোন platform-এর account add করবেন?", platformKeyboard("accountadd"))
+    return sendMessage(chatId, "Select the platform account you want to connect.", platformKeyboard("accountadd"))
   }
   if (data === "status") return showStatus(db, chatId)
   if (data.startsWith("accountadd:")) return startAccountAdd(db, chatId, data.split(":")[1])
@@ -1366,31 +1799,94 @@ async function handleCallback(db, callback) {
   if (data.startsWith("dest:")) return chooseDestination(db, chatId, data.split(":")[1])
   if (data === "grp:new") {
     await setSession(db, chatId, { step: "new_group_title" })
-    return sendMessage(chatId, "নতুন Class Card-এর নাম লিখুন। যেমন: Foundation classes")
+    return sendMessage(chatId, "Enter a name for the new Class Card.\nExample: Foundation Classes")
   }
   if (data.startsWith("grp:")) return chooseGroup(db, chatId, Number(data.split(":")[1]))
   if (data === "mapping:check") return showMappingAnalysis(db, chatId, await getSession(db, chatId))
   if (data === "metadata:repair") return repairSelectedMetadata(db, chatId, userId, await getSession(db, chatId))
+  if (data === "resources:repair") return enqueueResourceRepair(db, chatId, userId, await getSession(db, chatId))
   if (data === "snapshot:refresh") return refreshSnapshotForSession(db, chatId)
+  if (data === "sync:confirm") {
+    const session = await getSession(db, chatId)
+    const analysis = await inspectMapping(db, session)
+    return sendMessage(chatId, [
+      "⚠️ Confirm content import",
+      "",
+      `Source: ${session.sourceCourseTitle}`,
+      `Destination: ${session.eeCourseTitle}`,
+      `Classes to import: ${analysis.toSync.length}`,
+      `Location: ${destinationLabel(session)}`,
+      "",
+      "Only verified media will be published. Existing ready classes will not be duplicated.",
+    ].join("\n"), keyboard([
+      [button("Confirm import", "sync:all")],
+      [button("Cancel", "mapping:check")],
+    ]))
+  }
   if (data === "sync:all") return syncAllSelected(db, chatId, userId, await getSession(db, chatId))
-  if (data.startsWith("accountinfo:")) return showAccountInfo(db, chatId, Number(data.split(":")[1]))
-  if (data.startsWith("accountrefresh:")) return refreshSavedAccount(db, chatId, Number(data.split(":")[1]))
-  if (data.startsWith("accountdeleteconfirm:")) return deleteSavedAccount(db, chatId, Number(data.split(":")[1]))
-  if (data.startsWith("accountdelete:")) return confirmDeleteAccount(db, chatId, Number(data.split(":")[1]))
+  if (data.startsWith("accountinfo:")) return showAccountInfo(db, chatId, data.split(":")[1])
+  if (data.startsWith("accountrefresh:")) return refreshSavedAccount(db, chatId, data.split(":")[1])
+  if (data.startsWith("accountdeleteconfirm:")) return deleteSavedAccount(db, chatId, data.split(":")[1])
+  if (data.startsWith("accountdelete:")) return confirmDeleteAccount(db, chatId, data.split(":")[1])
 
-  await sendMessage(chatId, "এই action expire করেছে। /start দিয়ে আবার শুরু করুন।")
+  await sendMessage(chatId, "This action is no longer available. Open the latest menu with /start.")
 }
 
 function validWebhookSecret(req) {
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET || ""
-  if (!expected) return true
+  if (!expected) return false
   return (req.headers["x-telegram-bot-api-secret-token"] || "") === expected
 }
 
+function requestAction(req) {
+  return String(req.query?.action || "")
+}
+
+async function handleGoogleDriveRequest(req, res) {
+  try {
+    const action = requestAction(req)
+    const state = String(req.query?.state || "")
+    const stateData = verifySignedState(state)
+    if (stateData.purpose !== "google-drive" || !isAllowedTelegramUser(stateData.telegramUserId)) {
+      throw new Error("This Google Drive connection request is not authorized")
+    }
+    if (action === "drive-connect") return res.redirect(302, googleAuthorizationUrl(state))
+    if (action !== "drive-callback") return res.status(404).send("Not found")
+    if (req.query?.error) throw new Error(`Google authorization was declined: ${req.query.error}`)
+    const code = String(req.query?.code || "")
+    if (!code) throw new Error("Google did not return an authorization code")
+    const { db } = getAdminServices()
+    const account = await connectGoogleDriveAccount(db, code, stateData.telegramUserId)
+    await sendMessage(stateData.telegramUserId, `✅ Google Drive connected\nAccount: ${account.email}\nStorage folder: Easy Education Content`).catch(() => {})
+    return res.status(200).send("Google Drive connected successfully. You may close this window and return to Telegram.")
+  } catch (error) {
+    return res.status(400).send(`Google Drive connection failed: ${error.message || "Unknown error"}`)
+  }
+}
+
+function validAutomationSecret(req) {
+  const expected = process.env.AUTOMATION_SECRET || ""
+  return Boolean(expected) && String(req.headers.authorization || "") === `Bearer ${expected}`
+}
+
 export default async function handler(req, res) {
+  if (req.method === "GET" && ["drive-connect", "drive-callback"].includes(requestAction(req))) {
+    return handleGoogleDriveRequest(req, res)
+  }
   if (req.method !== "POST") {
     res.setHeader("Allow", ["POST"])
     return res.status(405).json({ ok: false, error: "Method Not Allowed" })
+  }
+  if (requestAction(req) === "automation-tick") {
+    if (!validAutomationSecret(req)) return res.status(401).json({ ok: false, error: "Invalid automation secret" })
+    const { db } = getAdminServices()
+    try {
+      const result = await runAutomationTick(db)
+      return res.status(200).json({ ok: true, ...result })
+    } catch (error) {
+      console.error("Automation tick failed:", error)
+      return res.status(500).json({ ok: false, error: error.message || "Automation tick failed" })
+    }
   }
   if (!validWebhookSecret(req)) return res.status(401).json({ ok: false, error: "Invalid webhook secret" })
 
@@ -1402,11 +1898,11 @@ export default async function handler(req, res) {
   if (!chatId || !userId) return res.status(200).json({ ok: true })
 
   if (incoming.chat?.type !== "private") {
-    await sendMessage(chatId, "Security-এর জন্য bot-টা private chat-এ ব্যবহার করুন।").catch(() => {})
+    await sendMessage(chatId, "For security, this bot can only be used in a private chat.").catch(() => {})
     return res.status(200).json({ ok: true })
   }
   if (!isAllowedTelegramUser(userId)) {
-    await sendMessage(chatId, `এই bot-এ আপনার access নেই।\nTelegram user ID: ${userId}`).catch(() => {})
+    await sendMessage(chatId, `Access denied.\n\nYour Telegram user ID: ${userId}\nAsk an administrator to add this ID to the approved access list.`).catch(() => {})
     return res.status(200).json({ ok: true })
   }
 
@@ -1414,14 +1910,14 @@ export default async function handler(req, res) {
   try {
     if (update.callback_query) await handleCallback(db, update.callback_query)
     else if (update.message?.text) await handleText(db, update.message)
-    else await sendMessage(chatId, "এখন text/button input support করছি। /start দিন।")
+    else await sendMessage(chatId, "This message type is not supported. Use /start to open the operations menu.")
     return res.status(200).json({ ok: true })
   } catch (error) {
     console.error("Telegram bot error:", error)
     await sendMessage(
       chatId,
       `❌ ${error.message || "Unexpected bot error"}`,
-      keyboard([[button("🏠 Main", "home")]]),
+      keyboard([[button("‹ Main menu", "home")]]),
     ).catch(() => {})
     return res.status(200).json({ ok: true, handled_error: true })
   }

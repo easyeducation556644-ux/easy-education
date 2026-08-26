@@ -10,6 +10,12 @@ function credentialKey() {
   return crypto.createHash("sha256").update(raw, "utf8").digest()
 }
 
+function stateKey() {
+  const raw = process.env.GOOGLE_DRIVE_STATE_SECRET || process.env.BOT_CREDENTIAL_KEY || ""
+  if (!raw) throw new Error("GOOGLE_DRIVE_STATE_SECRET is not configured")
+  return crypto.createHash("sha256").update(raw, "utf8").digest()
+}
+
 export function encryptSecret(value) {
   if (!value) return ""
   const iv = crypto.randomBytes(12)
@@ -43,4 +49,23 @@ export function stableId(...parts) {
     .createHash("sha1")
     .update(parts.filter(Boolean).map(String).join("\u001f"), "utf8")
     .digest("hex")
+}
+
+export function createSignedState(payload, ttlSeconds = 900) {
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + ttlSeconds })).toString("base64url")
+  const signature = crypto.createHmac("sha256", stateKey()).update(body).digest("base64url")
+  return `${body}.${signature}`
+}
+
+export function verifySignedState(value) {
+  const [body, signature] = String(value || "").split(".")
+  if (!body || !signature) throw new Error("Invalid or expired connection request")
+  const expected = crypto.createHmac("sha256", stateKey()).update(body).digest()
+  const supplied = Buffer.from(signature, "base64url")
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) {
+    throw new Error("Invalid or expired connection request")
+  }
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"))
+  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) throw new Error("Connection request expired")
+  return payload
 }

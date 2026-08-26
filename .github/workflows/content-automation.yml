@@ -1,0 +1,33 @@
+name: Scheduled content synchronization
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: easy-education-content-automation
+  cancel-in-progress: false
+
+jobs:
+  run-due-synchronization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger due synchronization
+        env:
+          AUTOMATION_ENDPOINT: ${{ secrets.AUTOMATION_ENDPOINT }}
+          AUTOMATION_SECRET: ${{ secrets.AUTOMATION_SECRET }}
+        run: |
+          test -n "$AUTOMATION_ENDPOINT"
+          test -n "$AUTOMATION_SECRET"
+          curl --fail-with-body --silent --show-error \
+            --max-time 540 \
+            --retry 2 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer $AUTOMATION_SECRET" \
+            "${AUTOMATION_ENDPOINT%/}/api/telegram-bot?action=automation-tick"

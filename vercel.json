@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    {"source":"/api/google-drive/callback","destination":"/api/telegram-bot?action=drive-callback"},
     {"source":"/api/firestore-read-usage","destination":"/api/version?resource=firestore-read-usage"},
     {"source":"/api/sync-event","destination":"/api/version?resource=sync-event"},
     {"source":"/api/learning-push","destination":"/api/version?resource=learning-push"},
@@ -22,6 +23,7 @@
     "api/process-enrollment.js":{"maxDuration":30},
     "api/dynamic-manifest.js":{"maxDuration":10},
     "api/security-events.js":{"maxDuration":10},
+    "api/telegram-bot.js":{"maxDuration":300},
     "api/offline-video.js":{"maxDuration":300}
   }
 }

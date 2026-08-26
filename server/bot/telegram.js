@@ -58,6 +58,18 @@ export async function answerCallback(callbackQueryId, text = "") {
   })
 }
 
+export async function clearInlineKeyboard(chatId, messageId) {
+  try {
+    return await telegram("editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    })
+  } catch {
+    return false
+  }
+}
+
 export async function deleteMessage(chatId, messageId) {
   try {
     return await telegram("deleteMessage", { chat_id: chatId, message_id: messageId })
@@ -74,9 +86,14 @@ export function button(text, callbackData) {
   return { text, callback_data: callbackData }
 }
 
+export function urlButton(text, url) {
+  return { text, url }
+}
+
 export function mainMenu() {
   return keyboard([
-    [button("📥 EE UP", "mode:ee"), button("📤 TG UP", "mode:tg")],
-    [button("👤 Accounts", "account:list"), button("📊 Status", "status")],
+    [button("📥 Import content", "mode:ee")],
+    [button("🔄 Automation", "automation:menu"), button("☁️ Storage", "storage:list")],
+    [button("🔐 Source accounts", "account:list"), button("📊 Operations", "status")],
   ])
 }

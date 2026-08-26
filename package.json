@@ -7,6 +7,7 @@
     "build": "vite build",
     "dev": "node server.js",
     "lint": "eslint .",
+    "test:bot": "node --test tests/bot/*.test.js",
     "start": "node server.js",
     "postinstall": "node scripts/copy-hls.cjs"
   },
