@@ -930,26 +930,57 @@ async function enqueueResourceRepair(db, chatId, telegramUserId, session) {
   const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(mappingId).get()
   if (!mappingSnapshot.exists) throw new Error("Save this mapping by completing one synchronization check first")
   const jobRef = db.collection(JOB_COLLECTION).doc(`drive_repair_${mappingId}`)
+  const previousSnapshot = await jobRef.get()
+  const previous = previousSnapshot.exists ? previousSnapshot.data() : {}
+  if (previous.status === "running") {
+    await sendMessage(chatId, "☁️ Drive resource repair is already running. Progress will be reported automatically.")
+    return
+  }
+  const resumeExisting = previousSnapshot.exists && ["queued", "running"].includes(previous.status)
   await jobRef.set({
     type: "drive_resource_repair",
     status: "queued",
     mappingId,
-    cursor: 0,
+    cursor: resumeExisting ? Number(previous.cursor || 0) : 0,
     total: analysis.sourceClasses.length,
-    repaired: 0,
-    failed: 0,
+    repaired: resumeExisting ? Number(previous.repaired || 0) : 0,
+    failed: resumeExisting ? Number(previous.failed || 0) : 0,
+    ...(resumeExisting && previous.sourceSnapshotId ? { sourceSnapshotId: previous.sourceSnapshotId } : {}),
     requestedByTelegramUserId: String(telegramUserId),
     notificationChatId: String(chatId),
     updatedAt: serverNow(),
-    createdAt: serverNow(),
+    ...(!previousSnapshot.exists ? { createdAt: serverNow() } : {}),
   }, { merge: true })
   await sendMessage(chatId, [
-    "☁️ Drive resource repair scheduled",
+    "☁️ Drive resource repair started",
     "",
     `Classes queued: ${analysis.sourceClasses.length}`,
     "Fresh Udvash resource links will be retrieved and copied to the first Google Drive account with sufficient storage.",
-    "Progress will continue automatically in safe batches.",
+    "The first safe batch is processing now. Any remaining classes will continue automatically in the background.",
   ].join("\n"), keyboard([[button("‹ Main menu", "home")]]))
+
+  const immediateJob = await db.runTransaction(async (transaction) => {
+    const current = await transaction.get(jobRef)
+    if (!current.exists) return null
+    transaction.set(jobRef, {
+      status: "running",
+      attempts: FieldValue.increment(1),
+      startedAt: serverNow(),
+      updatedAt: serverNow(),
+    }, { merge: true })
+    return { id: jobRef.id, ref: jobRef, ...current.data() }
+  })
+  if (!immediateJob) return
+  try {
+    await runDriveRepairJob(db, immediateJob)
+  } catch (error) {
+    await jobRef.set({
+      status: "queued",
+      lastError: String(error.message || error).slice(0, 500),
+      updatedAt: serverNow(),
+    }, { merge: true }).catch(() => {})
+    await sendMessage(chatId, "The immediate batch could not finish. It remains queued and will retry automatically.").catch(() => {})
+  }
 }
 
 async function syncAllSelected(db, chatId, telegramUserId, session) {
