@@ -13,6 +13,7 @@ import { startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
+const CONTROL_COLLECTION = "botManualRepairControls"
 const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
 const CANCELLED_MANUAL_JOB_TYPE = "manual_drive_resource_repair_cancelled"
 
@@ -38,6 +39,14 @@ function requestBaseUrl(req) {
   return String(process.env.PUBLIC_APP_URL || process.env.TELEGRAM_WEBHOOK_URL || "")
     .replace(/\/api\/telegram-bot\/?$/, "")
     .replace(/\/$/, "")
+}
+
+function controlRef(db, chatId) {
+  return db.collection(CONTROL_COLLECTION).doc(String(chatId))
+}
+
+function isQuotaError(error) {
+  return Number(error?.code) === 8 || /resource_exhausted|quota exceeded/i.test(String(error?.message || error || ""))
 }
 
 async function triggerImmediateWorker(req, jobId) {
@@ -74,9 +83,25 @@ async function runContinuationRequest(req, res) {
   }
 }
 
-async function cancelActiveManualRepairs(db, chatId, telegramUserId) {
+async function persistCancelMarker(db, chatId, telegramUserId) {
+  const cancelEpochMs = Date.now()
+  const batch = db.batch()
+  batch.set(controlRef(db, chatId), {
+    cancelRequested: true,
+    cancelEpochMs,
+    cancelledByTelegramUserId: String(telegramUserId || ""),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true })
+  // /cancel also exits any in-progress Telegram wizard, without needing a read.
+  batch.delete(db.collection(SESSION_COLLECTION).doc(String(chatId)))
+  await batch.commit()
+  return cancelEpochMs
+}
+
+async function cancelActiveManualRepairsBestEffort(db, chatId, telegramUserId) {
   const snapshot = await db.collection(JOB_COLLECTION)
     .where("notificationChatId", "==", String(chatId))
+    .limit(20)
     .get()
 
   const active = snapshot.docs.filter((doc) => {
@@ -97,7 +122,6 @@ async function cancelActiveManualRepairs(db, chatId, telegramUserId) {
     }, { merge: true })
   })
   await batch.commit()
-
   return active.map((doc) => ({ id: doc.id, ...doc.data() }))
 }
 
@@ -112,25 +136,48 @@ async function handleCancelCommand(req, res, message) {
 
   const { db } = getAdminServices()
   try {
-    const cancelled = await cancelActiveManualRepairs(db, chatId, userId)
+    // Important: save cancellation first. This uses writes only, so an exhausted
+    // Firestore read quota cannot prevent the stop request from being persisted.
+    await persistCancelMarker(db, chatId, userId)
+
+    let cancelled = []
+    let readQuotaUnavailable = false
+    try {
+      cancelled = await cancelActiveManualRepairsBestEffort(db, chatId, userId)
+    } catch (error) {
+      if (!isQuotaError(error)) throw error
+      readQuotaUnavailable = true
+      console.warn("Manual Drive repair active-job lookup skipped because Firestore read quota is exhausted")
+    }
+
+    const lines = ["🛑 Cancel request saved"]
     if (cancelled.length) {
       const latest = cancelled[0]
-      await sendMessage(chatId, [
-        "🛑 Current Drive resource repair cancelled",
-        `Jobs cancelled: ${cancelled.length}`,
+      lines.push(
+        `Jobs stopped now: ${cancelled.length}`,
         `Scanned before cancel: ${Number(latest.cursor || 0)}/${Number(latest.total || 0)}`,
         `Repaired before cancel: ${Number(latest.repaired || 0)}`,
-        "No new repair batch will start. A network/upload request that was already in flight may finish, but the job will not continue after that batch.",
-      ].join("\n")).catch(() => {})
+      )
+    } else if (readQuotaUnavailable) {
+      lines.push("Firestore read quota is currently exhausted, so the exact running-job count cannot be read.")
     } else {
-      await sendMessage(chatId, "🛑 Cancelled. No active Drive repair job was running.").catch(() => {})
+      lines.push("No active Drive repair job was found.")
     }
+    lines.push("No new repair batch will continue from this cancelled run. A network/upload request already in flight may finish first.")
+
+    await sendMessage(chatId, lines.join("\n")).catch(() => {})
+    return res.status(200).json({ ok: true, cancelled: true, jobsStopped: cancelled.length, readQuotaUnavailable })
   } catch (error) {
     console.error("Manual Drive repair cancellation failed:", error)
-    await sendMessage(chatId, `⚠️ Cancel request could not stop the background job: ${error.message || error}`).catch(() => {})
+    const quota = isQuotaError(error)
+    await sendMessage(
+      chatId,
+      quota
+        ? "⚠️ Firestore write quota is exhausted, so the cancel marker could not be saved. The background worker is also unable to make database progress until quota becomes available."
+        : `⚠️ Cancel request could not be saved: ${error.message || error}`,
+    ).catch(() => {})
+    return res.status(200).json({ ok: true, cancel_failed: true })
   }
-
-  return legacyHandler(req, res)
 }
 
 async function handleManualRepairCallback(req, res, callback) {
@@ -153,6 +200,11 @@ async function handleManualRepairCallback(req, res, callback) {
 
   const { db } = getAdminServices()
   try {
+    // A deliberate new repair run supersedes any older /cancel marker.
+    await controlRef(db, chatId).delete().catch((error) => {
+      if (!isQuotaError(error)) console.warn("Could not clear old manual repair cancel marker:", error)
+    })
+
     const sessionSnapshot = await db.collection(SESSION_COLLECTION).doc(String(chatId)).get()
     const session = sessionSnapshot.exists ? sessionSnapshot.data() : {}
     const started = await startManualDriveRepair(db, chatId, userId, session)
