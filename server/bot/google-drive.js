@@ -272,6 +272,7 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
       }, { merge: true })
       output.push({ label: resource.label || downloaded.name, url: uploaded.webViewLink, driveFileId: uploaded.id })
     } catch (error) {
+      const storageError = String(error.message || error).slice(0, 500)
       await assetRef.set({
         status: "failed",
         platform: context.platform || "",
@@ -279,10 +280,10 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
         sourceClassId: String(context.sourceClassId || ""),
         sourceUrl,
         label: resource?.label || "Class resource",
-        lastError: String(error.message || error).slice(0, 500),
+        lastError: storageError,
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true })
-      output.push({ ...resource, storageStatus: "failed" })
+      output.push({ ...resource, storageStatus: "failed", storageError })
     }
   }
   return output
