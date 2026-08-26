@@ -1,3 +1,4 @@
+import { FieldValue } from "firebase-admin/firestore"
 import legacyHandler from "../server/telegram-bot-core.js"
 import { getAdminServices } from "./utils/firebase-admin.js"
 import {
@@ -11,6 +12,9 @@ import {
 import { startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 
 const SESSION_COLLECTION = "botSessions"
+const JOB_COLLECTION = "botJobs"
+const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
+const CANCELLED_MANUAL_JOB_TYPE = "manual_drive_resource_repair_cancelled"
 
 function requestAction(req) {
   return String(req.query?.action || "")
@@ -70,6 +74,65 @@ async function runContinuationRequest(req, res) {
   }
 }
 
+async function cancelActiveManualRepairs(db, chatId, telegramUserId) {
+  const snapshot = await db.collection(JOB_COLLECTION)
+    .where("notificationChatId", "==", String(chatId))
+    .get()
+
+  const active = snapshot.docs.filter((doc) => {
+    const data = doc.data()
+    return data.type === MANUAL_JOB_TYPE && ["queued", "running"].includes(String(data.status || ""))
+  })
+
+  if (!active.length) return []
+
+  const batch = db.batch()
+  active.forEach((doc) => {
+    batch.set(doc.ref, {
+      type: CANCELLED_MANUAL_JOB_TYPE,
+      status: "cancelled",
+      cancelledByTelegramUserId: String(telegramUserId || ""),
+      cancelledAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true })
+  })
+  await batch.commit()
+
+  return active.map((doc) => ({ id: doc.id, ...doc.data() }))
+}
+
+async function handleCancelCommand(req, res, message) {
+  const chatId = message.chat?.id
+  const userId = message.from?.id
+  if (!chatId || !userId) return legacyHandler(req, res)
+
+  if (!validWebhookSecret(req)) return res.status(401).json({ ok: false, error: "Invalid webhook secret" })
+  if (message.chat?.type !== "private") return legacyHandler(req, res)
+  if (!isAllowedTelegramUser(userId)) return legacyHandler(req, res)
+
+  const { db } = getAdminServices()
+  try {
+    const cancelled = await cancelActiveManualRepairs(db, chatId, userId)
+    if (cancelled.length) {
+      const latest = cancelled[0]
+      await sendMessage(chatId, [
+        "🛑 Current Drive resource repair cancelled",
+        `Jobs cancelled: ${cancelled.length}`,
+        `Scanned before cancel: ${Number(latest.cursor || 0)}/${Number(latest.total || 0)}`,
+        `Repaired before cancel: ${Number(latest.repaired || 0)}`,
+        "No new repair batch will start. A network/upload request that was already in flight may finish, but the job will not continue after that batch.",
+      ].join("\n")).catch(() => {})
+    } else {
+      await sendMessage(chatId, "🛑 Cancelled. No active Drive repair job was running.").catch(() => {})
+    }
+  } catch (error) {
+    console.error("Manual Drive repair cancellation failed:", error)
+    await sendMessage(chatId, `⚠️ Cancel request could not stop the background job: ${error.message || error}`).catch(() => {})
+  }
+
+  return legacyHandler(req, res)
+}
+
 async function handleManualRepairCallback(req, res, callback) {
   const chatId = callback.message?.chat?.id
   const userId = callback.from?.id
@@ -118,6 +181,12 @@ async function handleManualRepairCallback(req, res, callback) {
 export default async function handler(req, res) {
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
+  }
+
+  const message = req.body?.message
+  const command = String(message?.text || "").trim().split(/\s+/)[0].toLowerCase()
+  if (req.method === "POST" && command === "/cancel") {
+    return handleCancelCommand(req, res, message)
   }
 
   const callback = req.body?.callback_query
