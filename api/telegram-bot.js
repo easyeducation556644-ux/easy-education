@@ -8,10 +8,7 @@ import {
   keyboard,
   sendMessage,
 } from "../server/bot/telegram.js"
-import {
-  continueManualDriveRepair,
-  startManualDriveRepair,
-} from "../server/bot/manual-drive-repair.js"
+import { startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 
 const SESSION_COLLECTION = "botSessions"
 
@@ -30,18 +27,46 @@ function validAutomationSecret(req) {
   return Boolean(expected) && String(req.headers.authorization || "") === `Bearer ${expected}`
 }
 
+function requestBaseUrl(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim()
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim()
+  if (host) return `${proto}://${host}`
+  return String(process.env.PUBLIC_APP_URL || process.env.TELEGRAM_WEBHOOK_URL || "")
+    .replace(/\/api\/telegram-bot\/?$/, "")
+    .replace(/\/$/, "")
+}
+
+async function triggerImmediateWorker(req, jobId) {
+  const base = requestBaseUrl(req)
+  const secret = String(process.env.AUTOMATION_SECRET || "")
+  if (!base) throw new Error("Could not determine the public app URL for the manual Drive repair worker")
+  if (!secret) throw new Error("AUTOMATION_SECRET is required for immediate Drive repair")
+
+  const response = await fetch(`${base}/api/manual-drive-repair-worker?jobId=${encodeURIComponent(jobId)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ jobId }),
+  })
+  if (!response.ok) {
+    const details = await response.text().catch(() => "")
+    throw new Error(`Manual Drive repair worker could not start (${response.status})${details ? `: ${details.slice(0, 300)}` : ""}`)
+  }
+}
+
 async function runContinuationRequest(req, res) {
   if (!validAutomationSecret(req)) return res.status(401).json({ ok: false, error: "Invalid automation secret" })
   const jobId = String(req.query?.jobId || req.body?.jobId || "").trim()
   if (!jobId) return res.status(400).json({ ok: false, error: "Missing Drive repair jobId" })
 
-  const { db } = getAdminServices()
-  res.status(202).json({ ok: true, manual_drive_repair: true, jobId })
-
   try {
-    await continueManualDriveRepair(db, jobId)
+    await triggerImmediateWorker(req, jobId)
+    return res.status(202).json({ ok: true, manual_drive_repair: true, jobId, worker_started: true })
   } catch (error) {
-    console.error("Manual Drive repair continuation failed:", error)
+    console.error("Manual Drive repair continuation trigger failed:", error)
+    return res.status(500).json({ ok: false, error: error.message || "Manual Drive repair worker could not start" })
   }
 }
 
@@ -69,21 +94,16 @@ async function handleManualRepairCallback(req, res, callback) {
     const session = sessionSnapshot.exists ? sessionSnapshot.data() : {}
     const started = await startManualDriveRepair(db, chatId, userId, session)
 
-    res.status(200).json({
+    if (started.shouldRun) {
+      await triggerImmediateWorker(req, started.manualDriveRepairJobId)
+    }
+
+    return res.status(200).json({
       ok: true,
       manual_drive_repair: true,
       jobId: started.manualDriveRepairJobId,
-      running: Boolean(started.shouldRun),
+      worker_started: Boolean(started.shouldRun),
     })
-
-    if (started.shouldRun) {
-      try {
-        await continueManualDriveRepair(db, started.manualDriveRepairJobId)
-      } catch (error) {
-        console.error("Manual Drive repair worker failed:", error)
-      }
-    }
-    return
   } catch (error) {
     console.error("Manual Drive repair start failed:", error)
     await sendMessage(
