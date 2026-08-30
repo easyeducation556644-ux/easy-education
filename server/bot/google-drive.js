@@ -187,7 +187,7 @@ async function ensureFolderPath(accessToken, rootFolderId, parts) {
   return parentId
 }
 
-async function uploadResumable(accessToken, { name, mimeType, bytes, parentId }) {
+async function uploadResumable(accessToken, { name, mimeType = "application/octet-stream", bytes, parentId }) {
   const session = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink,size", {
     method: "POST",
     headers: {
@@ -220,7 +220,7 @@ async function uploadResumable(accessToken, { name, mimeType, bytes, parentId })
   return { ...uploaded, webViewLink: uploaded.webViewLink || `https://drive.google.com/file/d/${uploaded.id}/view` }
 }
 
-async function uploadMultipart(accessToken, { name, mimeType, bytes, parentId }, sessionError = "") {
+async function uploadMultipart(accessToken, { name, mimeType = "application/octet-stream", bytes, parentId }, sessionError = "") {
   const boundary = `ee_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
   const metadata = Buffer.from(JSON.stringify({ name: safeName(name, "Class resource"), parents: [parentId] }))
   const body = Buffer.concat([
@@ -314,7 +314,12 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
         context.subjectTitle,
         context.chapterTitle,
       ])
-      const uploaded = await uploadResumable(token.access_token, { ...downloaded, parentId: folderId })
+      const uploaded = await uploadResumable(token.access_token, {
+        name: downloaded.name,
+        mimeType: downloaded.contentType || "application/octet-stream",
+        bytes: downloaded.bytes,
+        parentId: folderId,
+      })
       await assetRef.set({
         status: "ready",
         platform: context.platform || "",
