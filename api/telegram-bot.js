@@ -9,7 +9,7 @@ import {
   keyboard,
   sendMessage,
 } from "../server/bot/telegram.js"
-import { startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
+import { retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -230,6 +230,27 @@ async function handleManualRepairCallback(req, res, callback) {
   }
 }
 
+async function handleRetryFailedCallback(req, res, callback) {
+  const chatId = callback.message?.chat?.id
+  const userId = callback.from?.id
+  if (!chatId || !userId) return res.status(200).json({ ok: true })
+  if (!validWebhookSecret(req)) return res.status(401).json({ ok: false, error: "Invalid webhook secret" })
+  if (callback.message?.chat?.type !== "private" || !isAllowedTelegramUser(userId)) return legacyHandler(req, res)
+
+  await answerCallback(callback.id, "Retrying failed classes only").catch(() => {})
+  await clearInlineKeyboard(chatId, callback.message?.message_id).catch(() => {})
+  const { db } = getAdminServices()
+  try {
+    await controlRef(db, chatId).delete().catch(() => {})
+    const retry = await retryLatestFailedDriveRepair(db, chatId, userId)
+    await triggerImmediateWorker(req, retry.jobId)
+    return res.status(200).json({ ok: true, failed_only_retry: true, ...retry })
+  } catch (error) {
+    await sendMessage(chatId, `❌ ${error.message || "Failed classes could not be retried"}`).catch(() => {})
+    return res.status(200).json({ ok: true, handled_error: true })
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
@@ -242,6 +263,9 @@ export default async function handler(req, res) {
   }
 
   const callback = req.body?.callback_query
+  if (req.method === "POST" && String(callback?.data || "") === "resources:retry_failed") {
+    return handleRetryFailedCallback(req, res, callback)
+  }
   if (req.method === "POST" && String(callback?.data || "") === "resources:repair") {
     return handleManualRepairCallback(req, res, callback)
   }

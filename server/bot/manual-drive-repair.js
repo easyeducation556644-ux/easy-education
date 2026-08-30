@@ -324,7 +324,13 @@ async function sendBatchProgress(chatId, mapping, state) {
     })
     if (state.finalFailures.length > 5) lines.push(`…and ${state.finalFailures.length - 5} earlier final failures are saved in the job record.`)
   }
-  await sendMessage(chatId, lines.join("\n")).catch(() => {})
+  const replyMarkup = state.complete && state.finalFailures.length
+    ? keyboard([
+      [button(`🔄 Retry failed only · ${state.finalFailures.length}`, "resources:retry_failed")],
+      [button("‹ Main menu", "home")],
+    ])
+    : undefined
+  await sendMessage(chatId, lines.join("\n"), replyMarkup).catch(() => {})
 }
 
 async function claimManualJob(db, jobId) {
@@ -621,6 +627,45 @@ export async function continueManualDriveRepair(db, jobId) {
       "The job is still saved as queued. Run Drive repair again to resume it immediately.",
     ].join("\n")).catch(() => {})
   }
+}
+
+export async function retryLatestFailedDriveRepair(db, chatId, telegramUserId) {
+  const snapshot = await db.collection(JOB_COLLECTION)
+    .where("notificationChatId", "==", String(chatId))
+    .limit(30)
+    .get()
+  const candidates = snapshot.docs
+    .map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }))
+    .filter((job) => job.type === MANUAL_JOB_TYPE && ["completed_with_errors", "failed"].includes(job.status))
+    .filter((job) => asArray(job.finalFailures).length)
+    .sort((a, b) => timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt))
+  const job = candidates[0]
+  if (!job) throw new Error("No failed Drive repair classes are available to retry")
+
+  const retryQueue = asArray(job.finalFailures).map((item) => ({
+    sourceClassId: String(item.sourceClassId || ""),
+    title: item.title || item.sourceClassId || "Untitled class",
+    attempts: 0,
+    lastError: item.error || "Previous repair failed",
+  })).filter((item) => item.sourceClassId)
+  await job.ref.set({
+    status: "queued",
+    cursor: Number(job.total || job.cursor || 0),
+    retryQueue,
+    finalFailures: [],
+    failed: 0,
+    workerErrors: 0,
+    requestedByTelegramUserId: String(telegramUserId || ""),
+    retryFailedOnlyAt: serverNow(),
+    updatedAt: serverNow(),
+  }, { merge: true })
+  await sendMessage(chatId, [
+    "🔄 Failed-only Drive retry started NOW",
+    `Classes requeued: ${retryQueue.length}`,
+    "Previously successful/scanned classes will not run again.",
+    "You do not need to reopen the mapping or course page.",
+  ].join("\n")).catch(() => {})
+  return { jobId: job.id, retryCount: retryQueue.length }
 }
 
 export const MANUAL_DRIVE_REPAIR_JOB_TYPE = MANUAL_JOB_TYPE
