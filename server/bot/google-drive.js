@@ -7,6 +7,14 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token"
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 const ROOT_FOLDER = "Easy Education Content"
 const MIN_FREE_BYTES = 25 * 1024 * 1024
+const DOWNLOAD_ATTEMPTS = 3
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function compactErrorBody(value, limit = 420) {
+  const text = String(value || "").replace(/\s+/g, " ").trim()
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text
+}
 
 function oauthConfig() {
   const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID || ""
@@ -190,7 +198,14 @@ async function uploadResumable(accessToken, { name, mimeType, bytes, parentId })
     },
     body: JSON.stringify({ name: safeName(name, "Class resource"), parents: [parentId] }),
   })
-  if (!session.ok) throw new Error(`Google Drive upload session failed (${session.status})`)
+  if (!session.ok) {
+    const details = compactErrorBody(await session.text().catch(() => ""))
+    // A small number of Drive accounts reject resumable-session initiation
+    // even though a normal multipart files.create succeeds with the same
+    // metadata. The resource is already buffered, so this is a safe fallback.
+    if (session.status === 400) return uploadMultipart(accessToken, { name, mimeType, bytes, parentId }, details)
+    throw new Error(`Google Drive upload session failed (${session.status})${details ? `: ${details}` : ""}`)
+  }
   const location = session.headers.get("location")
   if (!location) throw new Error("Google Drive did not return an upload session")
   const uploaded = await jsonRequest(location, {
@@ -205,17 +220,59 @@ async function uploadResumable(accessToken, { name, mimeType, bytes, parentId })
   return { ...uploaded, webViewLink: uploaded.webViewLink || `https://drive.google.com/file/d/${uploaded.id}/view` }
 }
 
+async function uploadMultipart(accessToken, { name, mimeType, bytes, parentId }, sessionError = "") {
+  const boundary = `ee_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
+  const metadata = Buffer.from(JSON.stringify({ name: safeName(name, "Class resource"), parents: [parentId] }))
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`),
+    metadata,
+    Buffer.from(`\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--`),
+  ])
+  const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,size", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+      "Content-Length": String(body.byteLength),
+    },
+    body,
+  })
+  const payload = await response.json().catch(async () => ({ raw: compactErrorBody(await response.text().catch(() => "")) }))
+  if (!response.ok) {
+    const details = compactErrorBody(payload?.error?.message || payload?.raw || sessionError)
+    throw new Error(`Google Drive upload failed (${response.status})${details ? `: ${details}` : ""}`)
+  }
+  await driveJson(accessToken, `/files/${payload.id}/permissions`, {
+    method: "POST",
+    body: JSON.stringify({ type: "anyone", role: "reader" }),
+  })
+  return { ...payload, webViewLink: payload.webViewLink || `https://drive.google.com/file/d/${payload.id}/view` }
+}
+
 async function downloadResource(resource, sourceCookie = "") {
   const url = String(resource?.url || "")
   if (!/^https?:\/\//i.test(url)) throw new Error("Resource URL is invalid")
   const sameUdvashOrigin = new URL(url).origin === "https://online.udvash-unmesh.com"
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/pdf,application/octet-stream,*/*",
-      ...(sameUdvashOrigin && sourceCookie ? { Cookie: sourceCookie } : {}),
-    },
-    redirect: "follow",
-  })
+  let response
+  let lastNetworkError
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      response = await fetch(url, {
+        headers: {
+          Accept: "application/pdf,application/octet-stream,*/*",
+          ...(sameUdvashOrigin && sourceCookie ? { Cookie: sourceCookie } : {}),
+        },
+        redirect: "follow",
+      })
+      break
+    } catch (error) {
+      lastNetworkError = error
+      if (attempt < DOWNLOAD_ATTEMPTS) await delay(250 * attempt)
+    }
+  }
+  if (!response) throw new Error(`Resource download network failed after ${DOWNLOAD_ATTEMPTS} attempts: ${lastNetworkError?.message || "fetch failed"}`)
   if (!response.ok) throw new Error(`Resource download failed (${response.status})`)
   const declaredSize = Number(response.headers.get("content-length") || 0)
   const maxBytes = Number(process.env.GOOGLE_DRIVE_MAX_RESOURCE_BYTES || 50 * 1024 * 1024)
@@ -236,7 +293,10 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
   const output = []
   for (const resource of Array.isArray(resources) ? resources : []) {
     const sourceUrl = String(resource?.url || "")
-    const assetId = stableId("drive-resource", context.platform, context.sourceCourseId, context.sourceClassId, sourceUrl)
+    // Udvash signed URLs change on every class-page refresh. A URL-based key
+    // defeated the cache and uploaded the same note repeatedly.
+    const resourceIdentity = String(resource?.label || "Class resource").trim().toLowerCase()
+    const assetId = stableId("drive-resource-v2", context.platform, context.sourceCourseId, context.sourceClassId, resourceIdentity)
     const assetRef = db.collection("botStoredAssets").doc(assetId)
     const existing = await assetRef.get()
     if (existing.exists && existing.data().status === "ready" && existing.data().webViewLink) {
