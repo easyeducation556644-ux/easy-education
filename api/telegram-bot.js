@@ -9,7 +9,7 @@ import {
   keyboard,
   sendMessage,
 } from "../server/bot/telegram.js"
-import { retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
+import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -251,6 +251,24 @@ async function handleRetryFailedCallback(req, res, callback) {
   }
 }
 
+async function handleResumeCommand(req, res, message) {
+  const chatId = message.chat?.id
+  const userId = message.from?.id
+  if (!chatId || !userId) return legacyHandler(req, res)
+  if (!validWebhookSecret(req)) return res.status(401).json({ ok: false, error: "Invalid webhook secret" })
+  if (message.chat?.type !== "private" || !isAllowedTelegramUser(userId)) return legacyHandler(req, res)
+  const { db } = getAdminServices()
+  try {
+    await controlRef(db, chatId).delete().catch(() => {})
+    const resumed = await resumeLatestDriveRepair(db, chatId, userId)
+    await triggerImmediateWorker(req, resumed.jobId)
+    return res.status(200).json({ ok: true, resumed: true, ...resumed })
+  } catch (error) {
+    await sendMessage(chatId, `❌ ${error.message || "Drive repair could not be resumed"}`).catch(() => {})
+    return res.status(200).json({ ok: true, handled_error: true })
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
@@ -258,6 +276,9 @@ export default async function handler(req, res) {
 
   const message = req.body?.message
   const command = String(message?.text || "").trim().split(/\s+/)[0].toLowerCase()
+  if (req.method === "POST" && command === "/resume") {
+    return handleResumeCommand(req, res, message)
+  }
   if (req.method === "POST" && command === "/cancel") {
     return handleCancelCommand(req, res, message)
   }

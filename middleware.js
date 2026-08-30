@@ -4,7 +4,6 @@ import { continueManualDriveRepair } from "./server/bot/manual-drive-repair.js"
 
 const continuationScope = new AsyncLocalStorage()
 const nativeFetch = globalThis.fetch.bind(globalThis)
-const OUTER_WORKER_BUDGET_MS = 245_000
 const JOB_COLLECTION = "botJobs"
 const CONTROL_COLLECTION = "botManualRepairControls"
 const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
@@ -97,23 +96,13 @@ async function stopIfCancelled(db, jobId) {
 }
 
 async function runFlattenedManualRepair(db, jobId, request) {
-  const startedAt = Date.now()
-  let continuationRequested = false
-
-  do {
-    // A durable /cancel marker is checked before each continuation window.
-    // During normal quota availability /cancel also marks the active job directly,
-    // which makes the current worker stop after the in-flight batch.
-    if (await stopIfCancelled(db, jobId)) return
-
-    const state = {
-      captureContinuation: true,
-      continuationRequested: false,
-    }
-
-    await continuationScope.run(state, () => continueManualDriveRepair(db, jobId))
-    continuationRequested = state.continuationRequested
-  } while (continuationRequested && Date.now() - startedAt < OUTER_WORKER_BUDGET_MS)
+  // Run exactly one bounded processing window per request. Starting a second
+  // ~220s window inside the same 300s Vercel invocation caused hard timeouts
+  // before the handoff could reach the freshly deployed worker.
+  if (await stopIfCancelled(db, jobId)) return
+  const state = { captureContinuation: true, continuationRequested: false }
+  await continuationScope.run(state, () => continueManualDriveRepair(db, jobId))
+  const continuationRequested = state.continuationRequested
 
   // If the job still needs work after this invocation's budget, create only
   // one direct worker hop. Check cancellation again first so a stop request

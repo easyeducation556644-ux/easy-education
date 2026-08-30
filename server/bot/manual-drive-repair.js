@@ -668,4 +668,35 @@ export async function retryLatestFailedDriveRepair(db, chatId, telegramUserId) {
   return { jobId: job.id, retryCount: retryQueue.length }
 }
 
+export async function resumeLatestDriveRepair(db, chatId, telegramUserId) {
+  const snapshot = await db.collection(JOB_COLLECTION)
+    .where("notificationChatId", "==", String(chatId))
+    .limit(30)
+    .get()
+  const jobs = snapshot.docs
+    .map((doc) => ({ id: doc.id, ref: doc.ref, ...doc.data() }))
+    .filter((job) => job.type === MANUAL_JOB_TYPE)
+    .filter((job) => ["queued", "running"].includes(job.status))
+    .sort((a, b) => timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt))
+  const job = jobs[0]
+  if (!job) throw new Error("No paused or queued Drive repair job was found")
+  if (job.status === "running" && !isStaleRunningJob(job)) {
+    throw new Error("The latest Drive repair worker is still active. Try /resume again after a few minutes if progress stops")
+  }
+  await job.ref.set({
+    status: "queued",
+    workerErrors: 0,
+    resumedByTelegramUserId: String(telegramUserId || ""),
+    resumedAt: serverNow(),
+    updatedAt: serverNow(),
+  }, { merge: true })
+  await sendMessage(chatId, [
+    "▶ Drive repair resumed NOW",
+    `Scanned cursor: ${Number(job.cursor || 0)}/${Number(job.total || 0)}`,
+    `Waiting for retry: ${asArray(job.retryQueue).length}`,
+    "The saved cursor and retry queue were kept; processing will not restart from class 1.",
+  ].join("\n")).catch(() => {})
+  return { jobId: job.id }
+}
+
 export const MANUAL_DRIVE_REPAIR_JOB_TYPE = MANUAL_JOB_TYPE
