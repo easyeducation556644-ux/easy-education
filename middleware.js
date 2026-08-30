@@ -1,8 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks"
 import { getAdminServices } from "./api/utils/firebase-admin.js"
 import { continueManualDriveRepair } from "./server/bot/manual-drive-repair.js"
 
-const continuationScope = new AsyncLocalStorage()
 const nativeFetch = globalThis.fetch.bind(globalThis)
 const JOB_COLLECTION = "botJobs"
 const CONTROL_COLLECTION = "botManualRepairControls"
@@ -21,38 +19,6 @@ function json(payload, status = 200) {
   })
 }
 
-function requestUrlOf(input) {
-  try {
-    if (typeof input === "string") return new URL(input)
-    if (input instanceof URL) return input
-    if (input?.url) return new URL(input.url)
-  } catch {}
-  return null
-}
-
-function isLegacyManualContinuation(input) {
-  const url = requestUrlOf(input)
-  return Boolean(
-    url
-      && url.pathname === "/api/telegram-bot"
-      && url.searchParams.get("action") === "drive-repair-tick",
-  )
-}
-
-// The legacy manual repair worker asks /api/telegram-bot?action=drive-repair-tick
-// to continue after each internal batch window. Let that request resolve locally
-// while this worker invocation still has execution budget instead of creating
-// a recursive Vercel HTTP chain. AsyncLocalStorage keeps this interception
-// scoped to the current repair job so unrelated fetches remain untouched.
-globalThis.fetch = async function scopedFetch(input, init) {
-  const state = continuationScope.getStore()
-  if (state?.captureContinuation && isLegacyManualContinuation(input)) {
-    state.continuationRequested = true
-    return json({ ok: true, manual_drive_repair: true, accepted: true, local_continuation: true }, 202)
-  }
-  return nativeFetch(input, init)
-}
-
 async function triggerDirectWorker(request, jobId) {
   const secret = String(process.env.AUTOMATION_SECRET || "")
   const url = new URL("/api/manual-drive-repair-worker", request.url)
@@ -69,6 +35,7 @@ async function triggerDirectWorker(request, jobId) {
     const text = await response.text().catch(() => "")
     throw new Error(`Direct Drive repair continuation failed (${response.status})${text ? `: ${text.slice(0, 240)}` : ""}`)
   }
+  console.log("[drive-repair] handoff accepted", { jobId, status: response.status })
 }
 
 async function stopIfCancelled(db, jobId) {
@@ -100,9 +67,10 @@ async function runFlattenedManualRepair(db, jobId, request) {
   // ~220s window inside the same 300s Vercel invocation caused hard timeouts
   // before the handoff could reach the freshly deployed worker.
   if (await stopIfCancelled(db, jobId)) return
-  const state = { captureContinuation: true, continuationRequested: false }
-  await continuationScope.run(state, () => continueManualDriveRepair(db, jobId))
-  const continuationRequested = state.continuationRequested
+  console.log("[drive-repair] worker window started", { jobId })
+  const result = await continueManualDriveRepair(db, jobId)
+  const continuationRequested = result?.continuationRequired === true
+  console.log("[drive-repair] worker window finished", { jobId, continuationRequested })
 
   // If the job still needs work after this invocation's budget, create only
   // one direct worker hop. Check cancellation again first so a stop request

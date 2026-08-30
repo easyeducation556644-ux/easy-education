@@ -235,29 +235,6 @@ async function publishClassSyncEvents(db, classIds) {
   return ids.length
 }
 
-function publicBaseUrl() {
-  return String(process.env.PUBLIC_APP_URL || process.env.TELEGRAM_WEBHOOK_URL || "")
-    .replace(/\/api\/telegram-bot\/?$/, "")
-    .replace(/\/$/, "")
-}
-
-async function triggerManualContinuation(jobId) {
-  const base = publicBaseUrl()
-  const secret = String(process.env.AUTOMATION_SECRET || "")
-  if (!base) throw new Error("PUBLIC_APP_URL or TELEGRAM_WEBHOOK_URL is required for immediate Drive repair continuation")
-  if (!secret) throw new Error("AUTOMATION_SECRET is required for immediate Drive repair continuation")
-  const url = `${base}/api/telegram-bot?action=drive-repair-tick&jobId=${encodeURIComponent(jobId)}`
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ jobId }),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => "")
-    throw new Error(`Immediate Drive repair continuation failed (${response.status})${text ? `: ${truncate(text, 180)}` : ""}`)
-  }
-}
-
 function retryEntry(sourceClass, attempts, error) {
   return {
     sourceClassId: String(sourceClass?.sourceClassId || ""),
@@ -580,11 +557,11 @@ export async function continueManualDriveRepair(db, jobId) {
 
   while (batches < MAX_BATCHES_PER_INVOCATION && Date.now() - startedAt < WORKER_BUDGET_MS) {
     const job = await claimManualJob(db, jobId)
-    if (!job) return
+    if (!job) return { continuationRequired: false }
     try {
       const state = await runManualBatch(db, job)
       batches += 1
-      if (state.complete) return
+      if (state.complete) return { continuationRequired: false }
     } catch (error) {
       const message = truncate(error?.message || error, 500)
       const latest = await job.ref.get().catch(() => null)
@@ -605,28 +582,18 @@ export async function continueManualDriveRepair(db, jobId) {
         `Worker retry: ${workerErrors}/3`,
         terminal ? "Open the mapping and run Drive repair again after fixing the error." : "This retry is immediate and does not wait for the scheduler.",
       ].join("\n")).catch(() => {})
-      if (terminal) return
+      if (terminal) return { continuationRequired: false }
       batches += 1
     }
   }
 
   const latest = await db.collection(JOB_COLLECTION).doc(String(jobId)).get()
-  if (!latest.exists || latest.data().type !== MANUAL_JOB_TYPE || !["queued", "running"].includes(latest.data().status)) return
+  if (!latest.exists || latest.data().type !== MANUAL_JOB_TYPE || !["queued", "running"].includes(latest.data().status)) return { continuationRequired: false }
   if (latest.data().status === "running") {
     await latest.ref.set({ status: "queued", updatedAt: serverNow() }, { merge: true }).catch(() => {})
   }
 
-  try {
-    await triggerManualContinuation(jobId)
-  } catch (error) {
-    const message = truncate(error?.message || error, 500)
-    await latest.ref.set({ status: "queued", lastError: message, updatedAt: serverNow() }, { merge: true }).catch(() => {})
-    await sendMessage(latest.data().notificationChatId, [
-      "⚠️ Immediate Drive repair continuation could not start",
-      `Error: ${message}`,
-      "The job is still saved as queued. Run Drive repair again to resume it immediately.",
-    ].join("\n")).catch(() => {})
-  }
+  return { continuationRequired: true }
 }
 
 export async function retryLatestFailedDriveRepair(db, chatId, telegramUserId) {
@@ -668,6 +635,57 @@ export async function retryLatestFailedDriveRepair(db, chatId, telegramUserId) {
   return { jobId: job.id, retryCount: retryQueue.length }
 }
 
+async function ensureFoundationCardDestination(db, job) {
+  const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(String(job.mappingId)).get()
+  if (!mappingSnapshot.exists) return { job, migrated: false }
+  const mapping = mappingSnapshot.data()
+  const foundation = /foundation|ফাউন্ডেশন/iu.test(`${mapping.sourceSectionTitle || ""} ${mapping.sourceSectionKey || ""}`)
+  if (!foundation || (mapping.destinationType === "group" && mapping.classGroupId)) return { job, migrated: false }
+
+  const groups = await db.collection("classGroups").where("courseId", "==", mapping.eeCourseId).get()
+  const existingGroup = groups.docs.find((doc) => /foundation|ফাউন্ডেশন/iu.test(String(doc.data().title || "")))
+  let groupId = existingGroup?.id
+  let groupTitle = existingGroup?.data()?.title || "Foundation Classes"
+  if (!groupId) {
+    const groupRef = await db.collection("classGroups").add({
+      courseId: mapping.eeCourseId,
+      title: groupTitle,
+      description: "",
+      order: groups.size,
+      isVisible: true,
+      createdBy: "telegram-bot",
+      createdAt: serverNow(),
+      updatedAt: serverNow(),
+    })
+    groupId = groupRef.id
+  }
+
+  const classes = await existingEeClasses(db, mapping.eeCourseId)
+  const targets = classes.filter((item) => item.sourcePlatform === mapping.platform
+    && String(item.sourceCourseId || "") === String(mapping.sourceCourseId || "")
+    && sourceSectionOfClass(item) === normalizedSection(mapping.sourceSectionKey || mapping.sourceSectionTitle)
+    && item.isArchived !== true)
+  for (let index = 0; index < targets.length; index += 400) {
+    const batch = db.batch()
+    targets.slice(index, index + 400).forEach((item) => batch.set(
+      db.collection("classes").doc(item.id),
+      { classGroupId: groupId, updatedAt: serverNow() },
+      { merge: true },
+    ))
+    await batch.commit()
+  }
+
+  const nextMapping = { ...mapping, destinationType: "group", classGroupId: groupId, classGroupTitle: groupTitle }
+  const nextMappingId = mappingIdForSession(nextMapping)
+  await db.collection(MAPPING_COLLECTION).doc(nextMappingId).set({
+    ...nextMapping,
+    updatedAt: serverNow(),
+    foundationCardMigratedAt: serverNow(),
+  }, { merge: true })
+  await job.ref.set({ mappingId: nextMappingId, updatedAt: serverNow() }, { merge: true })
+  return { job: { ...job, mappingId: nextMappingId }, migrated: true, groupTitle, assigned: targets.length }
+}
+
 export async function resumeLatestDriveRepair(db, chatId, telegramUserId) {
   const snapshot = await db.collection(JOB_COLLECTION)
     .where("notificationChatId", "==", String(chatId))
@@ -678,11 +696,13 @@ export async function resumeLatestDriveRepair(db, chatId, telegramUserId) {
     .filter((job) => job.type === MANUAL_JOB_TYPE)
     .filter((job) => ["queued", "running"].includes(job.status))
     .sort((a, b) => timestampMillis(b.updatedAt) - timestampMillis(a.updatedAt))
-  const job = jobs[0]
+  let job = jobs[0]
   if (!job) throw new Error("No paused or queued Drive repair job was found")
   if (job.status === "running" && !isStaleRunningJob(job)) {
     throw new Error("The latest Drive repair worker is still active. Try /resume again after a few minutes if progress stops")
   }
+  const foundation = await ensureFoundationCardDestination(db, job)
+  job = foundation.job
   await job.ref.set({
     status: "queued",
     workerErrors: 0,
@@ -695,6 +715,7 @@ export async function resumeLatestDriveRepair(db, chatId, telegramUserId) {
     `Scanned cursor: ${Number(job.cursor || 0)}/${Number(job.total || 0)}`,
     `Waiting for retry: ${asArray(job.retryQueue).length}`,
     "The saved cursor and retry queue were kept; processing will not restart from class 1.",
+    ...(foundation.migrated ? [`Foundation card: ${foundation.groupTitle}`, `Classes assigned to card: ${foundation.assigned}`] : []),
   ].join("\n")).catch(() => {})
   return { jobId: job.id }
 }
