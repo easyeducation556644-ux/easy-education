@@ -150,7 +150,7 @@ async function showAutomationMenu(db, chatId) {
       `Udvash override: ${udvash ? `${udvash.enabled ? "Enabled" : "Disabled"} · ${scheduleLabel(udvash.minuteOfDay)}` : "Uses overall schedule"}`,
       "Timezone: Asia/Dhaka",
       "",
-      "Schedules run in 30-minute time slots. Platform-specific schedules override the overall schedule.",
+      "GitHub calls the automatic Udvash check once daily at 08:30 AM. Manual Drive repair starts immediately and is independent of this schedule.",
     ].join("\n"),
     keyboard([
       [button("🕒 Overall schedule", "automation:scope:overall")],
@@ -1661,7 +1661,10 @@ async function runScheduledJob(db, job) {
     updatedAt: serverNow(),
   }, { merge: true })
 
-  if (mapping.notificationChatId && (analysis.toSync.length || result.failed)) {
+  // An automatic run must always leave an operator-visible audit result, even
+  // when no new content was found. Silent successful checks made it impossible
+  // to tell whether the configured daily schedule actually ran.
+  if (mapping.notificationChatId) {
     await sendMessage(mapping.notificationChatId, [
       "✅ Automated synchronization completed",
       `Platform: ${PLATFORM_LABELS[mapping.platform] || mapping.platform}`,
@@ -1694,6 +1697,19 @@ async function runAutomationTick(db) {
       ...(retry ? {} : { failedAt: serverNow() }),
       updatedAt: serverNow(),
     }, { merge: true }).catch(() => {})
+    const mappingSnapshot = await db.collection(MAPPING_COLLECTION).doc(job.mappingId).get().catch(() => null)
+    const mapping = mappingSnapshot?.exists ? mappingSnapshot.data() : null
+    const chatId = mapping?.notificationChatId || job.notificationChatId
+    if (chatId) {
+      await sendMessage(chatId, [
+        retry ? "⚠️ Automated synchronization failed — retry pending" : "❌ Automated synchronization failed",
+        `Platform: ${PLATFORM_LABELS[mapping?.platform || job.platform] || mapping?.platform || job.platform || "unknown"}`,
+        `Source: ${mapping?.sourceCourseTitle || job.mappingId}`,
+        `Error: ${String(error.message || error).slice(0, 500)}`,
+        `Attempt: ${Number(job.attempts || 0) + 1}/3`,
+        retry ? "The next scheduler heartbeat will retry this job." : "Retry limit reached. Open the mapping and run a manual check after fixing the error.",
+      ].join("\n")).catch(() => {})
+    }
     throw error
   }
 }

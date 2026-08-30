@@ -2,7 +2,9 @@ name: Scheduled content synchronization
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    # 08:30 Asia/Dhaka (UTC+6). This is one daily source check, not a
+    # 30-minute heartbeat. Manual Drive repair uses its own immediate worker.
+    - cron: "30 2 * * *"
   workflow_dispatch:
 
 permissions:

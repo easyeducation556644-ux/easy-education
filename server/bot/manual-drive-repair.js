@@ -23,6 +23,7 @@ const MAX_CLASS_ATTEMPTS = 3
 const MAX_BATCHES_PER_INVOCATION = 8
 const WORKER_BUDGET_MS = 220_000
 const RUNNING_STALE_MS = 6 * 60_000
+const RESOURCE_PARSER_VERSION = 2
 
 const asArray = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
 const serverNow = () => FieldValue.serverTimestamp()
@@ -489,11 +490,26 @@ export async function startManualDriveRepair(db, chatId, telegramUserId, session
   const imported = existing.filter((item) => importedClassMatches(item, session))
   if (!imported.length) throw new Error("No imported classes were found for this mapping")
 
-  const jobRef = db.collection(JOB_COLLECTION).doc(`drive_repair_${mappingId}`)
+  // Parser-versioned job IDs prevent an older in-flight worker from writing its
+  // stale retry/failure state over a repair started with the new parser.
+  const legacyJobRef = db.collection(JOB_COLLECTION).doc(`drive_repair_${mappingId}`)
+  const jobRef = db.collection(JOB_COLLECTION).doc(`drive_repair_${mappingId}_p${RESOURCE_PARSER_VERSION}`)
+  const legacySnapshot = await legacyJobRef.get()
+  if (legacySnapshot.exists && ["queued", "running"].includes(legacySnapshot.data().status)) {
+    await legacyJobRef.set({
+      type: "manual_drive_resource_repair_cancelled",
+      status: "cancelled",
+      cancelReason: "Superseded by updated Udvash PDF parser",
+      cancelledAt: serverNow(),
+      updatedAt: serverNow(),
+    }, { merge: true })
+  }
   const previousSnapshot = await jobRef.get()
   const previous = previousSnapshot.exists ? previousSnapshot.data() : {}
   const sameManualJob = previous.type === MANUAL_JOB_TYPE
-  const activeManual = sameManualJob && ["queued", "running"].includes(previous.status)
+  const parserChanged = (!previousSnapshot.exists && legacySnapshot.exists)
+    || (sameManualJob && Number(previous.resourceParserVersion || 0) !== RESOURCE_PARSER_VERSION)
+  const activeManual = sameManualJob && !parserChanged && ["queued", "running"].includes(previous.status)
   const staleRunning = activeManual && isStaleRunningJob(previous)
 
   if (activeManual && !staleRunning) {
@@ -509,7 +525,7 @@ export async function startManualDriveRepair(db, chatId, telegramUserId, session
     return { manualDriveRepairJobId: jobRef.id, shouldRun: previous.status === "queued" }
   }
 
-  const resumeStale = sameManualJob && staleRunning
+  const resumeStale = sameManualJob && staleRunning && !parserChanged
   await jobRef.set({
     type: MANUAL_JOB_TYPE,
     executionMode: "manual_immediate",
@@ -527,6 +543,11 @@ export async function startManualDriveRepair(db, chatId, telegramUserId, session
     requestedByTelegramUserId: String(telegramUserId),
     notificationChatId: String(chatId),
     scheduleExcluded: true,
+    resourceParserVersion: RESOURCE_PARSER_VERSION,
+    ...(parserChanged ? {
+      parserStateResetReason: "Udvash class-note parser updated; stale retries and failures were cleared",
+      parserStateResetAt: serverNow(),
+    } : {}),
     updatedAt: serverNow(),
     ...(!previousSnapshot.exists ? { createdAt: serverNow() } : {}),
   }, { merge: true })
@@ -536,7 +557,10 @@ export async function startManualDriveRepair(db, chatId, telegramUserId, session
     "",
     `Course: ${mapping.eeCourseTitle}`,
     `Classes: ${sourceClasses.length}`,
-    resumeStale ? "A stale manual worker was recovered and will resume from its saved position." : "A fresh manual repair run has started from the first class.",
+    parserChanged
+      ? "The Udvash PDF parser changed, so old retry/failure cache was cleared and every class will be checked again."
+      : resumeStale ? "A stale manual worker was recovered and will resume from its saved position." : "A fresh manual repair run has started from the first class.",
+    "Course/class listing is read from the saved snapshot for speed; every class page and signed PDF URL is fetched fresh.",
     "This is a manual immediate job. It does NOT wait for the scheduled automation time.",
     "Failed classes will retry up to 3 times, and every failure message will include the class name, source ID, and exact error.",
   ].join("\n"), keyboard([[button("‹ Main menu", "home")]]))

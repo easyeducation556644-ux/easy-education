@@ -399,10 +399,39 @@ function fallbackResourceLabel(url, index) {
 function parseClassResources(html, baseUrl) {
   const output = []
   const seen = new Set()
+  const add = (candidate, label = "") => {
+    let url = ""
+    try { url = absoluteUrl(decodeHtml(String(candidate || "")), baseUrl).replace(/#toolbar=0$/i, "") } catch { return }
+    if (!/^https?:/i.test(url) || seen.has(url)) return
+    let pathname = ""
+    try { pathname = new URL(url).pathname } catch { return }
+    if (!/\.pdf$/i.test(pathname)) return
+    seen.add(url)
+    output.push({ label: label || fallbackResourceLabel(url, output.length), url })
+  }
+
+  // Udvash's current ClassDetails page does not expose the class note as a
+  // normal anchor. It is embedded in forceDownload(...) and <embed src>.
+  // Read both shapes before scanning anchors so the signed PDF wins over
+  // unrelated sidebar links such as /Routine/QuestionAndSolveSheet.
+  let match
+  const forceDownload = /forceDownload\(\s*(['"])(https?:\/\/.+?)\1\s*,\s*(['"])(.*?)\3\s*\)/gi
+  while ((match = forceDownload.exec(html))) add(match[2], decodeHtml(match[4]).trim())
+  const embeddedPdf = /<(?:embed|iframe)\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/gi
+  while ((match = embeddedPdf.exec(html))) add(match[1] || match[2])
+
   for (const anchor of anchors(html)) {
     let url = ""
     try { url = absoluteUrl(anchor.href, baseUrl) } catch { continue }
     if (!/^https?:/i.test(url) || seen.has(url)) continue
+
+    // This is the global navigation menu, not a class resource.
+    try {
+      const parsed = new URL(url)
+      if (parsed.origin === new URL(baseUrl).origin
+        && parsed.pathname.toLowerCase() === "/routine/questionandsolvesheet"
+        && !parsed.search) continue
+    } catch {}
 
     const labelText = textContent(anchor.innerHtml)
     const noteLikeUrl = /(?:drive|docs)\.google\.com|\.(?:pdf|docx?|pptx?|xlsx?)(?:[?#]|$)|contentbuttontype=(?:pdf|note|notes|sheet|lecturesheet|lecture-sheet)/i.test(url)
@@ -425,6 +454,11 @@ function parseClassDetails(html, baseUrl) {
     topic: parseClassTopic(html),
     resourceLinks: parseClassResources(html, baseUrl),
   }
+}
+
+// Exported for regression tests against captured Udvash ClassDetails HTML.
+export function parseUdvashClassDetailsHtml(html, baseUrl = ORIGIN) {
+  return parseClassDetails(html, baseUrl)
 }
 
 export async function listUdvashCoursesHtmlV2(auth) {
