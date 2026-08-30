@@ -18,11 +18,11 @@ const JOB_COLLECTION = "botJobs"
 const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
 const PUBLIC_SYNC_FEED_LIMIT = 1000
 const MEDIA_CONCURRENCY = 3
-const BATCH_SIZE = 5
+const BATCH_SIZE = 1
 const MAX_CLASS_ATTEMPTS = 3
-const MAX_BATCHES_PER_INVOCATION = 8
-const WORKER_BUDGET_MS = 220_000
-const RUNNING_STALE_MS = 6 * 60_000
+const MAX_BATCHES_PER_INVOCATION = 1
+const WORKER_BUDGET_MS = 90_000
+const RUNNING_STALE_MS = 90_000
 const RESOURCE_PARSER_VERSION = 2
 
 const asArray = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
