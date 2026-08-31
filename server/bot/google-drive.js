@@ -228,6 +228,27 @@ export async function createGoogleDriveFolder(db, accountId, parentId, name) {
   return { id: folderId, name: safeName(name), parentId: targetParent }
 }
 
+export async function renameGoogleDriveItem(db, accountId, fileId, name) {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const item = await driveJson(token.access_token, `/files/${encodeURIComponent(String(fileId))}?fields=id,name,mimeType,webViewLink`, {
+    method: "PATCH",
+    body: JSON.stringify({ name: safeName(name) }),
+  })
+  return { id: item.id, name: item.name, mimeType: item.mimeType, webViewLink: item.webViewLink || null }
+}
+
+export async function trashGoogleDriveItem(db, accountId, fileId) {
+  const account = await driveAccount(db, accountId)
+  if (String(fileId) === String(account.rootFolderId)) throw new Error("The Easy Education root folder cannot be deleted")
+  const token = await refreshAccessToken(account)
+  await driveJson(token.access_token, `/files/${encodeURIComponent(String(fileId))}?fields=id,trashed`, {
+    method: "PATCH",
+    body: JSON.stringify({ trashed: true }),
+  })
+  return { id: String(fileId), trashed: true }
+}
+
 async function uploadResumable(accessToken, { name, mimeType = "application/octet-stream", bytes, parentId }) {
   const session = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink,size", {
     method: "POST",

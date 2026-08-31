@@ -10,8 +10,9 @@ import {
   sendMessage,
 } from "../server/bot/telegram.js"
 import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
-import { stableId } from "../server/bot/crypto.js"
-import { browseGoogleDriveFolder, createGoogleDriveFolder, listGoogleDriveAccounts } from "../server/bot/google-drive.js"
+import { encryptSecret, stableId } from "../server/bot/crypto.js"
+import { browseGoogleDriveFolder, createGoogleDriveFolder, listGoogleDriveAccounts, renameGoogleDriveItem, trashGoogleDriveItem } from "../server/bot/google-drive.js"
+import { listUdvashCoursesV2, loginUdvashV2 } from "../server/bot/platforms/udvash-v2.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -112,9 +113,31 @@ async function handleStudioRequest(req, res) {
     }
     if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId)) })
     if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId, req.body?.name) })
+    if (action === "studio-drive-rename") return res.status(200).json({ ok: true, item: await renameGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.name) })
+    if (action === "studio-drive-delete") return res.status(200).json({ ok: true, item: await trashGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
     if (action === "studio-refresh-storage") {
       const accounts = await listGoogleDriveAccounts(db, { refresh: true })
       return res.status(200).json({ ok: true, count: accounts.length })
+    }
+    if (action === "studio-add-udvash") {
+      const label = String(req.body?.label || "").trim(); const roll = String(req.body?.roll || "").trim(); const password = String(req.body?.password || "")
+      if (!label || !roll || !password) return res.status(400).json({ ok: false, error: "Account name, registration number and password are required" })
+      const auth = await loginUdvashV2({ roll, password })
+      const courses = await listUdvashCoursesV2(auth)
+      const id = stableId("udvash-account", roll)
+      await db.collection("botPlatformAccounts").doc(id).set({
+        platform: "udvash", label, roll, passwordEncrypted: encryptSecret(password), cookieEncrypted: encryptSecret(auth.cookie || ""), tokenEncrypted: encryptSecret(auth.token || ""),
+        status: "ready", courseCount: courses.length, lastError: "", connectedBy: "content-studio", lastLoginAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
+      }, { merge: true })
+      return res.status(200).json({ ok: true, account: { id, label, roll, status: "ready", courseCount: courses.length } })
+    }
+    if (action === "studio-stop-all") {
+      const jobs = await db.collection("botJobs").limit(500).get(); const active = jobs.docs.filter((doc) => ["queued", "running"].includes(String(doc.data().status || "")))
+      for (let start = 0; start < active.length; start += 400) { const batch = db.batch(); active.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, cancelledBy: "content-studio-stop-all", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
+      const controls = await db.collection("botManualRepairControls").limit(100).get();
+      for (const doc of controls.docs) await doc.ref.set({ cancelRequested: true, cancelEpochMs: Date.now(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      await db.collection("botAutomationSettings").doc("schedule").set({ overall: { enabled: false }, platforms: { udvash: { enabled: false } }, pausedBy: "content-studio-stop-all", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      return res.status(200).json({ ok: true, stoppedJobs: active.length, schedulerPaused: true })
     }
     return res.status(404).json({ ok: false, error: "Unknown studio action" })
   } catch (error) {
@@ -376,7 +399,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
-  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-refresh-storage"].includes(requestAction(req))) return handleStudioRequest(req, res)
+  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-drive-rename", "studio-drive-delete", "studio-refresh-storage", "studio-add-udvash", "studio-stop-all"].includes(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
