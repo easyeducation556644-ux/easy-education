@@ -187,6 +187,47 @@ async function ensureFolderPath(accessToken, rootFolderId, parts) {
   return parentId
 }
 
+async function driveAccount(db, accountId) {
+  const snapshot = await db.collection(ACCOUNTS).doc(String(accountId || "")).get()
+  if (!snapshot.exists) throw new Error("Google Drive account was not found")
+  const account = { id: snapshot.id, ...snapshot.data() }
+  if (account.provider !== "google-drive") throw new Error("Storage account is not Google Drive")
+  return account
+}
+
+export async function browseGoogleDriveFolder(db, accountId, parentId = "") {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const folderId = String(parentId || account.rootFolderId || "")
+  if (!folderId) throw new Error("Drive root folder is unavailable")
+  const query = encodeURIComponent(`'${folderId.replaceAll("'", "\\'")}' in parents and trashed=false`)
+  const fields = encodeURIComponent("nextPageToken,files(id,name,mimeType,size,webViewLink,modifiedTime,iconLink)")
+  const payload = await driveJson(token.access_token, `/files?q=${query}&fields=${fields}&pageSize=200&orderBy=folder,name`)
+  return {
+    accountId: account.id,
+    folderId,
+    rootFolderId: account.rootFolderId,
+    files: (payload.files || []).map((file) => ({
+      id: file.id,
+      name: file.name,
+      mimeType: file.mimeType,
+      isFolder: file.mimeType === "application/vnd.google-apps.folder",
+      size: Number(file.size || 0),
+      webViewLink: file.webViewLink || null,
+      modifiedTime: file.modifiedTime || null,
+    })),
+  }
+}
+
+export async function createGoogleDriveFolder(db, accountId, parentId, name) {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const targetParent = String(parentId || account.rootFolderId || "")
+  if (!targetParent) throw new Error("Drive root folder is unavailable")
+  const folderId = await ensureFolder(token.access_token, name, targetParent)
+  return { id: folderId, name: safeName(name), parentId: targetParent }
+}
+
 async function uploadResumable(accessToken, { name, mimeType = "application/octet-stream", bytes, parentId }) {
   const session = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink,size", {
     method: "POST",

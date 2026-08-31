@@ -11,6 +11,7 @@ import {
 } from "../server/bot/telegram.js"
 import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 import { stableId } from "../server/bot/crypto.js"
+import { browseGoogleDriveFolder, createGoogleDriveFolder, listGoogleDriveAccounts } from "../server/bot/google-drive.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -67,12 +68,13 @@ async function handleStudioRequest(req, res) {
       const snapshotDoc = await db.collection("botSourceSnapshots").doc(String(source.snapshotId)).get()
       if (!snapshotDoc.exists) return res.status(404).json({ ok: false, error: "Source snapshot was not found" })
       const snapshot = snapshotDoc.data()
-      const id = stableId(snapshot.platform, snapshot.sourceCourseId, destination.courseId, source.sectionKey, "main")
+      const destinationType = destination.groupId ? "group" : "main"
+      const id = stableId(snapshot.platform, snapshot.sourceCourseId, destination.courseId, source.sectionKey, destinationType, destination.groupId || "")
       await db.collection("botCourseMappings").doc(id).set({
         platform: snapshot.platform, accountId: snapshot.accountId, sourceCourseId: String(snapshot.sourceCourseId), sourceCourseTitle: snapshot.sourceCourseTitle,
         sourceSectionKey: String(source.sectionKey), sourceSectionTitle: source.sectionTitle || source.sectionKey,
         eeCourseId: String(destination.courseId), eeCourseTitle: destination.courseTitle, eeCourseType: destination.courseType || "subject",
-        destinationType: "main", classGroupId: null, classGroupTitle: "", snapshotCount: Number(snapshot.classCount || 0),
+        destinationType, classGroupId: destination.groupId || null, classGroupTitle: destination.groupTitle || "", snapshotCount: Number(snapshot.classCount || 0),
         updatedBy: "content-studio", updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
       }, { merge: true })
       return res.status(200).json({ ok: true, mappingId: id })
@@ -83,6 +85,36 @@ async function handleStudioRequest(req, res) {
       const jobRef = db.collection("botJobs").doc(`studio_${stableId(mappingId, Date.now())}`)
       await jobRef.set({ type: "scheduled_mapping_sync", status: "queued", mappingId, attempts: 0, requestedBy: "content-studio", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
       return res.status(202).json({ ok: true, jobId: jobRef.id, status: "queued" })
+    }
+    if (action === "studio-cancel-job") {
+      const jobId = String(req.body?.jobId || "")
+      const ref = db.collection("botJobs").doc(jobId); const snap = await ref.get()
+      if (!snap.exists) return res.status(404).json({ ok: false, error: "Job was not found" })
+      if (!["queued", "running"].includes(String(snap.data().status || ""))) return res.status(409).json({ ok: false, error: "Only queued or running jobs can be cancelled" })
+      await ref.set({ status: "cancelled", cancelledBy: "content-studio", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      return res.status(200).json({ ok: true, jobId, status: "cancelled" })
+    }
+    if (action === "studio-retry-job") {
+      const oldId = String(req.body?.jobId || ""); const old = await db.collection("botJobs").doc(oldId).get()
+      if (!old.exists) return res.status(404).json({ ok: false, error: "Job was not found" })
+      const previous = old.data(); if (!previous.mappingId) return res.status(400).json({ ok: false, error: "This job has no course mapping" })
+      const ref = db.collection("botJobs").doc(`studio_retry_${stableId(oldId, Date.now())}`)
+      await ref.set({ type: "scheduled_mapping_sync", status: "queued", mappingId: previous.mappingId, platform: previous.platform || null, attempts: 0, retriedFrom: oldId, requestedBy: "content-studio", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
+      return res.status(202).json({ ok: true, jobId: ref.id, status: "queued" })
+    }
+    if (action === "studio-delete-mapping") {
+      const mappingId = String(req.body?.mappingId || "")
+      if (!mappingId) return res.status(400).json({ ok: false, error: "Mapping is required" })
+      const active = await db.collection("botJobs").where("mappingId", "==", mappingId).limit(30).get()
+      if (active.docs.some((doc) => ["queued", "running"].includes(String(doc.data().status || "")))) return res.status(409).json({ ok: false, error: "Cancel the active job before deleting this mapping" })
+      await db.collection("botCourseMappings").doc(mappingId).delete()
+      return res.status(200).json({ ok: true, mappingId, deleted: true })
+    }
+    if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId)) })
+    if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId, req.body?.name) })
+    if (action === "studio-refresh-storage") {
+      const accounts = await listGoogleDriveAccounts(db, { refresh: true })
+      return res.status(200).json({ ok: true, count: accounts.length })
     }
     return res.status(404).json({ ok: false, error: "Unknown studio action" })
   } catch (error) {
@@ -344,7 +376,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
-  if (["studio-overview", "studio-map", "studio-sync"].includes(requestAction(req))) return handleStudioRequest(req, res)
+  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-refresh-storage"].includes(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
