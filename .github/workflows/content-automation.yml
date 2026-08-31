@@ -33,3 +33,17 @@ jobs:
             -X POST \
             -H "Authorization: Bearer $AUTOMATION_SECRET" \
             "${AUTOMATION_ENDPOINT%/}/api/telegram-bot?action=automation-tick"
+      - name: Recover queued Operations Studio tasks
+        env:
+          AUTOMATION_ENDPOINT: ${{ secrets.AUTOMATION_ENDPOINT }}
+          AUTOMATION_SECRET: ${{ secrets.AUTOMATION_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --max-time 540 \
+            --retry 2 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer $AUTOMATION_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{"limit":2}' \
+            "${AUTOMATION_ENDPOINT%/}/api/telegram-bot?action=ops-sweep"

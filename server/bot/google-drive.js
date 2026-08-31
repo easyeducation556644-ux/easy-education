@@ -219,6 +219,23 @@ export async function browseGoogleDriveFolder(db, accountId, parentId = "") {
   }
 }
 
+export async function browseGoogleDriveTrash(db, accountId) {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const query = encodeURIComponent("trashed=true")
+  const fields = encodeURIComponent("files(id,name,mimeType,size,webViewLink,modifiedTime,trashed)")
+  const payload = await driveJson(token.access_token, `/files?q=${query}&fields=${fields}&pageSize=200&orderBy=modifiedTime desc`)
+  return {
+    accountId: account.id,
+    files: (payload.files || []).map((file) => ({
+      id: file.id, name: file.name, mimeType: file.mimeType,
+      isFolder: file.mimeType === "application/vnd.google-apps.folder",
+      size: Number(file.size || 0), webViewLink: file.webViewLink || null,
+      modifiedTime: file.modifiedTime || null, trashed: true,
+    })),
+  }
+}
+
 export async function createGoogleDriveFolder(db, accountId, parentId, name) {
   const account = await driveAccount(db, accountId)
   const token = await refreshAccessToken(account)
@@ -247,6 +264,57 @@ export async function trashGoogleDriveItem(db, accountId, fileId) {
     body: JSON.stringify({ trashed: true }),
   })
   return { id: String(fileId), trashed: true }
+}
+
+export async function restoreGoogleDriveItem(db, accountId, fileId) {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const item = await driveJson(token.access_token, `/files/${encodeURIComponent(String(fileId))}?fields=id,name,mimeType,webViewLink,trashed`, {
+    method: "PATCH",
+    body: JSON.stringify({ trashed: false }),
+  })
+  return { id: item.id, name: item.name, mimeType: item.mimeType, webViewLink: item.webViewLink || null, trashed: false }
+}
+
+export async function permanentlyDeleteGoogleDriveItem(db, accountId, fileId) {
+  const account = await driveAccount(db, accountId)
+  if (String(fileId) === String(account.rootFolderId)) throw new Error("The Easy Education root folder cannot be permanently deleted")
+  const token = await refreshAccessToken(account)
+  const response = await fetch(`${DRIVE_API}/files/${encodeURIComponent(String(fileId))}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  })
+  if (!response.ok && response.status !== 404) throw new Error(`Google Drive permanent delete failed (${response.status})`)
+  return { id: String(fileId), permanentlyDeleted: true }
+}
+
+export async function moveGoogleDriveItem(db, accountId, fileId, parentId) {
+  const account = await driveAccount(db, accountId)
+  const token = await refreshAccessToken(account)
+  const current = await driveJson(token.access_token, `/files/${encodeURIComponent(String(fileId))}?fields=id,name,parents,mimeType,webViewLink`)
+  const target = String(parentId || account.rootFolderId || "")
+  if (!target) throw new Error("Destination Drive folder is required")
+  const removeParents = (current.parents || []).filter((id) => id !== target).join(",")
+  const params = new URLSearchParams({ addParents: target, fields: "id,name,parents,mimeType,webViewLink" })
+  if (removeParents) params.set("removeParents", removeParents)
+  const item = await driveJson(token.access_token, `/files/${encodeURIComponent(String(fileId))}?${params}`, { method: "PATCH" })
+  return { id: item.id, name: item.name, parents: item.parents || [], mimeType: item.mimeType, webViewLink: item.webViewLink || null }
+}
+
+export async function setDefaultGoogleDriveAccount(db, accountId) {
+  const selected = await driveAccount(db, accountId)
+  const accounts = await listGoogleDriveAccounts(db)
+  await promoteDefault(db, selected, accounts)
+  return { id: selected.id, isDefault: true }
+}
+
+export async function disconnectGoogleDriveAccount(db, accountId) {
+  const selected = await driveAccount(db, accountId)
+  const accounts = await listGoogleDriveAccounts(db)
+  await db.collection(ACCOUNTS).doc(selected.id).delete()
+  const next = accounts.find((account) => account.id !== selected.id && account.status === "ready") || accounts.find((account) => account.id !== selected.id)
+  if (selected.isDefault && next) await promoteDefault(db, next, accounts.filter((account) => account.id !== selected.id))
+  return { id: selected.id, disconnected: true }
 }
 
 async function uploadResumable(accessToken, { name, mimeType = "application/octet-stream", bytes, parentId }) {
@@ -339,16 +407,28 @@ async function downloadResource(resource, sourceCookie = "") {
   const declaredSize = Number(response.headers.get("content-length") || 0)
   const maxBytes = Number(process.env.GOOGLE_DRIVE_MAX_RESOURCE_BYTES || 50 * 1024 * 1024)
   if (declaredSize > maxBytes) throw new Error(`Resource exceeds the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit`)
-  const contentType = response.headers.get("content-type")?.split(";")[0] || "application/octet-stream"
-  if (/^text\/html$/i.test(contentType)) throw new Error("The source returned an HTML page instead of a downloadable resource")
+  const declaredType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase()
+  if (/^text\/html$/i.test(declaredType)) throw new Error("The source returned an HTML page instead of a downloadable resource")
   const bytes = Buffer.from(await response.arrayBuffer())
   if (!bytes.length) throw new Error("Downloaded resource is empty")
   if (bytes.byteLength > maxBytes) throw new Error(`Resource exceeds the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit`)
+  const head = bytes.subarray(0, Math.min(bytes.length, 512)).toString("utf8").trimStart().toLowerCase()
+  if (head.startsWith("<!doctype html") || head.startsWith("<html") || head.includes("<head")) {
+    throw new Error("The source returned HTML content instead of a downloadable file")
+  }
+  const isPdf = bytes.subarray(0, 5).toString("ascii") === "%PDF-"
+  const contentType = isPdf
+    ? "application/pdf"
+    : declaredType && declaredType !== "undefined" && declaredType !== "null"
+      ? declaredType
+      : "application/octet-stream"
   const disposition = response.headers.get("content-disposition") || ""
   const dispositionName = /filename\*?=(?:UTF-8''|\")?([^";]+)/i.exec(disposition)?.[1]
   let urlName = ""
   try { urlName = decodeURIComponent(new URL(response.url).pathname.split("/").filter(Boolean).pop() || "") } catch {}
-  return { bytes, contentType, name: safeName(dispositionName || resource.label || urlName || "Class resource") }
+  const baseName = safeName(dispositionName || resource.label || urlName || "Class resource")
+  const name = isPdf && !/\.pdf$/i.test(baseName) ? `${baseName}.pdf` : baseName
+  return { bytes, contentType, name }
 }
 
 export async function persistResourceLinksToDrive(db, resources, context = {}) {
@@ -382,6 +462,9 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
         bytes: downloaded.bytes,
         parentId: folderId,
       })
+      const verified = await driveJson(token.access_token, `/files/${encodeURIComponent(uploaded.id)}?fields=id,name,size,mimeType,md5Checksum,webViewLink,trashed`)
+      if (verified.trashed) throw new Error("Uploaded Drive file was unexpectedly placed in trash")
+      if (Number(verified.size || 0) !== downloaded.bytes.byteLength) throw new Error("Uploaded Drive file size verification failed")
       await assetRef.set({
         status: "ready",
         platform: context.platform || "",
@@ -391,13 +474,14 @@ export async function persistResourceLinksToDrive(db, resources, context = {}) {
         label: resource.label || downloaded.name,
         driveAccountId: account.id,
         driveFileId: uploaded.id,
-        webViewLink: uploaded.webViewLink,
+        webViewLink: verified.webViewLink || uploaded.webViewLink,
         size: downloaded.bytes.byteLength,
-        mimeType: downloaded.contentType,
+        mimeType: verified.mimeType || downloaded.contentType,
+        md5Checksum: verified.md5Checksum || "",
         updatedAt: FieldValue.serverTimestamp(),
         ...(!existing.exists ? { createdAt: FieldValue.serverTimestamp() } : {}),
       }, { merge: true })
-      output.push({ label: resource.label || downloaded.name, url: uploaded.webViewLink, driveFileId: uploaded.id })
+      output.push({ label: resource.label || downloaded.name, url: verified.webViewLink || uploaded.webViewLink, driveFileId: uploaded.id, mimeType: verified.mimeType || downloaded.contentType, size: Number(verified.size || downloaded.bytes.byteLength) })
     } catch (error) {
       const storageError = String(error.message || error).slice(0, 500)
       await assetRef.set({

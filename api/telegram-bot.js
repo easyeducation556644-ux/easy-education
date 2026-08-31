@@ -11,8 +11,35 @@ import {
 } from "../server/bot/telegram.js"
 import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
 import { createSignedState, encryptSecret, stableId } from "../server/bot/crypto.js"
-import { browseGoogleDriveFolder, createGoogleDriveFolder, googleAuthorizationUrl, listGoogleDriveAccounts, renameGoogleDriveItem, trashGoogleDriveItem } from "../server/bot/google-drive.js"
+import {
+  browseGoogleDriveFolder,
+  browseGoogleDriveTrash,
+  createGoogleDriveFolder,
+  disconnectGoogleDriveAccount,
+  googleAuthorizationUrl,
+  listGoogleDriveAccounts,
+  moveGoogleDriveItem,
+  permanentlyDeleteGoogleDriveItem,
+  renameGoogleDriveItem,
+  restoreGoogleDriveItem,
+  setDefaultGoogleDriveAccount,
+  trashGoogleDriveItem,
+} from "../server/bot/google-drive.js"
 import { listUdvashCoursesV2, loginUdvashV2 } from "../server/bot/platforms/udvash-v2.js"
+import {
+  controlOpsTask,
+  createOpsPreview,
+  createOpsTask,
+  OPS_ACTIONS,
+  opsTaskDetail,
+  opsTaskSummaries,
+  opsSourceTree,
+  refreshOpsSourceAccount,
+  retryOpsFailures,
+  runOpsTaskBatch,
+  scanOpsSourceCourse,
+  sweepOpsTasks,
+} from "../server/ops/engine.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -27,17 +54,52 @@ function plainDate(value) {
   return value
 }
 
+async function eeCatalog(db) {
+  const cacheRef = db.collection("opsCatalogCache").doc("ee-tree-v1")
+  const cached = await cacheRef.get()
+  if (cached.exists && Number(cached.data().expiresAtMs || 0) > Date.now() && Array.isArray(cached.data().courses)) return cached.data().courses
+  const [coursesSnap, classesSnap, groupsSnap] = await Promise.all([
+    db.collection("courses").get(),
+    db.collection("classes").get(),
+    db.collection("classGroups").get(),
+  ])
+  const classes = classesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  const groups = groupsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+  const groupIds = new Set(groups.map((item) => item.id))
+  const courses = coursesSnap.docs.map((doc) => {
+    const item = doc.data(); const rows = classes.filter((row) => String(row.courseId || "") === doc.id)
+    const seen = new Map()
+    rows.forEach((row) => { const key = [row.sourcePlatform, row.sourceCourseId, row.sourceClassId].filter(Boolean).join(":"); if (key) seen.set(key, (seen.get(key) || 0) + 1) })
+    const duplicateCount = [...seen.values()].filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0)
+    const orphanedCount = rows.filter((row) => row.classGroupId && !groupIds.has(String(row.classGroupId))).length
+    const missingResourceCount = rows.filter((row) => !Array.isArray(row.resourceLinks) || row.resourceLinks.length === 0 || row.resourceLinks.some((resource) => resource?.storageStatus === "failed" || resource?.storageError)).length
+    const directSourceCount = rows.filter((row) => Array.isArray(row.resourceLinks) && row.resourceLinks.some((resource) => /udvash-unmesh/i.test(String(resource?.url || resource?.link || "")))).length
+    return {
+      id: doc.id,
+      title: item.title || item.name || "Untitled course",
+      type: item.type || "subject",
+      classCount: rows.length,
+      groups: groups.filter((group) => String(group.courseId || "") === doc.id).map((group) => ({ id: group.id, title: group.title || group.name || "Class card" })),
+      diagnostics: { duplicateCount, orphanedCount, missingResourceCount, directSourceCount, needsRefactor: duplicateCount + orphanedCount + missingResourceCount + directSourceCount > 0 },
+    }
+  }).sort((a, b) => a.title.localeCompare(b.title))
+  await cacheRef.set({ courses, expiresAtMs: Date.now() + 10 * 60 * 1000, updatedAt: FieldValue.serverTimestamp() })
+  return courses
+}
+
 async function studioOverview(db) {
-  const [accountsSnap, snapshotsSnap, mappingsSnap, jobsSnap, storageSnap] = await Promise.all([
+  const [accountsSnap, snapshotsSnap, mappingsSnap, jobsSnap, storageSnap, opsTasks, courses] = await Promise.all([
     db.collection("botPlatformAccounts").get(),
     db.collection("botSourceSnapshots").get(),
     db.collection("botCourseMappings").get(),
     db.collection("botJobs").orderBy("updatedAt", "desc").limit(30).get().catch(() => db.collection("botJobs").limit(30).get()),
     db.collection("botStorageAccounts").get(),
+    opsTaskSummaries(db),
+    eeCatalog(db),
   ])
   const accounts = accountsSnap.docs.map((doc) => {
     const item = doc.data()
-    return { id: doc.id, platform: item.platform, label: item.label || item.roll || "Source account", status: item.status || "saved", courseCount: Number(item.courseCount || 0) }
+    return { id: doc.id, platform: item.platform, label: item.label || item.roll || "Source account", roll: item.roll || "", status: item.status || "saved", courseCount: Number(item.courseCount || 0), courses: Array.isArray(item.courses) ? item.courses : [], lastError: item.lastError || "" }
   })
   const snapshots = snapshotsSnap.docs.map((doc) => {
     const item = doc.data()
@@ -50,11 +112,11 @@ async function studioOverview(db) {
   })
   const mappings = mappingsSnap.docs.map((doc) => {
     const item = doc.data()
-    return { id: doc.id, platform: item.platform, accountId: item.accountId, sourceCourseId: String(item.sourceCourseId || ""), sourceCourseTitle: item.sourceCourseTitle, sourceSectionKey: item.sourceSectionKey, sourceSectionTitle: item.sourceSectionTitle, eeCourseId: item.eeCourseId, eeCourseTitle: item.eeCourseTitle, destinationType: item.destinationType, classGroupId: item.classGroupId || null, selectedCount: Number(item.selectedCount || 0), readyCount: Number(item.readyCount || 0), pendingCount: Number(item.pendingCount || 0), updatedAt: plainDate(item.updatedAt) }
+    return { id: doc.id, platform: item.platform, accountId: item.accountId, sourceSnapshotId: item.sourceSnapshotId || null, sourceCourseId: String(item.sourceCourseId || ""), sourceCourseTitle: item.sourceCourseTitle, sourceSectionKey: item.sourceSectionKey, sourceSectionTitle: item.sourceSectionTitle, eeCourseId: item.eeCourseId, eeCourseTitle: item.eeCourseTitle, eeCourseType: item.eeCourseType || "subject", destinationType: item.destinationType, classGroupId: item.classGroupId || null, classGroupTitle: item.classGroupTitle || "", selectedCount: Number(item.selectedCount || 0), readyCount: Number(item.readyCount || 0), pendingCount: Number(item.pendingCount || 0), updatedAt: plainDate(item.updatedAt) }
   })
   const jobs = jobsSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, type: item.type, status: item.status, mappingId: item.mappingId || null, attempts: Number(item.attempts || 0), error: item.error || item.lastError || null, updatedAt: plainDate(item.updatedAt || item.createdAt) } })
   const storage = storageSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, provider: item.provider, email: item.email, displayName: item.displayName || item.email, status: item.status || "ready", isDefault: Boolean(item.isDefault), isFull: Boolean(item.isFull), quotaLimit: Number(item.quotaLimit || 0), quotaUsage: Number(item.quotaUsage || 0), rootFolderId: item.rootFolderId || null } })
-  return { accounts, snapshots, mappings, jobs, storage, updatedAt: new Date().toISOString() }
+  return { courses, accounts, snapshots, mappings, jobs, storage, opsTasks, updatedAt: new Date().toISOString() }
 }
 
 async function handleStudioRequest(req, res) {
@@ -72,7 +134,7 @@ async function handleStudioRequest(req, res) {
       const destinationType = destination.groupId ? "group" : "main"
       const id = stableId(snapshot.platform, snapshot.sourceCourseId, destination.courseId, source.sectionKey, destinationType, destination.groupId || "")
       await db.collection("botCourseMappings").doc(id).set({
-        platform: snapshot.platform, accountId: snapshot.accountId, sourceCourseId: String(snapshot.sourceCourseId), sourceCourseTitle: snapshot.sourceCourseTitle,
+        platform: snapshot.platform, accountId: snapshot.accountId, sourceSnapshotId: snapshotDoc.id, sourceCourseId: String(snapshot.sourceCourseId), sourceCourseTitle: snapshot.sourceCourseTitle,
         sourceSectionKey: String(source.sectionKey), sourceSectionTitle: source.sectionTitle || source.sectionKey,
         eeCourseId: String(destination.courseId), eeCourseTitle: destination.courseTitle, eeCourseType: destination.courseType || "subject",
         destinationType, classGroupId: destination.groupId || null, classGroupTitle: destination.groupTitle || "", snapshotCount: Number(snapshot.classCount || 0),
@@ -112,6 +174,7 @@ async function handleStudioRequest(req, res) {
       return res.status(200).json({ ok: true, mappingId, deleted: true })
     }
     if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId)) })
+    if (action === "studio-drive-trash") return res.status(200).json({ ok: true, ...(await browseGoogleDriveTrash(db, req.body?.accountId)) })
     if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId, req.body?.name) })
     if (action === "studio-drive-connect-url") {
       const telegramUserId = String(process.env.TELEGRAM_ADMIN_IDS || "").split(",").map((item) => item.trim()).find(Boolean)
@@ -121,6 +184,11 @@ async function handleStudioRequest(req, res) {
     }
     if (action === "studio-drive-rename") return res.status(200).json({ ok: true, item: await renameGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.name) })
     if (action === "studio-drive-delete") return res.status(200).json({ ok: true, item: await trashGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-restore") return res.status(200).json({ ok: true, item: await restoreGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-permanent-delete") return res.status(200).json({ ok: true, item: await permanentlyDeleteGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-move") return res.status(200).json({ ok: true, item: await moveGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.parentId) })
+    if (action === "studio-drive-default") return res.status(200).json({ ok: true, account: await setDefaultGoogleDriveAccount(db, req.body?.accountId) })
+    if (action === "studio-drive-disconnect") return res.status(200).json({ ok: true, account: await disconnectGoogleDriveAccount(db, req.body?.accountId) })
     if (action === "studio-refresh-storage") {
       const accounts = await listGoogleDriveAccounts(db, { refresh: true })
       return res.status(200).json({ ok: true, count: accounts.length })
@@ -131,20 +199,47 @@ async function handleStudioRequest(req, res) {
       const auth = await loginUdvashV2({ roll, password })
       const courses = await listUdvashCoursesV2(auth)
       const id = stableId("udvash-account", roll)
+      const compactCourses = courses.map((course) => ({ id: String(course.id), title: String(course.title || "Untitled course").slice(0, 180), type: course.type || "" }))
       await db.collection("botPlatformAccounts").doc(id).set({
         platform: "udvash", label, roll, passwordEncrypted: encryptSecret(password), cookieEncrypted: encryptSecret(auth.cookie || ""), tokenEncrypted: encryptSecret(auth.token || ""),
-        status: "ready", courseCount: courses.length, lastError: "", connectedBy: "content-studio", lastLoginAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
+        status: "ready", courseCount: compactCourses.length, courses: compactCourses, lastError: "", connectedBy: "content-studio", lastLoginAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
       }, { merge: true })
       return res.status(200).json({ ok: true, account: { id, label, roll, status: "ready", courseCount: courses.length } })
+    }
+    if (action === "studio-source-toggle") {
+      const id = String(req.body?.accountId || ""); const enabled = Boolean(req.body?.enabled)
+      if (!id) return res.status(400).json({ ok: false, error: "Source account is required" })
+      await db.collection("botPlatformAccounts").doc(id).set({ disabled: !enabled, status: enabled ? "ready" : "disabled", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      return res.status(200).json({ ok: true, accountId: id, status: enabled ? "ready" : "disabled" })
+    }
+    if (action === "studio-source-delete") {
+      const id = String(req.body?.accountId || "")
+      if (!id) return res.status(400).json({ ok: false, error: "Source account is required" })
+      const activeTasks = await db.collection("opsTasks").where("mapping.accountId", "==", id).limit(20).get().catch(() => ({ docs: [] }))
+      if (activeTasks.docs.some((doc) => ["queued", "running", "paused"].includes(String(doc.data().status || "")))) return res.status(409).json({ ok: false, error: "Cancel or finish this account's active tasks before deleting it" })
+      await db.collection("botPlatformAccounts").doc(id).delete()
+      return res.status(200).json({ ok: true, accountId: id, deleted: true })
     }
     if (action === "studio-stop-all") {
       const jobs = await db.collection("botJobs").limit(500).get(); const active = jobs.docs.filter((doc) => ["queued", "running"].includes(String(doc.data().status || "")))
       for (let start = 0; start < active.length; start += 400) { const batch = db.batch(); active.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, cancelledBy: "content-studio-stop-all", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
       const controls = await db.collection("botManualRepairControls").limit(100).get();
       for (const doc of controls.docs) await doc.ref.set({ cancelRequested: true, cancelEpochMs: Date.now(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      const ops = await db.collection("opsTasks").limit(500).get(); const activeOps = ops.docs.filter((doc) => ["queued", "running", "paused"].includes(String(doc.data().status || "")))
+      for (let start = 0; start < activeOps.length; start += 400) { const batch = db.batch(); activeOps.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, leaseExpiresAtMs: 0, current: null, cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
       await db.collection("botAutomationSettings").doc("schedule").set({ overall: { enabled: false }, platforms: { udvash: { enabled: false } }, pausedBy: "content-studio-stop-all", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-      return res.status(200).json({ ok: true, stoppedJobs: active.length, schedulerPaused: true })
+      return res.status(200).json({ ok: true, stoppedJobs: active.length + activeOps.length, schedulerPaused: true })
     }
+    if (action === "ops-preview") return res.status(200).json({ ok: true, preview: await createOpsPreview(db, req.body?.mappingId) })
+    if (action === "ops-create-task") return res.status(201).json({ ok: true, task: await createOpsTask(db, req.body || {}) })
+    if (action === "ops-worker") return res.status(200).json({ ok: true, task: await runOpsTaskBatch(db, req.body?.taskId || req.query?.taskId) })
+    if (action === "ops-control-task") return res.status(200).json({ ok: true, task: await controlOpsTask(db, req.body || {}) })
+    if (action === "ops-retry-failures") return res.status(201).json({ ok: true, task: await retryOpsFailures(db, req.body?.taskId, req.body?.name) })
+    if (action === "ops-task-detail") return res.status(200).json({ ok: true, ...(await opsTaskDetail(db, req.body?.taskId, req.body?.limit)) })
+    if (action === "ops-refresh-account") return res.status(200).json({ ok: true, ...(await refreshOpsSourceAccount(db, req.body?.accountId)) })
+    if (action === "ops-scan-course") return res.status(200).json({ ok: true, snapshot: await scanOpsSourceCourse(db, req.body?.accountId, req.body?.courseId) })
+    if (action === "ops-source-tree") return res.status(200).json({ ok: true, tree: await opsSourceTree(db, req.body?.snapshotId) })
+    if (action === "ops-sweep") return res.status(200).json({ ok: true, ...(await sweepOpsTasks(db, req.body?.limit || 2)) })
     return res.status(404).json({ ok: false, error: "Unknown studio action" })
   } catch (error) {
     console.error("Content Studio request failed:", error)
@@ -405,7 +500,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
-  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-drive-connect-url", "studio-drive-rename", "studio-drive-delete", "studio-refresh-storage", "studio-add-udvash", "studio-stop-all"].includes(requestAction(req))) return handleStudioRequest(req, res)
+  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-trash", "studio-drive-folder", "studio-drive-connect-url", "studio-drive-rename", "studio-drive-delete", "studio-drive-restore", "studio-drive-permanent-delete", "studio-drive-move", "studio-drive-default", "studio-drive-disconnect", "studio-refresh-storage", "studio-add-udvash", "studio-source-toggle", "studio-source-delete", "studio-stop-all"].includes(requestAction(req)) || OPS_ACTIONS.has(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
