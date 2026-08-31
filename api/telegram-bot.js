@@ -1,6 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore"
 import legacyHandler from "../server/telegram-bot-core.js"
-import { getAdminServices } from "./utils/firebase-admin.js"
+import { getAdminServices, getOperationsServices } from "./utils/firebase-admin.js"
 import {
   answerCallback,
   button,
@@ -54,14 +54,14 @@ function plainDate(value) {
   return value
 }
 
-async function eeCatalog(db) {
-  const cacheRef = db.collection("opsCatalogCache").doc("ee-tree-v1")
+async function eeCatalog(contentDb, opsDb) {
+  const cacheRef = opsDb.collection("opsCatalogCache").doc("ee-tree-v1")
   const cached = await cacheRef.get()
   if (cached.exists && Number(cached.data().expiresAtMs || 0) > Date.now() && Array.isArray(cached.data().courses)) return cached.data().courses
   const [coursesSnap, classesSnap, groupsSnap] = await Promise.all([
-    db.collection("courses").get(),
-    db.collection("classes").get(),
-    db.collection("classGroups").get(),
+    contentDb.collection("courses").get(),
+    contentDb.collection("classes").get(),
+    contentDb.collection("classGroups").get(),
   ])
   const classes = classesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
   const groups = groupsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
@@ -87,15 +87,15 @@ async function eeCatalog(db) {
   return courses
 }
 
-async function studioOverview(db) {
-  const [accountsSnap, snapshotsSnap, mappingsSnap, jobsSnap, storageSnap, opsTasks, courses] = await Promise.all([
-    db.collection("botPlatformAccounts").get(),
-    db.collection("botSourceSnapshots").get(),
-    db.collection("botCourseMappings").get(),
-    db.collection("botJobs").orderBy("updatedAt", "desc").limit(30).get().catch(() => db.collection("botJobs").limit(30).get()),
-    db.collection("botStorageAccounts").get(),
-    opsTaskSummaries(db),
-    eeCatalog(db),
+async function studioOverview(context) {
+  const { contentDb, opsDb } = context
+  const [accountsSnap, snapshotsSnap, mappingsSnap, storageSnap, opsTasks, courses] = await Promise.all([
+    opsDb.collection("botPlatformAccounts").get(),
+    opsDb.collection("botSourceSnapshots").get(),
+    opsDb.collection("botCourseMappings").get(),
+    opsDb.collection("botStorageAccounts").get(),
+    opsTaskSummaries(context),
+    eeCatalog(contentDb, opsDb),
   ])
   const accounts = accountsSnap.docs.map((doc) => {
     const item = doc.data()
@@ -114,26 +114,27 @@ async function studioOverview(db) {
     const item = doc.data()
     return { id: doc.id, platform: item.platform, accountId: item.accountId, sourceSnapshotId: item.sourceSnapshotId || null, sourceCourseId: String(item.sourceCourseId || ""), sourceCourseTitle: item.sourceCourseTitle, sourceSectionKey: item.sourceSectionKey, sourceSectionTitle: item.sourceSectionTitle, eeCourseId: item.eeCourseId, eeCourseTitle: item.eeCourseTitle, eeCourseType: item.eeCourseType || "subject", destinationType: item.destinationType, classGroupId: item.classGroupId || null, classGroupTitle: item.classGroupTitle || "", selectedCount: Number(item.selectedCount || 0), readyCount: Number(item.readyCount || 0), pendingCount: Number(item.pendingCount || 0), updatedAt: plainDate(item.updatedAt) }
   })
-  const jobs = jobsSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, type: item.type, status: item.status, mappingId: item.mappingId || null, attempts: Number(item.attempts || 0), error: item.error || item.lastError || null, updatedAt: plainDate(item.updatedAt || item.createdAt) } })
   const storage = storageSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, provider: item.provider, email: item.email, displayName: item.displayName || item.email, status: item.status || "ready", isDefault: Boolean(item.isDefault), isFull: Boolean(item.isFull), quotaLimit: Number(item.quotaLimit || 0), quotaUsage: Number(item.quotaUsage || 0), rootFolderId: item.rootFolderId || null } })
-  return { courses, accounts, snapshots, mappings, jobs, storage, opsTasks, updatedAt: new Date().toISOString() }
+  return { courses, accounts, snapshots, mappings, jobs: [], storage, opsTasks, database: { operations: "easy-education-operations", content: "easy-education-real" }, updatedAt: new Date().toISOString() }
 }
 
 async function handleStudioRequest(req, res) {
   if (!validAutomationSecret(req)) return res.status(401).json({ ok: false, error: "Invalid studio secret" })
-  const { db } = getAdminServices()
+  const { db: contentDb } = getAdminServices()
+  const { db: opsDb } = getOperationsServices()
+  const context = { contentDb, opsDb }
   const action = requestAction(req)
   try {
-    if (action === "studio-overview") return res.status(200).json({ ok: true, ...(await studioOverview(db)) })
+    if (action === "studio-overview") return res.status(200).json({ ok: true, ...(await studioOverview(context)) })
     if (action === "studio-map") {
       const source = req.body?.source || {}; const destination = req.body?.destination || {}
       if (!source.snapshotId || !source.sectionKey || !destination.courseId || !destination.courseTitle) return res.status(400).json({ ok: false, error: "Source section and destination course are required" })
-      const snapshotDoc = await db.collection("botSourceSnapshots").doc(String(source.snapshotId)).get()
+      const snapshotDoc = await opsDb.collection("botSourceSnapshots").doc(String(source.snapshotId)).get()
       if (!snapshotDoc.exists) return res.status(404).json({ ok: false, error: "Source snapshot was not found" })
       const snapshot = snapshotDoc.data()
       const destinationType = destination.groupId ? "group" : "main"
       const id = stableId(snapshot.platform, snapshot.sourceCourseId, destination.courseId, source.sectionKey, destinationType, destination.groupId || "")
-      await db.collection("botCourseMappings").doc(id).set({
+      await opsDb.collection("botCourseMappings").doc(id).set({
         platform: snapshot.platform, accountId: snapshot.accountId, sourceSnapshotId: snapshotDoc.id, sourceCourseId: String(snapshot.sourceCourseId), sourceCourseTitle: snapshot.sourceCourseTitle,
         sourceSectionKey: String(source.sectionKey), sourceSectionTitle: source.sectionTitle || source.sectionKey,
         eeCourseId: String(destination.courseId), eeCourseTitle: destination.courseTitle, eeCourseType: destination.courseType || "subject",
@@ -144,53 +145,53 @@ async function handleStudioRequest(req, res) {
     }
     if (action === "studio-sync") {
       const mappingId = String(req.body?.mappingId || "")
-      if (!mappingId || !(await db.collection("botCourseMappings").doc(mappingId).get()).exists) return res.status(404).json({ ok: false, error: "Mapping was not found" })
-      const jobRef = db.collection("botJobs").doc(`studio_${stableId(mappingId, Date.now())}`)
+      if (!mappingId || !(await opsDb.collection("botCourseMappings").doc(mappingId).get()).exists) return res.status(404).json({ ok: false, error: "Mapping was not found" })
+      const jobRef = opsDb.collection("botJobs").doc(`studio_${stableId(mappingId, Date.now())}`)
       await jobRef.set({ type: "scheduled_mapping_sync", status: "queued", mappingId, attempts: 0, requestedBy: "content-studio", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
       return res.status(202).json({ ok: true, jobId: jobRef.id, status: "queued" })
     }
     if (action === "studio-cancel-job") {
       const jobId = String(req.body?.jobId || "")
-      const ref = db.collection("botJobs").doc(jobId); const snap = await ref.get()
+      const ref = opsDb.collection("botJobs").doc(jobId); const snap = await ref.get()
       if (!snap.exists) return res.status(404).json({ ok: false, error: "Job was not found" })
       if (!["queued", "running"].includes(String(snap.data().status || ""))) return res.status(409).json({ ok: false, error: "Only queued or running jobs can be cancelled" })
       await ref.set({ status: "cancelled", cancelledBy: "content-studio", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
       return res.status(200).json({ ok: true, jobId, status: "cancelled" })
     }
     if (action === "studio-retry-job") {
-      const oldId = String(req.body?.jobId || ""); const old = await db.collection("botJobs").doc(oldId).get()
+      const oldId = String(req.body?.jobId || ""); const old = await opsDb.collection("botJobs").doc(oldId).get()
       if (!old.exists) return res.status(404).json({ ok: false, error: "Job was not found" })
       const previous = old.data(); if (!previous.mappingId) return res.status(400).json({ ok: false, error: "This job has no course mapping" })
-      const ref = db.collection("botJobs").doc(`studio_retry_${stableId(oldId, Date.now())}`)
+      const ref = opsDb.collection("botJobs").doc(`studio_retry_${stableId(oldId, Date.now())}`)
       await ref.set({ type: "scheduled_mapping_sync", status: "queued", mappingId: previous.mappingId, platform: previous.platform || null, attempts: 0, retriedFrom: oldId, requestedBy: "content-studio", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
       return res.status(202).json({ ok: true, jobId: ref.id, status: "queued" })
     }
     if (action === "studio-delete-mapping") {
       const mappingId = String(req.body?.mappingId || "")
       if (!mappingId) return res.status(400).json({ ok: false, error: "Mapping is required" })
-      const active = await db.collection("botJobs").where("mappingId", "==", mappingId).limit(30).get()
+      const active = await opsDb.collection("botJobs").where("mappingId", "==", mappingId).limit(30).get()
       if (active.docs.some((doc) => ["queued", "running"].includes(String(doc.data().status || "")))) return res.status(409).json({ ok: false, error: "Cancel the active job before deleting this mapping" })
-      await db.collection("botCourseMappings").doc(mappingId).delete()
+      await opsDb.collection("botCourseMappings").doc(mappingId).delete()
       return res.status(200).json({ ok: true, mappingId, deleted: true })
     }
-    if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId)) })
-    if (action === "studio-drive-trash") return res.status(200).json({ ok: true, ...(await browseGoogleDriveTrash(db, req.body?.accountId)) })
-    if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId, req.body?.name) })
+    if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(opsDb, req.body?.accountId, req.body?.parentId)) })
+    if (action === "studio-drive-trash") return res.status(200).json({ ok: true, ...(await browseGoogleDriveTrash(opsDb, req.body?.accountId)) })
+    if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(opsDb, req.body?.accountId, req.body?.parentId, req.body?.name) })
     if (action === "studio-drive-connect-url") {
       const telegramUserId = String(process.env.TELEGRAM_ADMIN_IDS || "").split(",").map((item) => item.trim()).find(Boolean)
       if (!telegramUserId || !isAllowedTelegramUser(telegramUserId)) return res.status(500).json({ ok: false, error: "No approved owner identity is configured for Drive OAuth" })
       const state = createSignedState({ purpose: "google-drive", telegramUserId, requestedBy: "content-studio" })
       return res.status(200).json({ ok: true, url: googleAuthorizationUrl(state) })
     }
-    if (action === "studio-drive-rename") return res.status(200).json({ ok: true, item: await renameGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.name) })
-    if (action === "studio-drive-delete") return res.status(200).json({ ok: true, item: await trashGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
-    if (action === "studio-drive-restore") return res.status(200).json({ ok: true, item: await restoreGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
-    if (action === "studio-drive-permanent-delete") return res.status(200).json({ ok: true, item: await permanentlyDeleteGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
-    if (action === "studio-drive-move") return res.status(200).json({ ok: true, item: await moveGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.parentId) })
-    if (action === "studio-drive-default") return res.status(200).json({ ok: true, account: await setDefaultGoogleDriveAccount(db, req.body?.accountId) })
-    if (action === "studio-drive-disconnect") return res.status(200).json({ ok: true, account: await disconnectGoogleDriveAccount(db, req.body?.accountId) })
+    if (action === "studio-drive-rename") return res.status(200).json({ ok: true, item: await renameGoogleDriveItem(opsDb, req.body?.accountId, req.body?.fileId, req.body?.name) })
+    if (action === "studio-drive-delete") return res.status(200).json({ ok: true, item: await trashGoogleDriveItem(opsDb, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-restore") return res.status(200).json({ ok: true, item: await restoreGoogleDriveItem(opsDb, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-permanent-delete") return res.status(200).json({ ok: true, item: await permanentlyDeleteGoogleDriveItem(opsDb, req.body?.accountId, req.body?.fileId) })
+    if (action === "studio-drive-move") return res.status(200).json({ ok: true, item: await moveGoogleDriveItem(opsDb, req.body?.accountId, req.body?.fileId, req.body?.parentId) })
+    if (action === "studio-drive-default") return res.status(200).json({ ok: true, account: await setDefaultGoogleDriveAccount(opsDb, req.body?.accountId) })
+    if (action === "studio-drive-disconnect") return res.status(200).json({ ok: true, account: await disconnectGoogleDriveAccount(opsDb, req.body?.accountId) })
     if (action === "studio-refresh-storage") {
-      const accounts = await listGoogleDriveAccounts(db, { refresh: true })
+      const accounts = await listGoogleDriveAccounts(opsDb, { refresh: true })
       return res.status(200).json({ ok: true, count: accounts.length })
     }
     if (action === "studio-add-udvash") {
@@ -200,7 +201,7 @@ async function handleStudioRequest(req, res) {
       const courses = await listUdvashCoursesV2(auth)
       const id = stableId("udvash-account", roll)
       const compactCourses = courses.map((course) => ({ id: String(course.id), title: String(course.title || "Untitled course").slice(0, 180), type: course.type || "" }))
-      await db.collection("botPlatformAccounts").doc(id).set({
+      await opsDb.collection("botPlatformAccounts").doc(id).set({
         platform: "udvash", label, roll, passwordEncrypted: encryptSecret(password), cookieEncrypted: encryptSecret(auth.cookie || ""), tokenEncrypted: encryptSecret(auth.token || ""),
         status: "ready", courseCount: compactCourses.length, courses: compactCourses, lastError: "", connectedBy: "content-studio", lastLoginAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
       }, { merge: true })
@@ -209,41 +210,43 @@ async function handleStudioRequest(req, res) {
     if (action === "studio-source-toggle") {
       const id = String(req.body?.accountId || ""); const enabled = Boolean(req.body?.enabled)
       if (!id) return res.status(400).json({ ok: false, error: "Source account is required" })
-      await db.collection("botPlatformAccounts").doc(id).set({ disabled: !enabled, status: enabled ? "ready" : "disabled", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      await opsDb.collection("botPlatformAccounts").doc(id).set({ disabled: !enabled, status: enabled ? "ready" : "disabled", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
       return res.status(200).json({ ok: true, accountId: id, status: enabled ? "ready" : "disabled" })
     }
     if (action === "studio-source-delete") {
       const id = String(req.body?.accountId || "")
       if (!id) return res.status(400).json({ ok: false, error: "Source account is required" })
-      const activeTasks = await db.collection("opsTasks").where("mapping.accountId", "==", id).limit(20).get().catch(() => ({ docs: [] }))
+      const activeTasks = await opsDb.collection("opsTasks").where("mapping.accountId", "==", id).limit(20).get().catch(() => ({ docs: [] }))
       if (activeTasks.docs.some((doc) => ["queued", "running", "paused"].includes(String(doc.data().status || "")))) return res.status(409).json({ ok: false, error: "Cancel or finish this account's active tasks before deleting it" })
-      await db.collection("botPlatformAccounts").doc(id).delete()
+      await opsDb.collection("botPlatformAccounts").doc(id).delete()
       return res.status(200).json({ ok: true, accountId: id, deleted: true })
     }
     if (action === "studio-stop-all") {
-      const jobs = await db.collection("botJobs").limit(500).get(); const active = jobs.docs.filter((doc) => ["queued", "running"].includes(String(doc.data().status || "")))
-      for (let start = 0; start < active.length; start += 400) { const batch = db.batch(); active.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, cancelledBy: "content-studio-stop-all", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
-      const controls = await db.collection("botManualRepairControls").limit(100).get();
+      const jobs = await contentDb.collection("botJobs").limit(500).get(); const active = jobs.docs.filter((doc) => ["queued", "running"].includes(String(doc.data().status || "")))
+      for (let start = 0; start < active.length; start += 400) { const batch = contentDb.batch(); active.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, cancelledBy: "content-studio-stop-all", cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
+      const controls = await contentDb.collection("botManualRepairControls").limit(100).get();
       for (const doc of controls.docs) await doc.ref.set({ cancelRequested: true, cancelEpochMs: Date.now(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-      const ops = await db.collection("opsTasks").limit(500).get(); const activeOps = ops.docs.filter((doc) => ["queued", "running", "paused"].includes(String(doc.data().status || "")))
-      for (let start = 0; start < activeOps.length; start += 400) { const batch = db.batch(); activeOps.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, leaseExpiresAtMs: 0, current: null, cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
-      await db.collection("botAutomationSettings").doc("schedule").set({ overall: { enabled: false }, platforms: { udvash: { enabled: false } }, pausedBy: "content-studio-stop-all", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+      const ops = await opsDb.collection("opsTasks").limit(500).get(); const activeOps = ops.docs.filter((doc) => ["queued", "running", "paused"].includes(String(doc.data().status || "")))
+      for (let start = 0; start < activeOps.length; start += 400) { const batch = opsDb.batch(); activeOps.slice(start, start + 400).forEach((doc) => batch.set(doc.ref, { status: "cancelled", cancelRequested: true, leaseExpiresAtMs: 0, current: null, cancelledAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })); await batch.commit() }
+      await contentDb.collection("botAutomationSettings").doc("schedule").set({ overall: { enabled: false }, platforms: { udvash: { enabled: false } }, pausedBy: "content-studio-stop-all", updatedAt: FieldValue.serverTimestamp() }, { merge: true })
       return res.status(200).json({ ok: true, stoppedJobs: active.length + activeOps.length, schedulerPaused: true })
     }
-    if (action === "ops-preview") return res.status(200).json({ ok: true, preview: await createOpsPreview(db, req.body?.mappingId) })
-    if (action === "ops-create-task") return res.status(201).json({ ok: true, task: await createOpsTask(db, req.body || {}) })
-    if (action === "ops-worker") return res.status(200).json({ ok: true, task: await runOpsTaskBatch(db, req.body?.taskId || req.query?.taskId) })
-    if (action === "ops-control-task") return res.status(200).json({ ok: true, task: await controlOpsTask(db, req.body || {}) })
-    if (action === "ops-retry-failures") return res.status(201).json({ ok: true, task: await retryOpsFailures(db, req.body?.taskId, req.body?.name) })
-    if (action === "ops-task-detail") return res.status(200).json({ ok: true, ...(await opsTaskDetail(db, req.body?.taskId, req.body?.limit)) })
-    if (action === "ops-refresh-account") return res.status(200).json({ ok: true, ...(await refreshOpsSourceAccount(db, req.body?.accountId)) })
-    if (action === "ops-scan-course") return res.status(200).json({ ok: true, snapshot: await scanOpsSourceCourse(db, req.body?.accountId, req.body?.courseId) })
-    if (action === "ops-source-tree") return res.status(200).json({ ok: true, tree: await opsSourceTree(db, req.body?.snapshotId) })
-    if (action === "ops-sweep") return res.status(200).json({ ok: true, ...(await sweepOpsTasks(db, req.body?.limit || 2)) })
+    if (action === "ops-preview") return res.status(200).json({ ok: true, preview: await createOpsPreview(context, req.body?.mappingId) })
+    if (action === "ops-create-task") return res.status(201).json({ ok: true, task: await createOpsTask(context, req.body || {}) })
+    if (action === "ops-worker") return res.status(200).json({ ok: true, task: await runOpsTaskBatch(context, req.body?.taskId || req.query?.taskId) })
+    if (action === "ops-control-task") return res.status(200).json({ ok: true, task: await controlOpsTask(context, req.body || {}) })
+    if (action === "ops-retry-failures") return res.status(201).json({ ok: true, task: await retryOpsFailures(context, req.body?.taskId, req.body?.name) })
+    if (action === "ops-task-detail") return res.status(200).json({ ok: true, ...(await opsTaskDetail(context, req.body?.taskId, req.body?.limit)) })
+    if (action === "ops-refresh-account") return res.status(200).json({ ok: true, ...(await refreshOpsSourceAccount(context, req.body?.accountId)) })
+    if (action === "ops-scan-course") return res.status(200).json({ ok: true, snapshot: await scanOpsSourceCourse(context, req.body?.accountId, req.body?.courseId) })
+    if (action === "ops-source-tree") return res.status(200).json({ ok: true, tree: await opsSourceTree(context, req.body?.snapshotId) })
+    if (action === "ops-sweep") return res.status(200).json({ ok: true, ...(await sweepOpsTasks(context, req.body?.limit || 2)) })
     return res.status(404).json({ ok: false, error: "Unknown studio action" })
   } catch (error) {
     console.error("Content Studio request failed:", error)
-    return res.status(500).json({ ok: false, error: error.message || "Content Studio request failed" })
+    const quota = error?.code === 8 || error?.code === "RESOURCE_EXHAUSTED" || /RESOURCE_EXHAUSTED|Quota exceeded/i.test(String(error?.message || ""))
+    const status = quota ? 429 : Number(error?.statusCode || 500)
+    return res.status(status).json({ ok: false, code: quota ? "DATABASE_QUOTA_EXHAUSTED" : error?.code || "STUDIO_ERROR", error: quota ? "Database quota is temporarily exhausted. No task was created; cached data is still safe." : error.message || "Content Studio request failed" })
   }
 }
 

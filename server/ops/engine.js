@@ -19,6 +19,11 @@ const BATCH_SIZE = 5
 const LEASE_MS = 270_000
 const PUBLIC_SYNC_FEED_LIMIT = 1000
 
+function stores(value) {
+  if (value?.opsDb && value?.contentDb) return value
+  return { opsDb: value, contentDb: value }
+}
+
 const now = () => FieldValue.serverTimestamp()
 const array = (value) => Array.isArray(value) ? value.filter(Boolean) : value ? [value] : []
 const text = (value, limit = 500) => {
@@ -220,7 +225,8 @@ async function saveSnapshot(db, account, course, snapshot) {
   return { id, classCount: classes.length, sections: array(snapshot.sections) }
 }
 
-export async function refreshOpsSourceAccount(db, accountId) {
+export async function refreshOpsSourceAccount(context, accountId) {
+  const { opsDb: db } = stores(context)
   const account = await sourceAccount(db, accountId)
   const courses = await withAuth(db, account, (auth) => listUdvashCoursesV2(auth))
   const compact = courses.map((course) => ({ id: String(course.id), title: text(course.title, 180), type: course.type || "" }))
@@ -228,7 +234,8 @@ export async function refreshOpsSourceAccount(db, accountId) {
   return { accountId: account.id, courses: compact }
 }
 
-export async function scanOpsSourceCourse(db, accountId, courseId) {
+export async function scanOpsSourceCourse(context, accountId, courseId) {
+  const { opsDb: db } = stores(context)
   const account = await sourceAccount(db, accountId)
   let courses = array(account.courses)
   if (!courses.length) courses = (await refreshOpsSourceAccount(db, account.id)).courses
@@ -238,7 +245,8 @@ export async function scanOpsSourceCourse(db, accountId, courseId) {
   return saveSnapshot(db, account, course, snapshot)
 }
 
-export async function opsSourceTree(db, snapshotId) {
+export async function opsSourceTree(context, snapshotId) {
+  const { opsDb: db } = stores(context)
   const snapshot = await loadSnapshot(db, snapshotId)
   const sections = new Map()
   for (const item of array(snapshot.classes)) {
@@ -285,18 +293,19 @@ function previewItem(sourceClass, existingForSource, mapping) {
   }
 }
 
-export async function createOpsPreview(db, mappingId) {
-  const mapping = await loadMapping(db, mappingId)
+export async function createOpsPreview(context, mappingId) {
+  const { opsDb, contentDb } = stores(context)
+  const mapping = await loadMapping(opsDb, mappingId)
   let snapshotId = mapping.sourceSnapshotId || ""
   if (!snapshotId) {
-    const candidates = await db.collection(SNAPSHOTS).where("accountId", "==", String(mapping.accountId || "")).get()
+    const candidates = await opsDb.collection(SNAPSHOTS).where("accountId", "==", String(mapping.accountId || "")).get()
     const match = candidates.docs.find((doc) => String(doc.data().sourceCourseId || "") === String(mapping.sourceCourseId || ""))
     snapshotId = match?.id || ""
   }
   const [snapshot, existing, groups] = await Promise.all([
-    loadSnapshot(db, snapshotId),
-    existingClasses(db, mapping.eeCourseId),
-    db.collection("classGroups").where("courseId", "==", String(mapping.eeCourseId)).get(),
+    loadSnapshot(opsDb, snapshotId),
+    existingClasses(contentDb, mapping.eeCourseId),
+    contentDb.collection("classGroups").where("courseId", "==", String(mapping.eeCourseId)).get(),
   ])
   const source = sourceClassesForMapping(snapshot, mapping)
   const existingBySource = new Map()
@@ -322,9 +331,16 @@ export async function createOpsPreview(db, mappingId) {
     estimatedReads: items.length * 2 + 10,
     estimatedWrites: items.length * 3 + 20,
     estimatedUploads: items.filter((item) => item.audit.needsRepair).length,
+    eligible: {
+      audit: items.length,
+      sync: items.length,
+      resourceRepair: items.filter((item) => item.destinationClassId && item.audit.needsRepair).length,
+      directLinkMigration: items.filter((item) => item.destinationClassId && item.issues.includes("DIRECT_SOURCE_LINK")).length,
+      duplicateCleanup: items.filter((item) => item.issues.includes("DUPLICATE_CLASS")).length,
+    },
   }
   const id = `preview_${stableId(mappingId, Date.now())}`
-  await db.collection(PREVIEWS).doc(id).set({
+  await opsDb.collection(PREVIEWS).doc(id).set({
     mappingId,
     mapping: {
       platform: mapping.platform,
@@ -354,21 +370,37 @@ function taskItemForType(item, type) {
   if (type === "audit") return true
   if (type === "sync") return true
   if (type === "duplicate-cleanup") return item.issues.includes("DUPLICATE_CLASS")
+  if (type === "direct-link-migration") return Boolean(item.destinationClassId) && item.issues.includes("DIRECT_SOURCE_LINK")
   return Boolean(item.destinationClassId) && item.audit.needsRepair
 }
 
-export async function createOpsTask(db, { previewId, name, type = "resource-repair" }) {
+export async function createOpsTask(context, { previewId, name, type = "resource-repair" }) {
+  const { opsDb } = stores(context)
   const cleanName = text(name, 120)
   if (cleanName.length < 3) throw new Error("Task name must contain at least 3 characters")
   if (!new Set(["audit", "sync", "resource-repair", "direct-link-migration", "duplicate-cleanup"]).has(type)) throw new Error("Unsupported task type")
-  const previewSnap = await db.collection(PREVIEWS).doc(String(previewId || "")).get()
+  const previewSnap = await opsDb.collection(PREVIEWS).doc(String(previewId || "")).get()
   if (!previewSnap.exists) throw new Error("Preview was not found or has expired")
   const preview = previewSnap.data()
   const selected = array(preview.items).filter((item) => taskItemForType(item, type))
+  if (type !== "audit" && selected.length === 0) {
+    const error = new Error(type === "resource-repair"
+      ? "No matched Easy Education classes need repair. Choose Import and sync when the source classes are new."
+      : `No classes are eligible for ${type.replaceAll("-", " ")}.`)
+    error.code = "NO_ELIGIBLE_ITEMS"
+    error.statusCode = 409
+    throw error
+  }
+  if (selected.length > 450) {
+    const error = new Error("This task is larger than the safe atomic limit. Select a smaller source section.")
+    error.code = "TASK_TOO_LARGE"
+    error.statusCode = 409
+    throw error
+  }
   const id = `task_${stableId(preview.mappingId, type, cleanName, Date.now())}`
-  const ref = db.collection(TASKS).doc(id)
-  const immediateComplete = type === "audit" || selected.length === 0
-  await ref.set({
+  const ref = opsDb.collection(TASKS).doc(id)
+  const immediateComplete = type === "audit"
+  const taskData = {
     name: cleanName,
     type,
     status: immediateComplete ? "completed" : "queued",
@@ -388,14 +420,17 @@ export async function createOpsTask(db, { previewId, name, type = "resource-repa
     createdAt: now(),
     updatedAt: now(),
     ...(immediateComplete ? { completedAt: now() } : {}),
-  })
-  for (let start = 0; start < selected.length; start += 350) {
-    const batch = db.batch()
-    selected.slice(start, start + 350).forEach((item, offset) => {
-      const itemId = `${String(start + offset).padStart(5, "0")}_${stableId(item.sourceClassId)}`
+  }
+  if (immediateComplete) {
+    await ref.set(taskData)
+  } else {
+    const batch = opsDb.batch()
+    batch.set(ref, taskData)
+    selected.forEach((item, index) => {
+      const itemId = `${String(index).padStart(5, "0")}_${stableId(item.sourceClassId)}`
       batch.set(ref.collection("items").doc(itemId), {
         ...item,
-        order: start + offset,
+        order: index,
         status: "pending",
         attempts: 0,
         createdAt: now(),
@@ -411,7 +446,7 @@ function event(level, message, extra = {}) {
   return { at: new Date().toISOString(), level, message: text(message, 220), ...extra }
 }
 
-async function publishClassChanges(db, classIds) {
+async function publishClassChanges(db, classIds, opsDb = db) {
   const ids = [...new Set(array(classIds).map(String).filter(Boolean))]
   if (!ids.length) return
   const ref = db.collection("settings").doc("contentSync")
@@ -423,7 +458,7 @@ async function publishClassChanges(db, classIds) {
     const next = ids.map((docId, index) => ({ eventId: `classes:${docId}:ops-${stamp.toString(36)}-${index}`, collection: "classes", docId, action: "changed", scope: "public", seq: ++seq, createdAt: stamp }))
     transaction.set(ref, { type: "content-sync", seq, events: [...array(current.events), ...next].slice(-PUBLIC_SYNC_FEED_LIMIT), updatedAt: stamp }, { merge: true })
   })
-  await db.collection("opsCatalogCache").doc("ee-tree-v1").delete().catch(() => {})
+  await opsDb.collection("opsCatalogCache").doc("ee-tree-v1").delete().catch(() => {})
 }
 
 async function claimTask(db, taskId) {
@@ -466,7 +501,7 @@ function cleanResources(value) {
   })).filter((item) => item.label && item.url)
 }
 
-async function processDuplicateCleanup(db, task, item) {
+async function processDuplicateCleanup(db, opsDb, task, item) {
   const ids = array(item.duplicateClassIds)
   if (ids.length < 2) return { kind: "skipped", message: "No duplicate records remain" }
   const canonical = item.destinationClassId || ids[0]
@@ -480,11 +515,11 @@ async function processDuplicateCleanup(db, task, item) {
     updatedAt: now(),
   }, { merge: true }))
   await batch.commit()
-  await publishClassChanges(db, quarantined)
+  await publishClassChanges(db, quarantined, opsDb)
   return { kind: "success", message: `${quarantined.length} duplicate class record(s) quarantined`, classId: canonical, quarantined }
 }
 
-async function processMediaItem(db, task, item, mediaResult, mapping) {
+async function processMediaItem(db, opsDb, task, item, mediaResult, mapping) {
   if (mediaResult?.error) throw new Error(mediaResult.error)
   const media = mediaResult?.media || {}
   const resources = cleanResources(media.resourceLinks)
@@ -539,7 +574,7 @@ async function processMediaItem(db, task, item, mediaResult, mapping) {
     updatedAt: now(),
   }
   await ref.set(patch, { merge: true })
-  await publishClassChanges(db, [classId])
+  await publishClassChanges(db, [classId], opsDb)
   return {
     kind: "success",
     message: before.exists ? `${permanent.length} resource link(s) updated` : `Class created with ${permanent.length} Drive resource(s)`,
@@ -570,10 +605,11 @@ async function finishItem(task, item, result, error) {
   return event(skipped ? "info" : "success", `${item.title}: ${result.message}`, { itemId: item.id, classId: result.classId || item.destinationClassId || null })
 }
 
-export async function runOpsTaskBatch(db, taskId) {
-  const task = await claimTask(db, taskId)
+export async function runOpsTaskBatch(context, taskId) {
+  const { opsDb, contentDb } = stores(context)
+  const task = await claimTask(opsDb, taskId)
   if (task.terminal || task.busy) return { id: task.id, status: task.status, terminal: Boolean(task.terminal), busy: Boolean(task.busy) }
-  const items = await claimItems(db, task)
+  const items = await claimItems(opsDb, task)
   if (!items.length) {
     const fresh = await task.ref.get()
     const data = fresh.data()
@@ -582,21 +618,21 @@ export async function runOpsTaskBatch(db, taskId) {
     await task.ref.set({ status, leaseExpiresAtMs: 0, current: null, updatedAt: now(), ...(complete ? { completedAt: now() } : {}) }, { merge: true })
     return { id: task.id, status, terminal: complete }
   }
-  const mapping = task.mapping || (await loadMapping(db, task.mappingId))
+  const mapping = task.mapping || (await loadMapping(opsDb, task.mappingId))
   const current = items.map((item) => ({ itemId: item.id, title: item.title, sourceClassId: item.sourceClassId, subject: item.subjectTitle, chapter: item.chapterTitle }))
   await task.ref.set({ current, updatedAt: now() }, { merge: true })
   let events = []
   if (task.type === "duplicate-cleanup") {
     for (const item of items) {
-      try { events.push(await finishItem(task, item, await processDuplicateCleanup(db, task, item), null)) }
+      try { events.push(await finishItem(task, item, await processDuplicateCleanup(contentDb, opsDb, task, item), null)) }
       catch (error) { events.push(await finishItem(task, item, null, error)) }
     }
   } else {
-    const account = await sourceAccount(db, mapping.accountId)
+    const account = await sourceAccount(opsDb, mapping.accountId)
     let mediaById = new Map()
     let batchError = null
     try {
-      const results = await withAuth(db, account, async (auth) => {
+      const results = await withAuth(opsDb, account, async (auth) => {
         const media = await getUdvashClassMediaBulk(auth, items.map((item) => item.sourceClass), 3)
         const stored = await Promise.all(media.map(async (result) => {
           if (!result?.media || result.error) return result
@@ -605,7 +641,7 @@ export async function runOpsTaskBatch(db, taskId) {
             ...result,
             media: {
               ...result.media,
-              resourceLinks: await persistResourceLinksToDrive(db, cleanResources(result.media.resourceLinks), {
+              resourceLinks: await persistResourceLinksToDrive(opsDb, cleanResources(result.media.resourceLinks), {
                 platform: mapping.platform,
                 sourceCourseId: mapping.sourceCourseId,
                 sourceCourseTitle: mapping.sourceCourseTitle,
@@ -624,7 +660,7 @@ export async function runOpsTaskBatch(db, taskId) {
     for (const item of items) {
       try {
         if (batchError) throw batchError
-        const result = await processMediaItem(db, task, item, mediaById.get(String(item.sourceClassId || "")), mapping)
+        const result = await processMediaItem(contentDb, opsDb, task, item, mediaById.get(String(item.sourceClassId || "")), mapping)
         events.push(await finishItem(task, item, result, null))
       } catch (error) { events.push(await finishItem(task, item, null, error)) }
     }
@@ -638,8 +674,9 @@ export async function runOpsTaskBatch(db, taskId) {
   return { id: task.id, status, terminal: complete, processed: Number(data.processed || 0), total: Number(data.total || 0), events }
 }
 
-export async function sweepOpsTasks(db, limit = 2) {
-  const snap = await db.collection(TASKS).limit(40).get()
+export async function sweepOpsTasks(context, limit = 2) {
+  const { opsDb } = stores(context)
+  const snap = await opsDb.collection(TASKS).limit(40).get()
   const candidates = snap.docs
     .filter((doc) => {
       const item = doc.data()
@@ -647,11 +684,12 @@ export async function sweepOpsTasks(db, limit = 2) {
     })
     .sort((a, b) => timestampMs(a.data().updatedAt) - timestampMs(b.data().updatedAt))
     .slice(0, Math.max(1, Math.min(3, Number(limit) || 2)))
-  const results = await Promise.all(candidates.map((doc) => runOpsTaskBatch(db, doc.id).catch((error) => ({ id: doc.id, error: text(error?.message || error) }))))
+  const results = await Promise.all(candidates.map((doc) => runOpsTaskBatch(context, doc.id).catch((error) => ({ id: doc.id, error: text(error?.message || error) }))))
   return { found: candidates.length, results }
 }
 
-export async function controlOpsTask(db, { taskId, command }) {
+export async function controlOpsTask(context, { taskId, command }) {
+  const { opsDb: db } = stores(context)
   const ref = db.collection(TASKS).doc(String(taskId || ""))
   const snap = await ref.get()
   if (!snap.exists) throw new Error("Task was not found")
@@ -667,7 +705,8 @@ export async function controlOpsTask(db, { taskId, command }) {
   return { id: snap.id, status: command === "resume" ? "queued" : command === "pause" ? "paused" : "cancelled" }
 }
 
-export async function retryOpsFailures(db, taskId, name = "") {
+export async function retryOpsFailures(context, taskId, name = "") {
+  const { opsDb: db } = stores(context)
   const source = await db.collection(TASKS).doc(String(taskId || "")).get()
   if (!source.exists) throw new Error("Task was not found")
   const failed = await source.ref.collection("items").where("status", "==", "failed").get()
@@ -698,7 +737,8 @@ export async function retryOpsFailures(db, taskId, name = "") {
   return { id, status: "queued", total: failed.size }
 }
 
-export async function opsTaskDetail(db, taskId, limit = 100) {
+export async function opsTaskDetail(context, taskId, limit = 100) {
+  const { opsDb: db } = stores(context)
   const snap = await db.collection(TASKS).doc(String(taskId || "")).get()
   if (!snap.exists) throw new Error("Task was not found")
   const items = await snap.ref.collection("items").orderBy("order", "asc").limit(Math.max(1, Math.min(200, Number(limit) || 100))).get()
@@ -708,9 +748,10 @@ export async function opsTaskDetail(db, taskId, limit = 100) {
   }
 }
 
-export async function opsTaskSummaries(db) {
+export async function opsTaskSummaries(context) {
+  const { opsDb: db } = stores(context)
   const snap = await db.collection(TASKS).orderBy("updatedAt", "desc").limit(80).get().catch(() => db.collection(TASKS).limit(80).get())
-  return snap.docs.map((doc) => {
+  return snap.docs.filter((doc) => !(doc.data().type !== "audit" && Number(doc.data().total || 0) === 0 && doc.data().status === "completed")).map((doc) => {
     const item = doc.data()
     return {
       id: doc.id,

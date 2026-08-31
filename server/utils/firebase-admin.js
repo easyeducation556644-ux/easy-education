@@ -4,6 +4,7 @@ import { getFirestore } from "firebase-admin/firestore"
 
 const DEFAULT_PROJECT_ID = "easy-education-real"
 const DEFAULT_APP_NAME = "[DEFAULT]"
+const OPERATIONS_APP_NAME = "easy-education-operations"
 const LIMITED_ADMIN_MODES = new Set(["limited", "custom"])
 
 function getServiceAccount() {
@@ -23,6 +24,18 @@ function getServiceAccount() {
     }
   }
 
+  return null
+}
+
+function getOperationsServiceAccount() {
+  if (process.env.OPS_FIREBASE_SERVICE_ACCOUNT) return JSON.parse(process.env.OPS_FIREBASE_SERVICE_ACCOUNT)
+  if (process.env.OPS_FIREBASE_PROJECT_ID && process.env.OPS_FIREBASE_CLIENT_EMAIL && process.env.OPS_FIREBASE_PRIVATE_KEY) {
+    return {
+      projectId: process.env.OPS_FIREBASE_PROJECT_ID,
+      clientEmail: process.env.OPS_FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.OPS_FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    }
+  }
   return null
 }
 
@@ -57,6 +70,22 @@ export function getAdminServices() {
     auth: getAuth(app),
     db: getFirestore(app),
   }
+}
+
+export function getOperationsServices() {
+  const existing = getApps().find((app) => app.name === OPERATIONS_APP_NAME)
+  if (existing) return { app: existing, db: getFirestore(existing) }
+  const serviceAccount = getOperationsServiceAccount()
+  if (!serviceAccount) {
+    const error = new Error("Operations database is not configured")
+    error.code = "OPS_DATABASE_NOT_CONFIGURED"
+    error.statusCode = 503
+    throw error
+  }
+  const projectId = serviceAccount.projectId || serviceAccount.project_id || process.env.OPS_FIREBASE_PROJECT_ID
+  if (!projectId) throw new Error("Operations Firebase project ID is missing")
+  const app = initializeApp({ credential: cert(serviceAccount), projectId }, OPERATIONS_APP_NAME)
+  return { app, db: getFirestore(app) }
 }
 
 export async function requireVerifiedUser(req) {

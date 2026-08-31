@@ -1,5 +1,5 @@
 import { FieldValue } from "firebase-admin/firestore"
-import { getAdminServices } from "./utils/firebase-admin.js"
+import { getAdminServices, getOperationsServices } from "./utils/firebase-admin.js"
 import { createSignedState, decryptSecret, encryptSecret, stableId, verifySignedState } from "../server/bot/crypto.js"
 import {
   answerCallback,
@@ -1902,10 +1902,12 @@ async function handleGoogleDriveRequest(req, res) {
     if (req.query?.error) throw new Error(`Google authorization was declined: ${req.query.error}`)
     const code = String(req.query?.code || "")
     if (!code) throw new Error("Google did not return an authorization code")
-    const { db } = getAdminServices()
+    const db = stateData.requestedBy === "content-studio" ? getOperationsServices().db : getAdminServices().db
     const account = await connectGoogleDriveAccount(db, code, stateData.telegramUserId)
     await sendMessage(stateData.telegramUserId, `✅ Google Drive connected\nAccount: ${account.email}\nStorage folder: Easy Education Content`).catch(() => {})
-    return res.status(200).send("Google Drive connected successfully. You may close this window and return to Telegram.")
+    return res.status(200).send(stateData.requestedBy === "content-studio"
+      ? "Google Drive connected successfully. You may close this window and return to Operations Studio."
+      : "Google Drive connected successfully. You may close this window and return to Telegram.")
   } catch (error) {
     return res.status(400).send(`Google Drive connection failed: ${error.message || "Unknown error"}`)
   }
