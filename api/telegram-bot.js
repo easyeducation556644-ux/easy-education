@@ -10,12 +10,86 @@ import {
   sendMessage,
 } from "../server/bot/telegram.js"
 import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
+import { stableId } from "../server/bot/crypto.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
 const CONTROL_COLLECTION = "botManualRepairControls"
 const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
 const CANCELLED_MANUAL_JOB_TYPE = "manual_drive_resource_repair_cancelled"
+
+function plainDate(value) {
+  if (!value) return null
+  if (typeof value.toDate === "function") return value.toDate().toISOString()
+  if (value instanceof Date) return value.toISOString()
+  return value
+}
+
+async function studioOverview(db) {
+  const [accountsSnap, snapshotsSnap, mappingsSnap, jobsSnap, storageSnap] = await Promise.all([
+    db.collection("botPlatformAccounts").get(),
+    db.collection("botSourceSnapshots").get(),
+    db.collection("botCourseMappings").get(),
+    db.collection("botJobs").orderBy("updatedAt", "desc").limit(30).get().catch(() => db.collection("botJobs").limit(30).get()),
+    db.collection("botStorageAccounts").get(),
+  ])
+  const accounts = accountsSnap.docs.map((doc) => {
+    const item = doc.data()
+    return { id: doc.id, platform: item.platform, label: item.label || item.roll || "Source account", status: item.status || "saved", courseCount: Number(item.courseCount || 0) }
+  })
+  const snapshots = snapshotsSnap.docs.map((doc) => {
+    const item = doc.data()
+    return {
+      id: doc.id, accountId: item.accountId, platform: item.platform, sourceCourseId: String(item.sourceCourseId || ""),
+      title: item.sourceCourseTitle || "Untitled source course", classCount: Number(item.classCount || 0),
+      sections: Array.isArray(item.sections) ? item.sections.map((section) => ({ key: String(section.key || section.id || section.title || ""), title: section.title || section.name || section.key || "Content", count: Number(section.count || 0) })) : [],
+      updatedAt: plainDate(item.updatedAt || item.scannedAt),
+    }
+  })
+  const mappings = mappingsSnap.docs.map((doc) => {
+    const item = doc.data()
+    return { id: doc.id, platform: item.platform, accountId: item.accountId, sourceCourseId: String(item.sourceCourseId || ""), sourceCourseTitle: item.sourceCourseTitle, sourceSectionKey: item.sourceSectionKey, sourceSectionTitle: item.sourceSectionTitle, eeCourseId: item.eeCourseId, eeCourseTitle: item.eeCourseTitle, destinationType: item.destinationType, classGroupId: item.classGroupId || null, selectedCount: Number(item.selectedCount || 0), readyCount: Number(item.readyCount || 0), pendingCount: Number(item.pendingCount || 0), updatedAt: plainDate(item.updatedAt) }
+  })
+  const jobs = jobsSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, type: item.type, status: item.status, mappingId: item.mappingId || null, attempts: Number(item.attempts || 0), error: item.error || item.lastError || null, updatedAt: plainDate(item.updatedAt || item.createdAt) } })
+  const storage = storageSnap.docs.map((doc) => { const item = doc.data(); return { id: doc.id, provider: item.provider, email: item.email, displayName: item.displayName || item.email, status: item.status || "ready", isDefault: Boolean(item.isDefault), isFull: Boolean(item.isFull), quotaLimit: Number(item.quotaLimit || 0), quotaUsage: Number(item.quotaUsage || 0), rootFolderId: item.rootFolderId || null } })
+  return { accounts, snapshots, mappings, jobs, storage, updatedAt: new Date().toISOString() }
+}
+
+async function handleStudioRequest(req, res) {
+  if (!validAutomationSecret(req)) return res.status(401).json({ ok: false, error: "Invalid studio secret" })
+  const { db } = getAdminServices()
+  const action = requestAction(req)
+  try {
+    if (action === "studio-overview") return res.status(200).json({ ok: true, ...(await studioOverview(db)) })
+    if (action === "studio-map") {
+      const source = req.body?.source || {}; const destination = req.body?.destination || {}
+      if (!source.snapshotId || !source.sectionKey || !destination.courseId || !destination.courseTitle) return res.status(400).json({ ok: false, error: "Source section and destination course are required" })
+      const snapshotDoc = await db.collection("botSourceSnapshots").doc(String(source.snapshotId)).get()
+      if (!snapshotDoc.exists) return res.status(404).json({ ok: false, error: "Source snapshot was not found" })
+      const snapshot = snapshotDoc.data()
+      const id = stableId(snapshot.platform, snapshot.sourceCourseId, destination.courseId, source.sectionKey, "main")
+      await db.collection("botCourseMappings").doc(id).set({
+        platform: snapshot.platform, accountId: snapshot.accountId, sourceCourseId: String(snapshot.sourceCourseId), sourceCourseTitle: snapshot.sourceCourseTitle,
+        sourceSectionKey: String(source.sectionKey), sourceSectionTitle: source.sectionTitle || source.sectionKey,
+        eeCourseId: String(destination.courseId), eeCourseTitle: destination.courseTitle, eeCourseType: destination.courseType || "subject",
+        destinationType: "main", classGroupId: null, classGroupTitle: "", snapshotCount: Number(snapshot.classCount || 0),
+        updatedBy: "content-studio", updatedAt: FieldValue.serverTimestamp(), createdAt: FieldValue.serverTimestamp(),
+      }, { merge: true })
+      return res.status(200).json({ ok: true, mappingId: id })
+    }
+    if (action === "studio-sync") {
+      const mappingId = String(req.body?.mappingId || "")
+      if (!mappingId || !(await db.collection("botCourseMappings").doc(mappingId).get()).exists) return res.status(404).json({ ok: false, error: "Mapping was not found" })
+      const jobRef = db.collection("botJobs").doc(`studio_${stableId(mappingId, Date.now())}`)
+      await jobRef.set({ type: "scheduled_mapping_sync", status: "queued", mappingId, attempts: 0, requestedBy: "content-studio", createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() })
+      return res.status(202).json({ ok: true, jobId: jobRef.id, status: "queued" })
+    }
+    return res.status(404).json({ ok: false, error: "Unknown studio action" })
+  } catch (error) {
+    console.error("Content Studio request failed:", error)
+    return res.status(500).json({ ok: false, error: error.message || "Content Studio request failed" })
+  }
+}
 
 function requestAction(req) {
   return String(req.query?.action || "")
@@ -270,6 +344,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
+  if (["studio-overview", "studio-map", "studio-sync"].includes(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
