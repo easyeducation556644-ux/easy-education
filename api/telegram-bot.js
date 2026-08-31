@@ -10,8 +10,8 @@ import {
   sendMessage,
 } from "../server/bot/telegram.js"
 import { resumeLatestDriveRepair, retryLatestFailedDriveRepair, startManualDriveRepair } from "../server/bot/manual-drive-repair.js"
-import { encryptSecret, stableId } from "../server/bot/crypto.js"
-import { browseGoogleDriveFolder, createGoogleDriveFolder, listGoogleDriveAccounts, renameGoogleDriveItem, trashGoogleDriveItem } from "../server/bot/google-drive.js"
+import { createSignedState, encryptSecret, stableId } from "../server/bot/crypto.js"
+import { browseGoogleDriveFolder, createGoogleDriveFolder, googleAuthorizationUrl, listGoogleDriveAccounts, renameGoogleDriveItem, trashGoogleDriveItem } from "../server/bot/google-drive.js"
 import { listUdvashCoursesV2, loginUdvashV2 } from "../server/bot/platforms/udvash-v2.js"
 
 const SESSION_COLLECTION = "botSessions"
@@ -113,6 +113,12 @@ async function handleStudioRequest(req, res) {
     }
     if (action === "studio-drive-browse") return res.status(200).json({ ok: true, ...(await browseGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId)) })
     if (action === "studio-drive-folder") return res.status(200).json({ ok: true, folder: await createGoogleDriveFolder(db, req.body?.accountId, req.body?.parentId, req.body?.name) })
+    if (action === "studio-drive-connect-url") {
+      const telegramUserId = String(process.env.TELEGRAM_ADMIN_IDS || "").split(",").map((item) => item.trim()).find(Boolean)
+      if (!telegramUserId || !isAllowedTelegramUser(telegramUserId)) return res.status(500).json({ ok: false, error: "No approved owner identity is configured for Drive OAuth" })
+      const state = createSignedState({ purpose: "google-drive", telegramUserId, requestedBy: "content-studio" })
+      return res.status(200).json({ ok: true, url: googleAuthorizationUrl(state) })
+    }
     if (action === "studio-drive-rename") return res.status(200).json({ ok: true, item: await renameGoogleDriveItem(db, req.body?.accountId, req.body?.fileId, req.body?.name) })
     if (action === "studio-drive-delete") return res.status(200).json({ ok: true, item: await trashGoogleDriveItem(db, req.body?.accountId, req.body?.fileId) })
     if (action === "studio-refresh-storage") {
@@ -399,7 +405,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
-  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-drive-rename", "studio-drive-delete", "studio-refresh-storage", "studio-add-udvash", "studio-stop-all"].includes(requestAction(req))) return handleStudioRequest(req, res)
+  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-folder", "studio-drive-connect-url", "studio-drive-rename", "studio-drive-delete", "studio-refresh-storage", "studio-add-udvash", "studio-stop-all"].includes(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
