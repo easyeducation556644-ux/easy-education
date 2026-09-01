@@ -8,7 +8,7 @@ import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.2.0"
+const VERSION = "1.2.1"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -362,6 +362,7 @@ async function telegramUpload(task, file) {
               const percent = total > 0 ? Math.min(99, uploaded / total * 100) : 0
               progress(task, "uploading", percent, { uploadedBytes: uploaded, totalBytes: total, message: "Uploading to Telegram" }).catch(() => {})
             },
+            onStatus: (message) => log(`Telegram transport: ${message}`),
           })
           const result = response.payload
           if (!result?.ok) throw new TelegramApiError(result?.description || `Telegram returned HTTP ${response.status}`)
@@ -398,7 +399,7 @@ function telegramTransportError(error, target) {
   return new Error(`Telegram connection to ${target.origin} failed: ${code} — ${detail}`)
 }
 
-export async function postTelegramVideo({ url, file, fields = {}, signal, onProgress = () => {} }) {
+export async function postTelegramVideo({ url, file, fields = {}, signal, onProgress = () => {}, onStatus = () => {} }) {
   const target = new URL(url)
   const boundary = `----EasyEducation${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
   const parts = []
@@ -418,9 +419,24 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
     const transport = target.protocol === "https:" ? httpsRequest : httpRequest
     let input = null
     let settled = false
+    let connectTimer = null
+    let stallTimer = null
+    const clearTimers = () => {
+      if (connectTimer) clearTimeout(connectTimer)
+      if (stallTimer) clearTimeout(stallTimer)
+    }
+    const resetStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => {
+        const error = new Error("upload made no network progress for 15 minutes")
+        error.code = "UPLOAD_STALLED"
+        request.destroy(error)
+      }, 15 * 60_000)
+    }
     const finishError = (error) => {
       if (settled) return
       settled = true
+      clearTimers()
       input?.destroy()
       rejectUpload(signal?.aborted && signal.reason ? signal.reason : telegramTransportError(error, target))
     }
@@ -430,6 +446,7 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
       port: target.port || undefined,
       method: "POST",
       path: `${target.pathname}${target.search}`,
+      family: 4,
       headers: {
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
         "Content-Length": String(contentLength),
@@ -439,12 +456,14 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
       const chunks = []
       let responseBytes = 0
       response.on("data", (chunk) => {
+        resetStallTimer()
         responseBytes += chunk.length
         if (responseBytes <= 2 * 1024 * 1024) chunks.push(chunk)
       })
       response.on("end", () => {
         if (settled) return
         settled = true
+        clearTimers()
         const text = Buffer.concat(chunks).toString("utf8")
         let payload
         try { payload = JSON.parse(text || "{}") } catch { payload = { ok: false, description: text || `Telegram returned HTTP ${response.statusCode}` } }
@@ -452,12 +471,23 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
       })
       response.on("error", finishError)
     })
-    request.setTimeout(120_000, () => {
-      const error = new Error("upload connection was inactive for 120 seconds")
-      error.code = "UPLOAD_TIMEOUT"
-      request.destroy(error)
-    })
     request.on("error", finishError)
+    connectTimer = setTimeout(() => {
+      const error = new Error("could not connect to Telegram within 45 seconds")
+      error.code = "CONNECT_TIMEOUT"
+      request.destroy(error)
+    }, 45_000)
+    request.on("socket", (socket) => {
+      socket.setKeepAlive(true, 30_000)
+      const connected = () => {
+        if (connectTimer) clearTimeout(connectTimer)
+        connectTimer = null
+        resetStallTimer()
+        onStatus(`${target.protocol === "https:" ? "TLS" : "TCP"} connected over IPv4`)
+      }
+      if (target.protocol === "https:") socket.once("secureConnect", connected)
+      else socket.once("connect", connected)
+    })
     const abort = () => request.destroy(signal?.reason || new Error("Upload aborted"))
     if (signal) {
       if (signal.aborted) return abort()
@@ -470,9 +500,13 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
     input.on("data", (chunk) => {
       uploaded += chunk.length
       onProgress(uploaded, fileSize)
+      resetStallTimer()
       if (!request.write(chunk)) input.pause()
     })
-    request.on("drain", () => input?.resume())
+    request.on("drain", () => {
+      resetStallTimer()
+      input?.resume()
+    })
     input.on("end", () => request.end(footer))
   })
 }
