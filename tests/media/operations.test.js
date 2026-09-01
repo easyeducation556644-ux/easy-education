@@ -43,6 +43,7 @@ test("native Telegram multipart streams a local video without curl", async () =>
   writeFileSync(file, "video-payload-123")
   let received = ""
   let declaredLength = 0
+  const statuses = []
   const server = createServer((request, response) => {
     declaredLength = Number(request.headers["content-length"] || 0)
     request.setEncoding("latin1")
@@ -59,9 +60,11 @@ test("native Telegram multipart streams a local video without curl", async () =>
       url: `http://127.0.0.1:${address.port}/sendVideo`,
       file,
       fields: { chat_id: "-1001", supports_streaming: "true" },
+      onStatus: (status) => statuses.push(status),
     })
     assert.equal(result.payload.result.message_id, 42)
     assert.equal(declaredLength, Buffer.byteLength(received, "latin1"))
+    assert.ok(statuses.some((status) => status.includes("connected over IPv4")))
     assert.match(received, /filename="sample.mp4"/)
     assert.match(received, /video-payload-123/)
   } finally {
