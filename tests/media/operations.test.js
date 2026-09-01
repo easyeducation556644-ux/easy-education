@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { mediaId, validSourceUrl } from "../../server/media/helpers.js"
-import { escapeDrawText, watermarkFilter } from "../../media-worker/worker.mjs"
+import { curlUploadPath, escapeDrawText, watermarkFilter } from "../../media-worker/worker.mjs"
 
 test("media fingerprints are stable and destination-sensitive", () => {
   assert.equal(mediaId("video", "a", "channel-1"), mediaId("video", "a", "channel-1"))
@@ -31,4 +31,11 @@ test("combined watermark builds permanent, timed and ticker filters", () => {
 
 test("drawtext escaping protects FFmpeg separators", () => {
   assert.equal(escapeDrawText("A:B, 50%"), "A\\:B\\, 50\\%")
+})
+
+test("Windows files use curl-compatible upload paths", () => {
+  assert.equal(
+    curlUploadPath("F:\\media-worker\\work\\task-1\\source.android.mp4"),
+    "F:/media-worker/work/task-1/source.android.mp4",
+  )
 })
