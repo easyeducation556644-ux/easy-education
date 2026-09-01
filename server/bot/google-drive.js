@@ -7,7 +7,8 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token"
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 const ROOT_FOLDER = "Easy Education Content"
 const MIN_FREE_BYTES = 25 * 1024 * 1024
-const DOWNLOAD_ATTEMPTS = 3
+const DOWNLOAD_ATTEMPTS = 4
+const DOWNLOAD_RETRY_DELAYS_MS = [1_000, 3_000, 7_000]
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -395,11 +396,18 @@ async function downloadResource(resource, sourceCookie = "") {
           ...(sameUdvashOrigin && sourceCookie ? { Cookie: sourceCookie } : {}),
         },
         redirect: "follow",
+        signal: AbortSignal.timeout(45_000),
       })
+      if ((response.status === 429 || response.status >= 500) && attempt < DOWNLOAD_ATTEMPTS) {
+        await response.body?.cancel().catch(() => {})
+        response = null
+        await delay(DOWNLOAD_RETRY_DELAYS_MS[attempt - 1])
+        continue
+      }
       break
     } catch (error) {
       lastNetworkError = error
-      if (attempt < DOWNLOAD_ATTEMPTS) await delay(250 * attempt)
+      if (attempt < DOWNLOAD_ATTEMPTS) await delay(DOWNLOAD_RETRY_DELAYS_MS[attempt - 1])
     }
   }
   if (!response) throw new Error(`Resource download network failed after ${DOWNLOAD_ATTEMPTS} attempts: ${lastNetworkError?.message || "fetch failed"}`)
