@@ -6,7 +6,7 @@ import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.1.0"
+const VERSION = "1.1.1"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -241,6 +241,10 @@ export function escapeDrawText(value) {
     .replace(/\]/g, "\\]")
 }
 
+export function curlUploadPath(value) {
+  return String(value || "").replace(/\\/g, "/")
+}
+
 function ffmpegFont() {
   return config.font.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1\\:")
 }
@@ -315,6 +319,7 @@ async function render(task, input, dir) {
 
 async function telegramUpload(task, file) {
   const size = statSync(file).size
+  const uploadFile = curlUploadPath(file)
   const isLocal = !/^https:\/\/api\.telegram\.org/i.test(config.telegramBase)
   const maxBytes = isLocal ? 2_000_000_000 : 50_000_000
   if (size > maxBytes) {
@@ -322,10 +327,11 @@ async function telegramUpload(task, file) {
   }
   await progress(task, "uploading", 0, { totalBytes: size, message: "Uploading to Telegram" })
   const url = `${config.telegramBase}/bot${config.botToken}/sendVideo`
+  log(`Telegram upload file: ${uploadFile} (${size} bytes)`)
   let responseText = ""
   const args = ["--fail-with-body", "--silent", "--show-error", "--request", "POST", url,
     "--form", `chat_id=${task.channel.chatId}`,
-    "--form", `video=@${file};type=video/mp4`,
+    "--form", `video=@${uploadFile};type=video/mp4`,
     "--form", "supports_streaming=true",
   ]
   if (task.channel.threadId) args.push("--form", `message_thread_id=${task.channel.threadId}`)
