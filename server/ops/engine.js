@@ -136,9 +136,27 @@ async function existingClasses(db, courseId) {
   return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
 }
 
-async function sourceAccount(db, accountId) {
+async function sourceAccount(db, accountId, legacyDb = null) {
   const snap = await db.collection(ACCOUNTS).doc(String(accountId || "")).get()
-  if (!snap.exists) throw new Error("Source account was not found")
+  if (!snap.exists && legacyDb && legacyDb !== db) {
+    const legacy = await legacyDb.collection(ACCOUNTS).doc(String(accountId || "")).get().catch(() => null)
+    if (legacy?.exists) {
+      const data = legacy.data()
+      await db.collection(ACCOUNTS).doc(legacy.id).set({
+        ...data,
+        migratedFromLegacyDatabase: true,
+        migratedAt: now(),
+        updatedAt: now(),
+      }, { merge: true })
+      return { id: legacy.id, ...data }
+    }
+  }
+  if (!snap.exists) {
+    const error = new Error("Source account is not connected in the Operations database. Add the Udvash account again from Connections.")
+    error.code = "SOURCE_ACCOUNT_NOT_CONNECTED"
+    error.statusCode = 409
+    throw error
+  }
   return { id: snap.id, ...snap.data() }
 }
 
@@ -226,8 +244,8 @@ async function saveSnapshot(db, account, course, snapshot) {
 }
 
 export async function refreshOpsSourceAccount(context, accountId) {
-  const { opsDb: db } = stores(context)
-  const account = await sourceAccount(db, accountId)
+  const { opsDb: db, contentDb } = stores(context)
+  const account = await sourceAccount(db, accountId, contentDb)
   const courses = await withAuth(db, account, (auth) => listUdvashCoursesV2(auth))
   const compact = courses.map((course) => ({ id: String(course.id), title: text(course.title, 180), type: course.type || "" }))
   await db.collection(ACCOUNTS).doc(account.id).set({ courses: compact, courseCount: compact.length, lastCatalogAt: now(), status: "ready", updatedAt: now() }, { merge: true })
@@ -235,10 +253,10 @@ export async function refreshOpsSourceAccount(context, accountId) {
 }
 
 export async function scanOpsSourceCourse(context, accountId, courseId) {
-  const { opsDb: db } = stores(context)
-  const account = await sourceAccount(db, accountId)
+  const { opsDb: db, contentDb } = stores(context)
+  const account = await sourceAccount(db, accountId, contentDb)
   let courses = array(account.courses)
-  if (!courses.length) courses = (await refreshOpsSourceAccount(db, account.id)).courses
+  if (!courses.length) courses = (await refreshOpsSourceAccount({ opsDb: db, contentDb }, account.id)).courses
   const course = courses.find((item) => String(item.id) === String(courseId))
   if (!course) throw new Error("Course was not found in this source account")
   const snapshot = await withAuth(db, account, (auth) => getUdvashCourseSnapshot(auth, course.id))
@@ -628,7 +646,7 @@ export async function runOpsTaskBatch(context, taskId) {
       catch (error) { events.push(await finishItem(task, item, null, error)) }
     }
   } else {
-    const account = await sourceAccount(opsDb, mapping.accountId)
+    const account = await sourceAccount(opsDb, mapping.accountId, contentDb)
     let mediaById = new Map()
     let batchError = null
     try {

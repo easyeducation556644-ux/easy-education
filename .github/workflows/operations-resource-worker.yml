@@ -1,0 +1,57 @@
+name: Operations resource repair worker
+
+on:
+  schedule:
+    # This worker only consumes queued Operations Studio tasks. It does not
+    # perform the daily platform synchronization.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: easy-education-resource-worker
+  cancel-in-progress: false
+
+jobs:
+  process-resource-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Process safe resource batches
+        env:
+          AUTOMATION_ENDPOINT: ${{ secrets.AUTOMATION_ENDPOINT }}
+          AUTOMATION_SECRET: ${{ secrets.AUTOMATION_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$AUTOMATION_ENDPOINT"
+          test -n "$AUTOMATION_SECRET"
+
+          # Leave enough time for the final Vercel batch and job teardown.
+          deadline=$(( $(date +%s) + 480 ))
+          batches=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            response="$RUNNER_TEMP/ops-sweep-$batches.json"
+            curl --fail-with-body --silent --show-error \
+              --max-time 290 \
+              --retry 2 \
+              --retry-all-errors \
+              -X POST \
+              -H "Authorization: Bearer $AUTOMATION_SECRET" \
+              -H "Content-Type: application/json" \
+              -d '{"limit":2}' \
+              "${AUTOMATION_ENDPOINT%/}/api/telegram-bot?action=ops-sweep" \
+              --output "$response"
+
+            found=$(node -e 'const d=require(process.argv[1]); process.stdout.write(String(Number(d.found||0)))' "$response")
+            batches=$((batches + 1))
+            echo "Completed sweep $batches; queued tasks found: $found"
+            if [ "$found" -eq 0 ]; then
+              break
+            fi
+            sleep 3
+          done
+
+          echo "Resource worker finished after $batches sweep(s)."
