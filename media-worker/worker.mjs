@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process"
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from "node:fs"
 import { request as httpRequest } from "node:http"
-import { request as httpsRequest } from "node:https"
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https"
 import { basename, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.3.0"
+const VERSION = "1.4.0"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -50,6 +50,12 @@ mkdirSync(config.workDir, { recursive: true })
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 const stamp = () => new Date().toISOString()
 const log = (...args) => console.log(stamp(), ...args)
+const telegramHttpsAgent = new HttpsAgent({
+  keepAlive: true,
+  keepAliveMsecs: 15_000,
+  maxSockets: 2,
+  maxFreeSockets: 2,
+})
 
 async function api(action, body = {}, attempts = 3) {
   let last
@@ -352,15 +358,16 @@ async function telegramUpload(task, file) {
     }
   }, 12_000)
   let lastTransportError
+  let retryCycle = 0
   try {
-    for (let baseIndex = 0; baseIndex < uniqueBases.length; baseIndex += 1) {
-      const base = uniqueBases[baseIndex]
-      const endpoint = `${base}/bot${config.botToken}/sendVideo`
-      const baseIsLocal = !/^https:\/\/api\.telegram\.org/i.test(base)
-      if (baseIndex > 0 && !baseIsLocal) log("Local Telegram API unavailable; trying Telegram cloud API")
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (;;) {
+      for (let baseIndex = 0; baseIndex < uniqueBases.length; baseIndex += 1) {
+        const base = uniqueBases[baseIndex]
+        const endpoint = `${base}/bot${config.botToken}/sendVideo`
+        const baseIsLocal = !/^https:\/\/api\.telegram\.org/i.test(base)
+        const transportName = baseIsLocal ? "local" : "cloud"
         try {
-          log(`Telegram endpoint ${new URL(base).origin}, attempt ${attempt}/3`)
+          log(`Telegram ${transportName} transport ${new URL(base).origin}, connection ${retryCycle + 1}`)
           const response = await postTelegramVideo({
             url: endpoint,
             file,
@@ -379,7 +386,7 @@ async function telegramUpload(task, file) {
             onStatus: (message) => log(`Telegram transport: ${message}`),
           })
           const result = response.payload
-          if (!result?.ok) throw new TelegramApiError(result?.description || `Telegram returned HTTP ${response.status}`)
+          if (!result?.ok) throw new TelegramApiError(result, response.status)
           return {
             messageId: result.result?.message_id || null,
             fileId: result.result?.video?.file_id || result.result?.document?.file_id || null,
@@ -387,20 +394,38 @@ async function telegramUpload(task, file) {
           }
         } catch (error) {
           if (controlError) throw controlError
-          if (error instanceof TelegramApiError) throw error
+          if (error instanceof TelegramApiError && !error.retryable) throw error
           lastTransportError = error
-          log(`Telegram transport attempt ${attempt} failed:`, error.message)
-          if (attempt < 3) await sleep(attempt * 1500)
+          log(`Telegram ${transportName} transport temporarily unavailable:`, error.message)
         }
       }
+      retryCycle += 1
+      const retryAfterMs = lastTransportError instanceof TelegramApiError && lastTransportError.retryAfterSeconds
+        ? lastTransportError.retryAfterSeconds * 1000
+        : [2_000, 5_000, 10_000, 15_000, 30_000][Math.min(retryCycle - 1, 4)]
+      const retrySeconds = Math.ceil(retryAfterMs / 1000)
+      await progress(task, "waiting_network", 0, {
+        message: `Telegram connection unavailable; cached file is safe. Retrying in ${retrySeconds}s`,
+        retryCount: retryCycle,
+        nextRetrySeconds: retrySeconds,
+      }).catch(() => {})
+      log(`Telegram connection unavailable; cached file is safe. Retrying in ${retrySeconds}s`)
+      await sleep(retryAfterMs)
+      if (controlError) throw controlError
     }
   } finally {
     clearInterval(timer)
   }
-  throw lastTransportError || new Error("Telegram upload transport failed")
 }
 
-class TelegramApiError extends Error {}
+class TelegramApiError extends Error {
+  constructor(payload = {}, status = 0) {
+    super(payload?.description || `Telegram returned HTTP ${status}`)
+    this.errorCode = Number(payload?.error_code || status || 0)
+    this.retryAfterSeconds = Math.max(0, Number(payload?.parameters?.retry_after || 0))
+    this.retryable = this.errorCode === 429 || this.errorCode >= 500
+  }
+}
 
 async function telegramApiAvailable(base, timeoutMs) {
   try {
@@ -467,7 +492,7 @@ export async function postTelegramVideo({ url, file, fields = {}, connectTimeout
       rejectUpload(signal?.aborted && signal.reason ? signal.reason : telegramTransportError(error, target))
     }
     const networkOptions = target.protocol === "https:"
-      ? { family: 0, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 1_500 }
+      ? { family: 0, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 1_500, agent: telegramHttpsAgent }
       : {}
     const request = transport({
       protocol: target.protocol,
@@ -508,13 +533,18 @@ export async function postTelegramVideo({ url, file, fields = {}, connectTimeout
     }, connectTimeoutMs)
     request.on("socket", (socket) => {
       socket.setKeepAlive(true, 30_000)
+      let connectedOnce = false
       const connected = () => {
+        if (connectedOnce || settled) return
+        connectedOnce = true
         if (connectTimer) clearTimeout(connectTimer)
         connectTimer = null
         resetStallTimer()
         onStatus(`${target.protocol === "https:" ? "TLS" : "TCP"} connected over ${socket.remoteFamily || "network"}`)
+        startBody()
       }
-      if (target.protocol === "https:") socket.once("secureConnect", connected)
+      if (!socket.connecting) connected()
+      else if (target.protocol === "https:") socket.once("secureConnect", connected)
       else socket.once("connect", connected)
     })
     const abort = () => request.destroy(signal?.reason || new Error("Upload aborted"))
@@ -522,21 +552,26 @@ export async function postTelegramVideo({ url, file, fields = {}, connectTimeout
       if (signal.aborted) return abort()
       signal.addEventListener("abort", abort, { once: true })
     }
-    request.write(preamble)
-    input = createReadStream(file, { highWaterMark: 1024 * 1024 })
-    let uploaded = 0
-    input.on("error", (error) => request.destroy(error))
-    input.on("data", (chunk) => {
-      uploaded += chunk.length
-      onProgress(uploaded, fileSize)
-      resetStallTimer()
-      if (!request.write(chunk)) input.pause()
-    })
+    let bodyStarted = false
+    const startBody = () => {
+      if (bodyStarted || settled) return
+      bodyStarted = true
+      request.write(preamble)
+      input = createReadStream(file, { highWaterMark: 1024 * 1024 })
+      let uploaded = 0
+      input.on("error", (error) => request.destroy(error))
+      input.on("data", (chunk) => {
+        uploaded += chunk.length
+        onProgress(uploaded, fileSize)
+        resetStallTimer()
+        if (!request.write(chunk)) input.pause()
+      })
+      input.on("end", () => request.end(footer))
+    }
     request.on("drain", () => {
       resetStallTimer()
       input?.resume()
     })
-    input.on("end", () => request.end(footer))
   })
 }
 
