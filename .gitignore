@@ -53,3 +53,4 @@ logs
 .cache
 .config
 /tmp
+/media-worker/work

@@ -1,0 +1,13 @@
+{
+  "name": "easy-education-media-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node worker.mjs",
+    "check": "node --check worker.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

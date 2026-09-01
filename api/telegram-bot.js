@@ -40,6 +40,7 @@ import {
   scanOpsSourceCourse,
   sweepOpsTasks,
 } from "../server/ops/engine.js"
+import { handleMediaAction, MEDIA_ACTIONS } from "../server/media/operations.js"
 
 const SESSION_COLLECTION = "botSessions"
 const JOB_COLLECTION = "botJobs"
@@ -126,6 +127,7 @@ async function handleStudioRequest(req, res) {
   const context = { contentDb, opsDb }
   const action = requestAction(req)
   try {
+    if (MEDIA_ACTIONS.has(action)) return res.status(action === "media-create-tasks" ? 201 : 200).json({ ok: true, ...(await handleMediaAction(opsDb, action, req.body || {})) })
     if (action === "studio-overview") return res.status(200).json({ ok: true, ...(await studioOverview(context)) })
     if (action === "studio-map") {
       const source = req.body?.source || {}; const destination = req.body?.destination || {}
@@ -504,7 +506,7 @@ async function handleResumeCommand(req, res, message) {
 }
 
 export default async function handler(req, res) {
-  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-trash", "studio-drive-folder", "studio-drive-connect-url", "studio-drive-rename", "studio-drive-delete", "studio-drive-restore", "studio-drive-permanent-delete", "studio-drive-move", "studio-drive-default", "studio-drive-disconnect", "studio-refresh-storage", "studio-add-udvash", "studio-source-toggle", "studio-source-delete", "studio-stop-all"].includes(requestAction(req)) || OPS_ACTIONS.has(requestAction(req))) return handleStudioRequest(req, res)
+  if (["studio-overview", "studio-map", "studio-sync", "studio-cancel-job", "studio-retry-job", "studio-delete-mapping", "studio-drive-browse", "studio-drive-trash", "studio-drive-folder", "studio-drive-connect-url", "studio-drive-rename", "studio-drive-delete", "studio-drive-restore", "studio-drive-permanent-delete", "studio-drive-move", "studio-drive-default", "studio-drive-disconnect", "studio-refresh-storage", "studio-add-udvash", "studio-source-toggle", "studio-source-delete", "studio-stop-all"].includes(requestAction(req)) || OPS_ACTIONS.has(requestAction(req)) || MEDIA_ACTIONS.has(requestAction(req))) return handleStudioRequest(req, res)
   if (req.method === "POST" && requestAction(req) === "drive-repair-tick") {
     return runContinuationRequest(req, res)
   }
