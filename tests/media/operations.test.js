@@ -42,7 +42,9 @@ test("native Telegram multipart streams a local video without curl", async () =>
   const file = join(dir, "sample.mp4")
   writeFileSync(file, "video-payload-123")
   let received = ""
+  let declaredLength = 0
   const server = createServer((request, response) => {
+    declaredLength = Number(request.headers["content-length"] || 0)
     request.setEncoding("latin1")
     request.on("data", (chunk) => { received += chunk })
     request.on("end", () => {
@@ -59,6 +61,7 @@ test("native Telegram multipart streams a local video without curl", async () =>
       fields: { chat_id: "-1001", supports_streaming: "true" },
     })
     assert.equal(result.payload.result.message_id, 42)
+    assert.equal(declaredLength, Buffer.byteLength(received, "latin1"))
     assert.match(received, /filename="sample.mp4"/)
     assert.match(received, /video-payload-123/)
   } finally {
