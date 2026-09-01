@@ -4,8 +4,9 @@ import { basename, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import process from "node:process"
 import readline from "node:readline"
+import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.0.1"
+const VERSION = "1.1.0"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -163,6 +164,29 @@ async function download(task, dir) {
     "--progress-template", "download:%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
   ]
   const isYouTube = /(?:youtube\.com|youtu\.be)/i.test(String(task.source.url || ""))
+  if (isYouTube) {
+    try {
+      await progress(task, "downloading", 0, { message: "Resolving with Android downloader" })
+      log("Download strategy: Android branch resolver (iOS/Android youtubei)")
+      const direct = await downloadLikeAndroid({
+        sourceUrl: task.source.url,
+        requestedHeight: quality,
+        outputPath: join(dir, "source.android.mp4"),
+        onProgress: async (downloaded, total) => {
+          const percent = total > 0 ? Math.min(99, downloaded / total * 100) : 0
+          await progress(task, "downloading", percent, { downloadedBytes: downloaded, totalBytes: total })
+        },
+        onControl: () => taskControl(task.id),
+        log,
+      })
+      await pendingUpdate
+      return direct.path
+    } catch (error) {
+      if (error instanceof ControlSignal) throw error
+      log("Android branch resolver failed; using yt-dlp fallback:", error.message)
+      await progress(task, "downloading", 0, { message: "Android resolver unavailable; trying compatibility fallback" })
+    }
+  }
   const attempts = isYouTube ? [
     { name: "YouTube default", args: ["--remote-components", "ejs:github"] },
     { name: "YouTube alternate client", args: ["--remote-components", "ejs:github", "--extractor-args", "youtube:player_client=default,web_safari"] },
