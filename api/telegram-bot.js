@@ -46,6 +46,7 @@ const JOB_COLLECTION = "botJobs"
 const CONTROL_COLLECTION = "botManualRepairControls"
 const MANUAL_JOB_TYPE = "manual_drive_resource_repair"
 const CANCELLED_MANUAL_JOB_TYPE = "manual_drive_resource_repair_cancelled"
+const EE_CATALOG_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 function plainDate(value) {
   if (!value) return null
@@ -83,7 +84,7 @@ async function eeCatalog(contentDb, opsDb) {
       diagnostics: { duplicateCount, orphanedCount, missingResourceCount, directSourceCount, needsRefactor: duplicateCount + orphanedCount + missingResourceCount + directSourceCount > 0 },
     }
   }).sort((a, b) => a.title.localeCompare(b.title))
-  await cacheRef.set({ courses, expiresAtMs: Date.now() + 10 * 60 * 1000, updatedAt: FieldValue.serverTimestamp() })
+  await cacheRef.set({ courses, expiresAtMs: Date.now() + EE_CATALOG_CACHE_TTL_MS, dirtyAtMs: 0, updatedAt: FieldValue.serverTimestamp() })
   return courses
 }
 

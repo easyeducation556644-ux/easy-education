@@ -476,7 +476,13 @@ async function publishClassChanges(db, classIds, opsDb = db) {
     const next = ids.map((docId, index) => ({ eventId: `classes:${docId}:ops-${stamp.toString(36)}-${index}`, collection: "classes", docId, action: "changed", scope: "public", seq: ++seq, createdAt: stamp }))
     transaction.set(ref, { type: "content-sync", seq, events: [...array(current.events), ...next].slice(-PUBLIC_SYNC_FEED_LIMIT), updatedAt: stamp }, { merge: true })
   })
-  await opsDb.collection("opsCatalogCache").doc("ee-tree-v1").delete().catch(() => {})
+  // Repair progress is served from opsTasks. Deleting the catalog cache here
+  // caused the UI's progress refresh to rescan the entire classes collection
+  // after every few repaired classes, exhausting the Firestore free quota.
+  await opsDb.collection("opsCatalogCache").doc("ee-tree-v1").set({
+    dirtyAtMs: Date.now(),
+    lastContentChangeAt: now(),
+  }, { merge: true }).catch(() => {})
 }
 
 async function claimTask(db, taskId) {
