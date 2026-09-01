@@ -1,7 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { pickProgressive, progressiveFormats, youtubeVideoId } from "../../media-worker/youtube-android-resolver.mjs"
+import { downloadLikeAndroid, pickProgressive, progressiveFormats, youtubeVideoId } from "../../media-worker/youtube-android-resolver.mjs"
 
 test("Android resolver accepts normal, short and shorts YouTube URLs", () => {
   assert.equal(youtubeVideoId("https://youtu.be/Ugz3iGg02ok"), "Ugz3iGg02ok")
@@ -19,4 +22,24 @@ test("Android resolver keeps safe progressive MP4 and picks requested/lower qual
   assert.deepEqual(formats.map((item) => item.height), [360, 720])
   assert.equal(pickProgressive(formats, 720).height, 720)
   assert.equal(pickProgressive(formats, 480).height, 360)
+})
+
+test("upload retry reuses an already downloaded Android video", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ee-youtube-cache-"))
+  const outputPath = join(dir, "source.android.mp4")
+  writeFileSync(outputPath, "finished-video")
+  try {
+    const result = await downloadLikeAndroid({
+      sourceUrl: "https://youtu.be/invalid",
+      requestedHeight: 720,
+      outputPath,
+      onProgress: async () => {},
+      onControl: async () => {},
+      log: () => {},
+    })
+    assert.equal(result.path, outputPath)
+    assert.equal(result.format.clientName, "CACHED")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
