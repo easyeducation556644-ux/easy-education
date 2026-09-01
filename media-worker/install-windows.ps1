@@ -8,7 +8,17 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 
 winget install --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements
 winget install --id yt-dlp.yt-dlp --exact --accept-package-agreements --accept-source-agreements
-winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
+
+# The current yt-dlp winget package installs its compatible FFmpeg dependency.
+# Avoid downloading a second Gyan.FFmpeg package when ffmpeg is already available.
+if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+  $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  $env:Path = "$machinePath;$userPath"
+}
+if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+  winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
+}
 
 if (-not (Test-Path ".env")) {
   Copy-Item ".env.example" ".env"
