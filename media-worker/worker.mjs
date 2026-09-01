@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, openAsBlob, readdirSync, readFileSync, rmSync, statfsSync, statSync } from "node:fs"
 import { basename, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.1.1"
+const VERSION = "1.1.2"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -241,10 +241,6 @@ export function escapeDrawText(value) {
     .replace(/\]/g, "\\]")
 }
 
-export function curlUploadPath(value) {
-  return String(value || "").replace(/\\/g, "/")
-}
-
 function ffmpegFont() {
   return config.font.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1\\:")
 }
@@ -319,7 +315,6 @@ async function render(task, input, dir) {
 
 async function telegramUpload(task, file) {
   const size = statSync(file).size
-  const uploadFile = curlUploadPath(file)
   const isLocal = !/^https:\/\/api\.telegram\.org/i.test(config.telegramBase)
   const maxBytes = isLocal ? 2_000_000_000 : 50_000_000
   if (size > maxBytes) {
@@ -327,23 +322,60 @@ async function telegramUpload(task, file) {
   }
   await progress(task, "uploading", 0, { totalBytes: size, message: "Uploading to Telegram" })
   const url = `${config.telegramBase}/bot${config.botToken}/sendVideo`
-  log(`Telegram upload file: ${uploadFile} (${size} bytes)`)
-  let responseText = ""
-  const args = ["--fail-with-body", "--silent", "--show-error", "--request", "POST", url,
-    "--form", `chat_id=${task.channel.chatId}`,
-    "--form", `video=@${uploadFile};type=video/mp4`,
-    "--form", "supports_streaming=true",
-  ]
-  if (task.channel.threadId) args.push("--form", `message_thread_id=${task.channel.threadId}`)
-  if (task.caption) args.push("--form", `caption=${task.caption}`)
-  await runCommand(config.curl, args, { taskId: task.id, onLine: (line) => { responseText += line } })
-  const result = JSON.parse(responseText || "{}")
+  log(`Telegram native upload file: ${file} (${size} bytes)`)
+  const controller = new AbortController()
+  let controlError = null
+  const timer = setInterval(async () => {
+    try {
+      await taskControl(task.id)
+    } catch (error) {
+      if (error instanceof ControlSignal) {
+        controlError = error
+        controller.abort(error)
+      }
+    }
+  }, 12_000)
+  let result
+  try {
+    const response = await postTelegramVideo({
+      url,
+      file,
+      fields: {
+        chat_id: task.channel.chatId,
+        supports_streaming: "true",
+        message_thread_id: task.channel.threadId || null,
+        caption: task.caption || null,
+      },
+      signal: controller.signal,
+    })
+    result = response.payload
+    if (!response.ok && !result?.description) throw new Error(`Telegram upload failed (${response.status})`)
+  } catch (error) {
+    if (controlError) throw controlError
+    throw error
+  } finally {
+    clearInterval(timer)
+  }
   if (!result.ok) throw new Error(result.description || "Telegram rejected the upload")
   return {
     messageId: result.result?.message_id || null,
     fileId: result.result?.video?.file_id || result.result?.document?.file_id || null,
     size,
   }
+}
+
+export async function postTelegramVideo({ url, file, fields = {}, signal }) {
+  const form = new FormData()
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== null && value !== undefined && String(value) !== "") form.append(key, String(value))
+  }
+  const video = await openAsBlob(file, { type: "video/mp4" })
+  form.append("video", video, basename(file))
+  const response = await fetch(url, { method: "POST", body: form, signal })
+  const text = await response.text()
+  let payload
+  try { payload = JSON.parse(text || "{}") } catch { payload = { ok: false, description: text || `Telegram returned HTTP ${response.status}` } }
+  return { ok: response.ok, status: response.status, payload }
 }
 
 async function processTask(task) {
