@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, openAsBlob, readdirSync, readFileSync, rmSync, statfsSync, statSync } from "node:fs"
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from "node:fs"
+import { request as httpRequest } from "node:http"
+import { request as httpsRequest } from "node:https"
 import { basename, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.1.2"
+const VERSION = "1.2.0"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -321,8 +323,10 @@ async function telegramUpload(task, file) {
     throw new Error(`Output is ${(size / 1024 ** 2).toFixed(1)} MB, above the configured Telegram API limit of ${(maxBytes / 1024 ** 2).toFixed(0)} MB. Configure Telegram Local Bot API for files up to 2 GB.`)
   }
   await progress(task, "uploading", 0, { totalBytes: size, message: "Uploading to Telegram" })
-  const url = `${config.telegramBase}/bot${config.botToken}/sendVideo`
-  log(`Telegram native upload file: ${file} (${size} bytes)`)
+  const cloudBase = "https://api.telegram.org"
+  const bases = [config.telegramBase]
+  if (isLocal && size <= 50_000_000) bases.push(cloudBase)
+  log(`Telegram streaming upload file: ${file} (${size} bytes)`)
   const controller = new AbortController()
   let controlError = null
   const timer = setInterval(async () => {
@@ -335,47 +339,142 @@ async function telegramUpload(task, file) {
       }
     }
   }, 12_000)
-  let result
+  let lastTransportError
   try {
-    const response = await postTelegramVideo({
-      url,
-      file,
-      fields: {
-        chat_id: task.channel.chatId,
-        supports_streaming: "true",
-        message_thread_id: task.channel.threadId || null,
-        caption: task.caption || null,
-      },
-      signal: controller.signal,
-    })
-    result = response.payload
-    if (!response.ok && !result?.description) throw new Error(`Telegram upload failed (${response.status})`)
-  } catch (error) {
-    if (controlError) throw controlError
-    throw error
+    for (let baseIndex = 0; baseIndex < bases.length; baseIndex += 1) {
+      const base = bases[baseIndex]
+      const endpoint = `${base}/bot${config.botToken}/sendVideo`
+      if (baseIndex > 0) log("Local Telegram API unavailable; trying Telegram cloud API")
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          log(`Telegram endpoint ${new URL(base).origin}, attempt ${attempt}/3`)
+          const response = await postTelegramVideo({
+            url: endpoint,
+            file,
+            fields: {
+              chat_id: task.channel.chatId,
+              supports_streaming: "true",
+              message_thread_id: task.channel.threadId || null,
+              caption: task.caption || null,
+            },
+            signal: controller.signal,
+            onProgress: (uploaded, total) => {
+              const percent = total > 0 ? Math.min(99, uploaded / total * 100) : 0
+              progress(task, "uploading", percent, { uploadedBytes: uploaded, totalBytes: total, message: "Uploading to Telegram" }).catch(() => {})
+            },
+          })
+          const result = response.payload
+          if (!result?.ok) throw new TelegramApiError(result?.description || `Telegram returned HTTP ${response.status}`)
+          return {
+            messageId: result.result?.message_id || null,
+            fileId: result.result?.video?.file_id || result.result?.document?.file_id || null,
+            size,
+          }
+        } catch (error) {
+          if (controlError) throw controlError
+          if (error instanceof TelegramApiError) throw error
+          lastTransportError = error
+          log(`Telegram transport attempt ${attempt} failed:`, error.message)
+          if (attempt < 3) await sleep(attempt * 1500)
+        }
+      }
+    }
   } finally {
     clearInterval(timer)
   }
-  if (!result.ok) throw new Error(result.description || "Telegram rejected the upload")
-  return {
-    messageId: result.result?.message_id || null,
-    fileId: result.result?.video?.file_id || result.result?.document?.file_id || null,
-    size,
-  }
+  throw lastTransportError || new Error("Telegram upload transport failed")
 }
 
-export async function postTelegramVideo({ url, file, fields = {}, signal }) {
-  const form = new FormData()
-  for (const [key, value] of Object.entries(fields)) {
-    if (value !== null && value !== undefined && String(value) !== "") form.append(key, String(value))
+class TelegramApiError extends Error {}
+
+function safeHeader(value) {
+  return String(value || "").replace(/[\r\n"]/g, "_")
+}
+
+function telegramTransportError(error, target) {
+  if (error instanceof ControlSignal) return error
+  const code = error?.code || error?.cause?.code || "NETWORK_ERROR"
+  const detail = error?.cause?.message || error?.message || "connection failed"
+  return new Error(`Telegram connection to ${target.origin} failed: ${code} — ${detail}`)
+}
+
+export async function postTelegramVideo({ url, file, fields = {}, signal, onProgress = () => {} }) {
+  const target = new URL(url)
+  const boundary = `----EasyEducation${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
+  const parts = []
+  for (const [rawName, value] of Object.entries(fields)) {
+    if (value === null || value === undefined || String(value) === "") continue
+    const name = safeHeader(rawName)
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${String(value)}\r\n`))
   }
-  const video = await openAsBlob(file, { type: "video/mp4" })
-  form.append("video", video, basename(file))
-  const response = await fetch(url, { method: "POST", body: form, signal })
-  const text = await response.text()
-  let payload
-  try { payload = JSON.parse(text || "{}") } catch { payload = { ok: false, description: text || `Telegram returned HTTP ${response.status}` } }
-  return { ok: response.ok, status: response.status, payload }
+  const filename = safeHeader(basename(file))
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="${filename}"\r\nContent-Type: video/mp4\r\n\r\n`))
+  const preamble = Buffer.concat(parts)
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`)
+  const fileSize = statSync(file).size
+  const contentLength = preamble.length + fileSize + footer.length
+
+  return new Promise((resolveUpload, rejectUpload) => {
+    const transport = target.protocol === "https:" ? httpsRequest : httpRequest
+    let input = null
+    let settled = false
+    const finishError = (error) => {
+      if (settled) return
+      settled = true
+      input?.destroy()
+      rejectUpload(signal?.aborted && signal.reason ? signal.reason : telegramTransportError(error, target))
+    }
+    const request = transport({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
+      method: "POST",
+      path: `${target.pathname}${target.search}`,
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(contentLength),
+        Connection: "keep-alive",
+      },
+    }, (response) => {
+      const chunks = []
+      let responseBytes = 0
+      response.on("data", (chunk) => {
+        responseBytes += chunk.length
+        if (responseBytes <= 2 * 1024 * 1024) chunks.push(chunk)
+      })
+      response.on("end", () => {
+        if (settled) return
+        settled = true
+        const text = Buffer.concat(chunks).toString("utf8")
+        let payload
+        try { payload = JSON.parse(text || "{}") } catch { payload = { ok: false, description: text || `Telegram returned HTTP ${response.statusCode}` } }
+        resolveUpload({ ok: response.statusCode >= 200 && response.statusCode < 300, status: response.statusCode, payload })
+      })
+      response.on("error", finishError)
+    })
+    request.setTimeout(120_000, () => {
+      const error = new Error("upload connection was inactive for 120 seconds")
+      error.code = "UPLOAD_TIMEOUT"
+      request.destroy(error)
+    })
+    request.on("error", finishError)
+    const abort = () => request.destroy(signal?.reason || new Error("Upload aborted"))
+    if (signal) {
+      if (signal.aborted) return abort()
+      signal.addEventListener("abort", abort, { once: true })
+    }
+    request.write(preamble)
+    input = createReadStream(file, { highWaterMark: 1024 * 1024 })
+    let uploaded = 0
+    input.on("error", (error) => request.destroy(error))
+    input.on("data", (chunk) => {
+      uploaded += chunk.length
+      onProgress(uploaded, fileSize)
+      if (!request.write(chunk)) input.pause()
+    })
+    request.on("drain", () => input?.resume())
+    input.on("end", () => request.end(footer))
+  })
 }
 
 async function processTask(task) {
