@@ -49,6 +49,12 @@ function sendError(res, status, message) {
   return res.status(status).json({ success: false, error: message })
 }
 
+function isQuotaError(error) {
+  return Number(error?.code) === 8
+    || String(error?.code || "").toUpperCase() === "RESOURCE_EXHAUSTED"
+    || /resource_exhausted|quota exceeded/i.test(String(error?.message || error || ""))
+}
+
 function normalizeEvent(body = {}) {
   const collection = String(body.collection || "").trim()
   const docId = String(body.docId || "").trim()
@@ -277,6 +283,27 @@ export default async function syncEventHandler(req, res) {
     })
     return res.status(200).json({ success: true, ...result })
   } catch (error) {
+    if (isQuotaError(error)) {
+      const retryAfterSeconds = 30 * 60
+      res.setHeader("Retry-After", String(retryAfterSeconds))
+      console.warn("[sync-event] deferred because content Firestore quota is exhausted", {
+        code: error?.code || "RESOURCE_EXHAUSTED",
+        collection: String(req.body?.collection || ""),
+        docId: String(req.body?.docId || "").slice(0, 120),
+      })
+      return res.status(429).json({
+        success: false,
+        code: "DATABASE_QUOTA_EXHAUSTED",
+        error: "Content sync is deferred until Firestore read quota becomes available.",
+        retryAfterSeconds,
+      })
+    }
+    console.error("[sync-event] failed", {
+      code: error?.code || "SYNC_EVENT_FAILED",
+      message: error?.message || String(error),
+      collection: String(req.body?.collection || ""),
+      docId: String(req.body?.docId || "").slice(0, 120),
+    })
     return sendError(res, error?.statusCode || 500, error?.message || "Sync event failed")
   }
 }

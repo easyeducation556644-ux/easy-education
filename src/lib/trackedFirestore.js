@@ -31,6 +31,7 @@ const USER_SYNC_COLLECTIONS = new Set([
 const SYNC_QUEUE_KEY = "ee_targeted_sync_queue_v1"
 let syncQueueFlushInFlight = null
 let syncQueueTimer = null
+let syncQueueRetryDelayMs = 15000
 
 function hashString(value = "") {
   let hash = 2166136261
@@ -349,6 +350,10 @@ export async function flushTargetedSyncQueue() {
       if (!response.ok) {
         const body = await response.json().catch(() => null)
         const message = body?.error || `Sync hint failed: ${response.status}`
+        if (response.status === 429 && body?.code === "DATABASE_QUOTA_EXHAUSTED") {
+          const retryAfterSeconds = Math.max(60, Number(body.retryAfterSeconds || response.headers.get("Retry-After") || 1800))
+          syncQueueRetryDelayMs = Math.min(60 * 60 * 1000, retryAfterSeconds * 1000)
+        }
         if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
           saveSyncQueue(queue.slice(1))
           console.warn("Dropping rejected targeted sync hint:", message)
@@ -359,10 +364,11 @@ export async function flushTargetedSyncQueue() {
 
       const latest = loadSyncQueue()
       saveSyncQueue(latest.filter((item) => item.eventId !== event.eventId))
+      syncQueueRetryDelayMs = 15000
     }
   })().finally(() => {
     syncQueueFlushInFlight = null
-    if (loadSyncQueue().length > 0) scheduleSyncQueueFlush(15000)
+    if (loadSyncQueue().length > 0) scheduleSyncQueueFlush(syncQueueRetryDelayMs)
   })
 
   return syncQueueFlushInFlight
