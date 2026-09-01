@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url"
 import process from "node:process"
 import readline from "node:readline"
 
-const VERSION = "1.0.0"
+const VERSION = "1.0.1"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -37,6 +37,7 @@ const config = {
   ffmpeg: process.env.FFMPEG_PATH || "ffmpeg",
   ffprobe: process.env.FFPROBE_PATH || "ffprobe",
   curl: process.env.CURL_PATH || "curl",
+  youtubeCookiesBrowser: String(process.env.YOUTUBE_COOKIES_BROWSER || "").trim(),
   font: process.env.WATERMARK_FONT || "C:/Windows/Fonts/Nirmala.ttf",
 }
 
@@ -152,25 +153,53 @@ async function download(task, dir) {
   const quality = Math.max(144, Math.min(2160, Number(task.quality || 720)))
   const output = join(dir, "source.%(ext)s")
   let pendingUpdate = Promise.resolve()
-  const args = [
+  const commonArgs = [
     "--continue", "--part", "--newline", "--no-playlist", "--restrict-filenames",
+    "--retries", "10", "--fragment-retries", "10", "--file-access-retries", "3",
+    "--concurrent-fragments", "4",
     "--merge-output-format", "mp4",
     "--format", `bv*[height<=${quality}]+ba/b[height<=${quality}]/b`,
     "--output", output,
     "--progress-template", "download:%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
-    task.source.url,
   ]
-  await runCommand(config.ytdlp, args, {
-    taskId: task.id,
-    onLine: (line) => {
-      if (!line.startsWith("download:")) return
-      const [downloaded, total, rawPercent, speed, eta] = line.slice(9).split("|")
-      const percent = Number(String(rawPercent || "").replace(/[^0-9.]/g, "")) || 0
-      pendingUpdate = pendingUpdate.then(() => progress(task, "downloading", percent, {
-        downloadedBytes: Number(downloaded || 0), totalBytes: Number(total || 0), speed, eta,
-      })).catch((error) => log("Progress update skipped:", error.message))
-    },
-  })
+  const isYouTube = /(?:youtube\.com|youtu\.be)/i.test(String(task.source.url || ""))
+  const attempts = isYouTube ? [
+    { name: "YouTube default", args: ["--remote-components", "ejs:github"] },
+    { name: "YouTube alternate client", args: ["--remote-components", "ejs:github", "--extractor-args", "youtube:player_client=default,web_safari"] },
+    { name: "YouTube Android VR client", args: ["--remote-components", "ejs:github", "--extractor-args", "youtube:player_client=android_vr"] },
+    ...(config.youtubeCookiesBrowser ? [{
+      name: `YouTube ${config.youtubeCookiesBrowser} cookies`,
+      args: ["--remote-components", "ejs:github", "--cookies-from-browser", config.youtubeCookiesBrowser, "--extractor-args", "youtube:player_client=default,web_safari"],
+    }] : []),
+  ] : [{ name: "direct source", args: [] }]
+
+  let lastError
+  for (let attempt = 0; attempt < attempts.length; attempt += 1) {
+    const strategy = attempts[attempt]
+    await progress(task, "downloading", 0, {
+      message: `${strategy.name}${attempt ? ` fallback ${attempt + 1}/${attempts.length}` : ""}`,
+    })
+    log(`Download strategy ${attempt + 1}/${attempts.length}: ${strategy.name}`)
+    try {
+      await runCommand(config.ytdlp, [...commonArgs, ...strategy.args, task.source.url], {
+        taskId: task.id,
+        onLine: (line) => {
+          if (!line.startsWith("download:")) return
+          const [downloaded, total, rawPercent, speed, eta] = line.slice(9).split("|")
+          const percent = Number(String(rawPercent || "").replace(/[^0-9.]/g, "")) || 0
+          pendingUpdate = pendingUpdate.then(() => progress(task, "downloading", percent, {
+            downloadedBytes: Number(downloaded || 0), totalBytes: Number(total || 0), speed, eta,
+          })).catch((error) => log("Progress update skipped:", error.message))
+        },
+      })
+      lastError = null
+      break
+    } catch (error) {
+      lastError = error
+      log(`${strategy.name} failed:`, error.message)
+    }
+  }
+  if (lastError) throw lastError
   await pendingUpdate
   const file = mediaFiles(dir)[0]
   if (!file) throw new Error("Downloader finished but no video file was created")
