@@ -8,7 +8,7 @@ import process from "node:process"
 import readline from "node:readline"
 import { downloadLikeAndroid } from "./youtube-android-resolver.mjs"
 
-const VERSION = "1.2.1"
+const VERSION = "1.3.0"
 
 function loadEnv(path = resolve(".env")) {
   if (!existsSync(path)) return
@@ -31,6 +31,7 @@ const config = {
   secret: String(process.env.AUTOMATION_SECRET || ""),
   botToken: String(process.env.TELEGRAM_BOT_TOKEN || ""),
   telegramBase: String(process.env.TELEGRAM_API_BASE_URL || "https://api.telegram.org").replace(/\/$/, ""),
+  telegramLocalAutoDetect: !/^(0|false|no)$/i.test(String(process.env.TELEGRAM_LOCAL_API_AUTODETECT || "true").trim()),
   workerId: String(process.env.WORKER_ID || `worker-${process.platform}`).trim(),
   workerName: String(process.env.WORKER_NAME || "Easy Education PC").trim(),
   workDir: resolve(process.env.WORK_DIR || "./work"),
@@ -317,15 +318,26 @@ async function render(task, input, dir) {
 
 async function telegramUpload(task, file) {
   const size = statSync(file).size
-  const isLocal = !/^https:\/\/api\.telegram\.org/i.test(config.telegramBase)
-  const maxBytes = isLocal ? 2_000_000_000 : 50_000_000
+  const cloudBase = "https://api.telegram.org"
+  const localBase = "http://127.0.0.1:8081"
+  const configuredIsLocal = !/^https:\/\/api\.telegram\.org/i.test(config.telegramBase)
+  const localDetected = config.telegramLocalAutoDetect && !configuredIsLocal
+    ? await telegramApiAvailable(localBase, 1_200)
+    : false
+  const bases = []
+  if (localDetected) {
+    bases.push(localBase)
+    log("Telegram Local Bot API detected; using the stable local transport first")
+  }
+  bases.push(config.telegramBase)
+  if ((configuredIsLocal || localDetected) && size <= 50_000_000) bases.push(cloudBase)
+  const uniqueBases = [...new Set(bases)]
+  const hasLocal = uniqueBases.some((base) => !/^https:\/\/api\.telegram\.org/i.test(base))
+  const maxBytes = hasLocal ? 2_000_000_000 : 50_000_000
   if (size > maxBytes) {
     throw new Error(`Output is ${(size / 1024 ** 2).toFixed(1)} MB, above the configured Telegram API limit of ${(maxBytes / 1024 ** 2).toFixed(0)} MB. Configure Telegram Local Bot API for files up to 2 GB.`)
   }
   await progress(task, "uploading", 0, { totalBytes: size, message: "Uploading to Telegram" })
-  const cloudBase = "https://api.telegram.org"
-  const bases = [config.telegramBase]
-  if (isLocal && size <= 50_000_000) bases.push(cloudBase)
   log(`Telegram streaming upload file: ${file} (${size} bytes)`)
   const controller = new AbortController()
   let controlError = null
@@ -341,10 +353,11 @@ async function telegramUpload(task, file) {
   }, 12_000)
   let lastTransportError
   try {
-    for (let baseIndex = 0; baseIndex < bases.length; baseIndex += 1) {
-      const base = bases[baseIndex]
+    for (let baseIndex = 0; baseIndex < uniqueBases.length; baseIndex += 1) {
+      const base = uniqueBases[baseIndex]
       const endpoint = `${base}/bot${config.botToken}/sendVideo`
-      if (baseIndex > 0) log("Local Telegram API unavailable; trying Telegram cloud API")
+      const baseIsLocal = !/^https:\/\/api\.telegram\.org/i.test(base)
+      if (baseIndex > 0 && !baseIsLocal) log("Local Telegram API unavailable; trying Telegram cloud API")
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
           log(`Telegram endpoint ${new URL(base).origin}, attempt ${attempt}/3`)
@@ -357,6 +370,7 @@ async function telegramUpload(task, file) {
               message_thread_id: task.channel.threadId || null,
               caption: task.caption || null,
             },
+            connectTimeoutMs: baseIsLocal ? 3_000 : 15_000,
             signal: controller.signal,
             onProgress: (uploaded, total) => {
               const percent = total > 0 ? Math.min(99, uploaded / total * 100) : 0
@@ -388,6 +402,18 @@ async function telegramUpload(task, file) {
 
 class TelegramApiError extends Error {}
 
+async function telegramApiAvailable(base, timeoutMs) {
+  try {
+    const response = await fetch(`${base}/bot${config.botToken}/getMe`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const payload = await response.json().catch(() => ({}))
+    return response.ok && payload?.ok === true
+  } catch {
+    return false
+  }
+}
+
 function safeHeader(value) {
   return String(value || "").replace(/[\r\n"]/g, "_")
 }
@@ -399,7 +425,7 @@ function telegramTransportError(error, target) {
   return new Error(`Telegram connection to ${target.origin} failed: ${code} — ${detail}`)
 }
 
-export async function postTelegramVideo({ url, file, fields = {}, signal, onProgress = () => {}, onStatus = () => {} }) {
+export async function postTelegramVideo({ url, file, fields = {}, connectTimeoutMs = 15_000, signal, onProgress = () => {}, onStatus = () => {} }) {
   const target = new URL(url)
   const boundary = `----EasyEducation${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
   const parts = []
@@ -440,13 +466,16 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
       input?.destroy()
       rejectUpload(signal?.aborted && signal.reason ? signal.reason : telegramTransportError(error, target))
     }
+    const networkOptions = target.protocol === "https:"
+      ? { family: 0, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 1_500 }
+      : {}
     const request = transport({
       protocol: target.protocol,
       hostname: target.hostname,
       port: target.port || undefined,
       method: "POST",
       path: `${target.pathname}${target.search}`,
-      family: 4,
+      ...networkOptions,
       headers: {
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
         "Content-Length": String(contentLength),
@@ -473,17 +502,17 @@ export async function postTelegramVideo({ url, file, fields = {}, signal, onProg
     })
     request.on("error", finishError)
     connectTimer = setTimeout(() => {
-      const error = new Error("could not connect to Telegram within 45 seconds")
+      const error = new Error(`could not connect to Telegram within ${Math.ceil(connectTimeoutMs / 1000)} seconds`)
       error.code = "CONNECT_TIMEOUT"
       request.destroy(error)
-    }, 45_000)
+    }, connectTimeoutMs)
     request.on("socket", (socket) => {
       socket.setKeepAlive(true, 30_000)
       const connected = () => {
         if (connectTimer) clearTimeout(connectTimer)
         connectTimer = null
         resetStallTimer()
-        onStatus(`${target.protocol === "https:" ? "TLS" : "TCP"} connected over IPv4`)
+        onStatus(`${target.protocol === "https:" ? "TLS" : "TCP"} connected over ${socket.remoteFamily || "network"}`)
       }
       if (target.protocol === "https:") socket.once("secureConnect", connected)
       else socket.once("connect", connected)
