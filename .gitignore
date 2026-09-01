@@ -54,3 +54,4 @@ logs
 .config
 /tmp
 /media-worker/work
+/media-worker/telegram-local-api/.env

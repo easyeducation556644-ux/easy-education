@@ -1,0 +1,17 @@
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: easy-education-telegram-bot-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8081"
+    env_file:
+      - .env
+    environment:
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_VERBOSITY: "1"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+volumes:
+  telegram-bot-api-data:
