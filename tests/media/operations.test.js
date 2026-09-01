@@ -1,7 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { createServer } from "node:http"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { mediaId, validSourceUrl } from "../../server/media/helpers.js"
-import { curlUploadPath, escapeDrawText, watermarkFilter } from "../../media-worker/worker.mjs"
+import { escapeDrawText, postTelegramVideo, watermarkFilter } from "../../media-worker/worker.mjs"
 
 test("media fingerprints are stable and destination-sensitive", () => {
   assert.equal(mediaId("video", "a", "channel-1"), mediaId("video", "a", "channel-1"))
@@ -33,9 +37,32 @@ test("drawtext escaping protects FFmpeg separators", () => {
   assert.equal(escapeDrawText("A:B, 50%"), "A\\:B\\, 50\\%")
 })
 
-test("Windows files use curl-compatible upload paths", () => {
-  assert.equal(
-    curlUploadPath("F:\\media-worker\\work\\task-1\\source.android.mp4"),
-    "F:/media-worker/work/task-1/source.android.mp4",
-  )
+test("native Telegram multipart streams a local video without curl", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ee-telegram-upload-"))
+  const file = join(dir, "sample.mp4")
+  writeFileSync(file, "video-payload-123")
+  let received = ""
+  const server = createServer((request, response) => {
+    request.setEncoding("latin1")
+    request.on("data", (chunk) => { received += chunk })
+    request.on("end", () => {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end('{"ok":true,"result":{"message_id":42}}')
+    })
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const address = server.address()
+    const result = await postTelegramVideo({
+      url: `http://127.0.0.1:${address.port}/sendVideo`,
+      file,
+      fields: { chat_id: "-1001", supports_streaming: "true" },
+    })
+    assert.equal(result.payload.result.message_id, 42)
+    assert.match(received, /filename="sample.mp4"/)
+    assert.match(received, /video-payload-123/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
