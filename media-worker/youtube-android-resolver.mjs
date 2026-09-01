@@ -200,6 +200,10 @@ async function appendResponse(response, partPath, offset, total, onProgress, onC
 
 export async function downloadLikeAndroid({ sourceUrl, requestedHeight, outputPath, onProgress, onControl, log }) {
   const partPath = `${outputPath}.part`
+  if (existsSync(outputPath) && statSync(outputPath).size > 0) {
+    log(`Reusing completed Android download (${statSync(outputPath).size} bytes)`)
+    return { path: outputPath, format: { height: requestedHeight, clientName: "CACHED" } }
+  }
   let selected = await resolveAndroidYoutube(sourceUrl, requestedHeight)
   let refreshed = false
   const finalize = () => {
