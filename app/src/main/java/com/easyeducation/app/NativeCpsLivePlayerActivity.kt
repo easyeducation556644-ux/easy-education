@@ -9,26 +9,34 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatImageButton
 import com.google.firebase.auth.FirebaseAuth
 
 /**
- * In-app-only presentation for CPS live sessions. YouTube lives stay inside an isolated iframe;
- * title/channel navigation, popup windows and top-level external navigation are blocked. Recorded
- * lives are deliberately handed to the normal native player instead of a browser/WebView.
+ * Dedicated CPS live player.
+ *
+ * Live playback deliberately does not use the recorded-video resolver. YouTube live sessions are
+ * rendered in an iframe with an app origin/referrer so YouTube can validate the embedded player.
+ * Other HTTP(S) live providers stay inside this WebView; direct MP4/HLS URLs are hosted in an HTML5
+ * video element. A YouTube live also exposes an explicit external Watch on YouTube action.
  */
 class NativeCpsLivePlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
-    private var initialDirectUrl: String = ""
+    private lateinit var stage: FrameLayout
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,16 +46,18 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
 
         val rawUrl = intent.getStringExtra(EXTRA_URL).orEmpty().trim()
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "CPS Live Class" }
-        if (rawUrl.isBlank()) {
+        if (!isHttpUrl(rawUrl)) {
             Toast.makeText(this, "Live stream is not available yet.", Toast.LENGTH_LONG).show()
             finish()
             return
         }
 
+        val youtubeId = youtubeVideoId(rawUrl)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
+
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -71,61 +81,161 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, dp(48), 1f))
         root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        val stage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        stage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         webView = WebView(this).apply {
             setBackgroundColor(Color.BLACK)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.setSupportMultipleWindows(false)
             settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             isLongClickable = false
             setOnLongClickListener { true }
+
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
             webChromeClient = object : WebChromeClient() {
-                override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean = false
+                override fun onCreateWindow(
+                    view: WebView?,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: android.os.Message?,
+                ): Boolean = false
+
+                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                    if (view == null || customView != null) {
+                        callback?.onCustomViewHidden()
+                        return
+                    }
+                    customView = view
+                    customViewCallback = callback
+                    stage.addView(
+                        view,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        ),
+                    )
+                    window.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_FULLSCREEN or
+                            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        )
+                }
+
+                override fun onHideCustomView() {
+                    hideCustomView()
+                }
             }
+
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     val target = request.url
-                    if (request.isForMainFrame) {
-                        // Never let an iframe click replace our app page or launch a browser surface.
-                        return target.toString() != initialDirectUrl
+                    val scheme = target.scheme.orEmpty().lowercase()
+                    if (scheme !in setOf("http", "https")) return true
+
+                    if (youtubeId != null && request.isForMainFrame) {
+                        val host = target.host.orEmpty().lowercase()
+                        val path = target.path.orEmpty().lowercase()
+                        val isEmbed = (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) && path.startsWith("/embed/")
+                        return !isEmbed
                     }
-                    val host = target.host.orEmpty().lowercase()
-                    val path = target.path.orEmpty().lowercase()
-                    val youtubeFrame = (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) && path.startsWith("/embed/")
-                    return (host.contains("youtube") || host.contains("youtu.be")) && !youtubeFrame
+                    return false
                 }
             }
         }
         stage.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-
-        val youtubeId = youtubeVideoId(rawUrl)
-        if (youtubeId != null) {
-            // The overlay intentionally covers YouTube's title/channel hotspot. Playback controls
-            // remain available below it, and clicks cannot navigate outside the embedded player.
-            stage.addView(View(this).apply { setBackgroundColor(Color.BLACK) }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
-            val embed = "https://www.youtube-nocookie.com/embed/$youtubeId?autoplay=1&playsinline=1&rel=0&iv_load_policy=3&controls=1&fs=1"
-            val html = """
-                <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-                <style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}iframe{position:fixed;inset:0;width:100%;height:100%;border:0}</style></head>
-                <body><iframe src="$embed" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></body></html>
-            """.trimIndent()
-            webView.loadDataWithBaseURL("https://www.youtube-nocookie.com", html, "text/html", "utf-8", null)
-        } else {
-            val uri = runCatching { Uri.parse(rawUrl) }.getOrNull()
-            if (uri?.scheme?.lowercase() !in setOf("http", "https")) {
-                Toast.makeText(this, "This live source is not supported.", Toast.LENGTH_LONG).show()
-                finish()
-                return
-            }
-            initialDirectUrl = rawUrl
-            webView.loadUrl(rawUrl)
-        }
         root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        if (youtubeId != null) {
+            val youtubeUrl = "https://www.youtube.com/watch?v=$youtubeId"
+            val button = TextView(this).apply {
+                text = "Watch on YouTube If you want :)"
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.rgb(30, 30, 30))
+                textSize = 15f
+                gravity = Gravity.CENTER
+                setPadding(dp(14), dp(13), dp(14), dp(13))
+                setOnClickListener {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(youtubeUrl)))
+                    }.onFailure {
+                        Toast.makeText(this@NativeCpsLivePlayerActivity, "Could not open YouTube.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            root.addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            loadYoutubeIframe(youtubeId)
+        } else if (isDirectMedia(rawUrl)) {
+            loadDirectMediaPage(rawUrl)
+        } else {
+            webView.loadUrl(rawUrl, mapOf("Referer" to APP_ORIGIN))
+        }
+
         setContentView(root)
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (customView != null) hideCustomView() else finish()
+            }
+        })
+    }
+
+    private fun loadYoutubeIframe(videoId: String) {
+        val embed = "https://www.youtube.com/embed/$videoId?autoplay=1&playsinline=1&rel=0&controls=1&fs=1&enablejsapi=1&origin=${Uri.encode(APP_ORIGIN.removeSuffix("/"))}"
+        val html = """
+            <!doctype html>
+            <html>
+            <head>
+              <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+              <meta name="referrer" content="strict-origin-when-cross-origin">
+              <style>
+                html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+                #player{position:fixed;inset:0;width:100%;height:100%;border:0;background:#000}
+              </style>
+            </head>
+            <body>
+              <iframe id="player"
+                src="$embed"
+                title="CPS Live Class"
+                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                referrerpolicy="strict-origin-when-cross-origin"
+                allowfullscreen></iframe>
+            </body>
+            </html>
+        """.trimIndent()
+        // Using the Easy Education HTTPS origin is intentional: YouTube receives a valid Referer/
+        // origin for the iframe instead of an opaque data: URL, which prevents embed error 153.
+        webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "utf-8", null)
+    }
+
+    private fun loadDirectMediaPage(url: String) {
+        val escaped = htmlEscape(url)
+        val html = """
+            <!doctype html>
+            <html>
+            <head>
+              <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+              <style>html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:contain;background:#000}</style>
+            </head>
+            <body><video src="$escaped" controls autoplay playsinline></video></body>
+            </html>
+        """.trimIndent()
+        webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "utf-8", null)
+    }
+
+    private fun hideCustomView() {
+        val view = customView ?: return
+        stage.removeView(view)
+        customView = null
+        customViewCallback?.onCustomViewHidden()
+        customViewCallback = null
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
     }
 
     override fun onResume() {
@@ -140,6 +250,7 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (customView != null) hideCustomView()
         if (::webView.isInitialized) {
             webView.stopLoading()
             webView.loadUrl("about:blank")
@@ -154,22 +265,18 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
     companion object {
         private const val EXTRA_URL = "cps_live_url"
         private const val EXTRA_TITLE = "cps_live_title"
+        private const val APP_ORIGIN = "https://easy-education.vercel.app/"
 
         fun openLive(context: Context, title: String, url: String, id: String) {
-            if (url.isBlank()) return
-            val lower = url.lowercase()
-            val directNative = lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains("rumble.com")
-            if (directNative && youtubeVideoId(url) == null) {
-                context.startActivity(
-                    Intent(context, NativePlayerActivity::class.java)
-                        .putExtra(NativePlayerActivity.EXTRA_TITLE, title)
-                        .putExtra(NativePlayerActivity.EXTRA_CLASS_ID, "cps-live:$id")
-                        .putExtra(NativePlayerActivity.EXTRA_SOURCE_URL, url)
-                        .putExtra(NativePlayerActivity.EXTRA_HEIGHT, 720),
-                )
-                return
-            }
-            context.startActivity(Intent(context, NativeCpsLivePlayerActivity::class.java).putExtra(EXTRA_TITLE, title).putExtra(EXTRA_URL, url))
+            if (!isHttpUrl(url)) return
+            // Live classes always go through the dedicated live WebView/iframe path. Do not send
+            // them through the recorded-video resolver, even when the provider is YouTube.
+            context.startActivity(
+                Intent(context, NativeCpsLivePlayerActivity::class.java)
+                    .putExtra(EXTRA_TITLE, title)
+                    .putExtra(EXTRA_URL, url)
+                    .putExtra("cps_live_id", id),
+            )
         }
 
         fun openRecording(context: Context, title: String, url: String, id: String, startPositionMs: Long = 0L) {
@@ -184,12 +291,28 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
             )
         }
 
+        private fun isHttpUrl(raw: String): Boolean {
+            val uri = runCatching { Uri.parse(raw.trim()) }.getOrNull() ?: return false
+            return uri.scheme?.lowercase() in setOf("http", "https") && !uri.host.isNullOrBlank()
+        }
+
+        private fun isDirectMedia(raw: String): Boolean {
+            val path = runCatching { Uri.parse(raw).path.orEmpty().lowercase() }.getOrDefault("")
+            return path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".webm")
+        }
+
+        private fun htmlEscape(value: String): String = value
+            .replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+
         private fun youtubeVideoId(raw: String): String? {
             val uri = runCatching { Uri.parse(raw.trim()) }.getOrNull() ?: return null
             val host = uri.host.orEmpty().lowercase().removePrefix("www.").removePrefix("m.")
             val candidate = when {
                 host == "youtu.be" -> uri.pathSegments.firstOrNull()
-                host.endsWith("youtube.com") -> when {
+                host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com") -> when {
                     uri.pathSegments.firstOrNull() == "watch" -> uri.getQueryParameter("v")
                     uri.pathSegments.firstOrNull() in setOf("live", "embed", "shorts") -> uri.pathSegments.getOrNull(1)
                     else -> uri.getQueryParameter("v")
