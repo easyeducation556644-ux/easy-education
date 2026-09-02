@@ -19,7 +19,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_easy_education"
         android:roundIcon="@drawable/ic_easy_education"
-        android:label="Easy Education"
+        android:label="Easy Education Demo"
         android:theme="@style/Theme.EasyEducation"
         android:usesCleartextTraffic="false">
         <activity android:name=".NativeResourceViewerActivity" android:exported="false" android:screenOrientation="unspecified" />
@@ -42,11 +42,15 @@
             android:configChanges="keyboardHidden|orientation|screenSize" />
         <activity
             android:name=".MainActivity"
-            android:exported="true"
+            android:exported="false"
             android:supportsPictureInPicture="true"
             android:windowSoftInputMode="adjustResize"
             android:screenOrientation="unspecified"
-            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout">
+            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout" />
+        <activity
+            android:name=".PresentationDemoActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
