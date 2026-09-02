@@ -1,0 +1,38 @@
+name: Presentation demo APK
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/presentation-demo-apk.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout presentation demo branch
+        uses: actions/checkout@v4
+        with:
+          ref: presentation/all-access-demo
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug
+
+      - name: Stage APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Easy-Education-Presentation-Demo.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-presentation-demo-apk
+          path: Easy-Education-Presentation-Demo.apk
+          retention-days: 7
