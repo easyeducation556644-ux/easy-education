@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103000,
-  "versionName": "2.10.30",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.30/Easy-Education-2.10.30.apk",
-  "sha256": "a85a028eb0304312aacc30b1395ce7f122b502461a1c62f1f3b80332d518e905",
+  "versionCode": 2103100,
+  "versionName": "2.10.31",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.31/Easy-Education-2.10.31.apk",
+  "sha256": "6e7c71f930fe130e17c6a2616ff29d7c91be0bb1a9810a6f4800aa14163439bc",
   "force": false,
-  "notes": "CPS live playback fixed: live sessions use an embedded player, and YouTube lives include a Watch on YouTube option."
+  "notes": "CPS live fullscreen now rotates to landscape and uses true immersive fullscreen."
 }
