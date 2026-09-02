@@ -2,6 +2,7 @@ package com.easyeducation.app
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -22,6 +23,9 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatImageButton
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.firebase.auth.FirebaseAuth
 
 /**
@@ -37,6 +41,8 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
     private lateinit var stage: FrameLayout
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    private var fullscreenParent: ViewGroup? = null
+    private var orientationBeforeFullscreen: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,20 +118,30 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
                         callback?.onCustomViewHidden()
                         return
                     }
+
                     customView = view
                     customViewCallback = callback
-                    stage.addView(
+                    orientationBeforeFullscreen = requestedOrientation
+
+                    // WebView's fullscreen view must sit over the whole Activity decor, not inside
+                    // the normal player stage. Otherwise the header / YouTube button still reserve
+                    // space and the iframe never becomes true device fullscreen.
+                    val decor = window.decorView as ViewGroup
+                    fullscreenParent = decor
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    decor.addView(
                         view,
-                        FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT,
                         ),
                     )
-                    window.decorView.systemUiVisibility = (
-                        View.SYSTEM_UI_FLAG_FULLSCREEN or
-                            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                        )
+                    view.bringToFront()
+
+                    // A live class is video-first: the iframe fullscreen action should immediately
+                    // rotate to landscape, exactly like a normal video player fullscreen action.
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    enterImmersiveFullscreen()
                 }
 
                 override fun onHideCustomView() {
@@ -209,8 +225,6 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
             </body>
             </html>
         """.trimIndent()
-        // Using the Easy Education HTTPS origin is intentional: YouTube receives a valid Referer/
-        // origin for the iframe instead of an opaque data: URL, which prevents embed error 153.
         webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "utf-8", null)
     }
 
@@ -229,18 +243,34 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
         webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "utf-8", null)
     }
 
+    private fun enterImmersiveFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun leaveImmersiveFullscreen() {
+        WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+    }
+
     private fun hideCustomView() {
         val view = customView ?: return
-        stage.removeView(view)
+        fullscreenParent?.removeView(view)
+        fullscreenParent = null
         customView = null
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        leaveImmersiveFullscreen()
+        requestedOrientation = orientationBeforeFullscreen
     }
 
     override fun onResume() {
         super.onResume()
         if (::webView.isInitialized) webView.onResume()
+        if (customView != null) enterImmersiveFullscreen()
         NativeCapturePolicy.refreshNow(this, FirebaseAuth.getInstance().currentUser)
     }
 
@@ -269,8 +299,6 @@ class NativeCpsLivePlayerActivity : AppCompatActivity() {
 
         fun openLive(context: Context, title: String, url: String, id: String) {
             if (!isHttpUrl(url)) return
-            // Live classes always go through the dedicated live WebView/iframe path. Do not send
-            // them through the recorded-video resolver, even when the provider is YouTube.
             context.startActivity(
                 Intent(context, NativeCpsLivePlayerActivity::class.java)
                     .putExtra(EXTRA_TITLE, title)
