@@ -179,6 +179,16 @@ function normalizeCourseId(value) {
   return String(value || "").trim().replace(/^cps:/, "")
 }
 
+function liveCourseId(live) {
+  return normalizeCourseId(firstText(
+    live?.courseId,
+    live?.courseID,
+    live?.course,
+    live?.batchId,
+    live?.batchID,
+  ))
+}
+
 function activeEntitlement(data, now = Date.now()) {
   if (!data || data.status === "revoked") return false
   const expiresAtMs = Number(data.expiresAtMs || 0)
@@ -328,15 +338,15 @@ function mapLive(live, { access = null, courseTitle = "" } = {}) {
   const hasAccess = Boolean(access)
   return {
     id: String(live?.id || ""),
-    courseId: `cps:${normalizeCourseId(live?.courseId)}`,
+    courseId: `cps:${liveCourseId(live)}`,
     courseTitle,
-    title: firstText(live?.title, live?.topic) || "Live class",
-    topic: firstText(live?.topic),
-    startTime: firstText(live?.startTime),
-    url: hasAccess ? firstText(live?.url) : "",
-    status: firstText(live?.status) || "upcoming",
-    platform: firstText(live?.platform),
-    thumbnailUrl: firstText(live?.thumbnailUrl),
+    title: firstText(live?.title, live?.topic, live?.name) || "Live class",
+    topic: firstText(live?.topic, live?.subject),
+    startTime: firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date),
+    url: hasAccess ? firstText(live?.url, live?.liveUrl, live?.liveURL, live?.joinUrl, live?.joinURL, live?.meetingUrl, live?.meetingURL, live?.link) : "",
+    status: firstText(live?.status, live?.liveStatus) || "upcoming",
+    platform: firstText(live?.platform, live?.provider),
+    thumbnailUrl: firstText(live?.thumbnailUrl, live?.thumbnail),
     hasAccess,
   }
 }
@@ -388,7 +398,7 @@ function dhakaDateKey(value) {
 function isTodayOrRunning(live, now = new Date()) {
   const status = firstText(live?.status).toLowerCase()
   if (["live", "running", "ongoing", "started", "live now"].includes(status)) return true
-  const start = firstText(live?.startTime)
+  const start = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
   return Boolean(start) && dhakaDateKey(start) === dhakaDateKey(now)
 }
 
@@ -402,7 +412,7 @@ async function coursePayload(authenticated, rawCourseId, source, access = null) 
     listCpsCollection("exams", source, { optional: true }),
     listCpsCollection("notices", source, { optional: true }),
   ])
-  const liveClasses = allLive.filter((item) => normalizeCourseId(item.courseId) === rawCourseId)
+  const liveClasses = allLive.filter((item) => liveCourseId(item) === rawCourseId)
   const exams = allExams.filter((item) => normalizeCourseId(item.courseId) === rawCourseId)
   const notices = allNotices.filter((notice) => {
     const targets = asArray(notice?.targetCourses).map(normalizeCourseId).filter(Boolean)
@@ -455,16 +465,19 @@ async function handleBrowse(authenticated, res, source) {
     .sort((a, b) => a.title.localeCompare(b.title))
 
   const liveHighlights = allLive
-    .filter((live) => sourceById.has(normalizeCourseId(live.courseId)) && isTodayOrRunning(live))
+    .filter((live) => {
+      const rawCourseId = liveCourseId(live)
+      return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && isTodayOrRunning(live)
+    })
     .sort((a, b) => {
       const aRunning = isTodayOrRunning({ ...a, startTime: "" }) ? 0 : 1
       const bRunning = isTodayOrRunning({ ...b, startTime: "" }) ? 0 : 1
       if (aRunning !== bRunning) return aRunning - bRunning
-      return (Date.parse(firstText(a.startTime)) || Number.MAX_SAFE_INTEGER) - (Date.parse(firstText(b.startTime)) || Number.MAX_SAFE_INTEGER)
+      return (Date.parse(firstText(a.startTime, a.startAt, a.scheduledAt, a.dateTime, a.date)) || Number.MAX_SAFE_INTEGER) - (Date.parse(firstText(b.startTime, b.startAt, b.scheduledAt, b.dateTime, b.date)) || Number.MAX_SAFE_INTEGER)
     })
     .slice(0, 12)
     .map((live) => {
-      const rawCourseId = normalizeCourseId(live.courseId)
+      const rawCourseId = liveCourseId(live)
       const course = sourceById.get(rawCourseId)
       return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
     })

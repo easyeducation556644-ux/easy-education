@@ -10,6 +10,7 @@ const MAX_PAGES = 20
 const asArray = (value) => Array.isArray(value) ? value : []
 const text = (...values) => values.find((value) => typeof value === "string" && value.trim())?.trim() || ""
 const normalizeCourseId = (value) => String(value || "").trim().replace(/^cps:/, "")
+const liveCourseId = (item) => normalizeCourseId(text(item?.courseId, item?.courseID, item?.course, item?.batchId, item?.batchID))
 
 function httpError(statusCode, message, code = "CPS_ACADEMIC_ERROR") {
   const error = new Error(message)
@@ -273,7 +274,7 @@ export default async function handler(req, res) {
     const { playlists, playlistIndex, classIndex } = buildCourseIndex(course, access.active)
 
     const courseLive = liveClasses
-      .filter((item) => normalizeCourseId(item?.courseId) === courseId)
+      .filter((item) => liveCourseId(item) === courseId)
       .map((item) => {
         const playlistId = text(item?.playlistId)
         const playlistTitle = playlistIndex.get(playlistId)?.title || text(item?.topic) || "Live classes"
@@ -282,13 +283,13 @@ export default async function handler(req, res) {
           courseId: `cps:${courseId}`,
           playlistId,
           playlistTitle,
-          title: text(item?.title, item?.topic) || "Live class",
-          topic: text(item?.topic),
-          startTime: text(item?.startTime),
-          status: text(item?.status) || "upcoming",
-          platform: text(item?.platform),
-          thumbnailUrl: text(item?.thumbnailUrl),
-          url: safeLink(item?.url, access.active),
+          title: text(item?.title, item?.topic, item?.name) || "Live class",
+          topic: text(item?.topic, item?.subject),
+          startTime: text(item?.startTime, item?.startAt, item?.scheduledAt, item?.dateTime, item?.date),
+          status: text(item?.status, item?.liveStatus) || "upcoming",
+          platform: text(item?.platform, item?.provider),
+          thumbnailUrl: text(item?.thumbnailUrl, item?.thumbnail),
+          url: safeLink(text(item?.url, item?.liveUrl, item?.liveURL, item?.joinUrl, item?.joinURL, item?.meetingUrl, item?.meetingURL, item?.link), access.active),
           recordings: asArray(item?.recordings).map((recording, index) => normalizeRecording(recording, index, access.active)),
           hasAccess: access.active,
         }
