@@ -5,33 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Easy Education · Media Operations</title>
   <style>
-    :root { color-scheme: dark; --bg:#080b10; --card:#111720; --card2:#151d28; --line:#263142; --text:#f5f7fb; --muted:#94a3b8; --blue:#5b8cff; --green:#31c48d; --amber:#f5b942; --red:#fb7185; }
-    * { box-sizing:border-box } body { margin:0; background:radial-gradient(circle at 20% 0,#14213a 0,transparent 32%),var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif }
-    button,input,textarea,select { font:inherit } button { cursor:pointer }
-    .shell { width:min(1480px,96%); margin:auto; padding:24px 0 80px }
-    header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:22px }
-    h1,h2,h3,p { margin-top:0 } h1 { font-size:clamp(24px,4vw,38px); margin-bottom:5px } h2 { font-size:18px } h3 { font-size:15px; margin-bottom:8px }
-    .muted { color:var(--muted) } .tiny { font-size:12px } .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace }
-    .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:16px } .span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-7{grid-column:span 7}.span-8{grid-column:span 8}.span-12{grid-column:span 12}
-    .card { background:linear-gradient(180deg,rgba(21,29,40,.96),rgba(13,18,26,.96)); border:1px solid var(--line); border-radius:16px; padding:18px; box-shadow:0 18px 60px rgba(0,0,0,.18) }
-    .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap }.between{justify-content:space-between}.stack{display:grid;gap:11px}
-    label { display:grid; gap:6px; color:#d7deea; font-size:13px } input,textarea,select { width:100%; border:1px solid var(--line); border-radius:10px; background:#090e15; color:var(--text); padding:10px 12px; outline:none } input:focus,textarea:focus,select:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(91,140,255,.12) }
-    textarea { resize:vertical; min-height:88px }.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-    .btn { border:1px solid var(--line); border-radius:10px; padding:9px 13px; background:#192333; color:var(--text); font-weight:650 }.btn:hover{filter:brightness(1.14)}.btn.primary{background:var(--blue);border-color:var(--blue)}.btn.danger{background:#4b1721;border-color:#7b2535}.btn.good{background:#123a2e;border-color:#235d49}.btn.small{padding:6px 9px;font-size:12px}
-    .pill { display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--muted);background:#0b1119 }.dot{width:7px;height:7px;border-radius:99px;background:var(--muted)}.dot.online{background:var(--green);box-shadow:0 0 12px var(--green)}
-    .list { display:grid; gap:10px }.item { border:1px solid var(--line); background:#0c121a; border-radius:12px; padding:12px }.task-title{font-weight:720;overflow-wrap:anywhere}.task-url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px}
-    .bar { height:7px;border-radius:99px;background:#202a38;overflow:hidden;margin:9px 0}.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#8b5cf6);width:0;transition:width .35s}
-    .status-completed{color:var(--green)}.status-failed,.status-cancelled{color:var(--red)}.status-paused{color:var(--amber)}
-    .metric { min-width:150px;flex:1;border:1px solid var(--line);border-radius:12px;padding:12px;background:#0b1119}.metric strong{display:block;font-size:24px;margin-top:4px}
-    #login { max-width:460px;margin:12vh auto }.hidden{display:none!important}.notice{border:1px solid #674f20;background:#2a2313;color:#f8d883;padding:11px 13px;border-radius:10px;font-size:13px}.error{border-color:#772d3a;background:#2e151b;color:#ffb4c0}
-    .empty { padding:28px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px }
-    @media(max-width:980px){.span-4,.span-5,.span-7,.span-8{grid-column:span 12}} @media(max-width:620px){.two,.three{grid-template-columns:1fr}.shell{padding-top:14px}header{align-items:flex-start;flex-direction:column}}
+    :root { color-scheme:dark; --bg:#080b10; --card:#111720; --line:#263142; --text:#f5f7fb; --muted:#94a3b8; --blue:#5b8cff; --green:#31c48d; --amber:#f5b942; --red:#fb7185 }
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 20% 0,#14213a 0,transparent 32%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    button,input,textarea,select{font:inherit} button{cursor:pointer}.shell{width:min(1480px,96%);margin:auto;padding:24px 0 80px}header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}
+    h1,h2,h3,p{margin-top:0}h1{font-size:clamp(24px,4vw,38px);margin-bottom:5px}h2{font-size:18px}h3{font-size:15px;margin-bottom:6px}.muted{color:var(--muted)}.tiny{font-size:12px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.span-5{grid-column:span 5}.span-7{grid-column:span 7}.span-12{grid-column:span 12}.card{background:linear-gradient(180deg,rgba(21,29,40,.96),rgba(13,18,26,.96));border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.18)}
+    .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.between{justify-content:space-between}.stack{display:grid;gap:11px}label{display:grid;gap:6px;color:#d7deea;font-size:13px}input,textarea,select{width:100%;border:1px solid var(--line);border-radius:10px;background:#090e15;color:var(--text);padding:10px 12px;outline:none}input:focus,textarea:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(91,140,255,.12)}textarea{resize:vertical;min-height:88px}.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.four{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    .btn{border:1px solid var(--line);border-radius:10px;padding:9px 13px;background:#192333;color:var(--text);font-weight:650}.btn:hover{filter:brightness(1.14)}.btn.primary{background:var(--blue);border-color:var(--blue)}.btn.danger{background:#4b1721;border-color:#7b2535}.btn.good{background:#123a2e;border-color:#235d49}.btn.small{padding:6px 9px;font-size:12px}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--muted);background:#0b1119}.dot{width:7px;height:7px;border-radius:99px;background:var(--muted)}.dot.online{background:var(--green);box-shadow:0 0 12px var(--green)}
+    .list{display:grid;gap:10px}.item{border:1px solid var(--line);background:#0c121a;border-radius:12px;padding:12px}.task-title{font-weight:720;overflow-wrap:anywhere}.task-url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:700px}.bar{height:7px;border-radius:99px;background:#202a38;overflow:hidden;margin:9px 0}.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#8b5cf6);width:0;transition:width .35s}.status-completed{color:var(--green)}.status-failed,.status-cancelled{color:var(--red)}.status-paused{color:var(--amber)}
+    .metric{min-width:150px;flex:1;border:1px solid var(--line);border-radius:12px;padding:12px;background:#0b1119}.metric strong{display:block;font-size:24px;margin-top:4px}#login{max-width:460px;margin:12vh auto}.hidden{display:none!important}.notice{border:1px solid #674f20;background:#2a2313;color:#f8d883;padding:11px 13px;border-radius:10px;font-size:13px}.error{border-color:#772d3a;background:#2e151b;color:#ffb4c0}.empty{padding:28px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}
+    .preset-section{display:grid;gap:11px;border:1px solid #2b374a;background:#0a1018;border-radius:13px;padding:14px}.preset-section h3{margin:0}.section-head{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}.section-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#7aa2ff}.summary{border:1px solid #30405a;background:#101827;border-radius:11px;padding:11px 12px;color:#c9d6ea;font-size:13px;line-height:1.45}.help{font-size:11px;color:var(--muted);line-height:1.4}.field-group{display:grid;gap:10px}.field-group.hidden{display:none}.toggle-row{display:flex;align-items:center;gap:8px}.toggle-row input{width:auto}.mode-note{font-size:12px;color:#b8c5d8;margin:-2px 0 0}
+    @media(max-width:1100px){.four{grid-template-columns:repeat(2,1fr)}}@media(max-width:980px){.span-5,.span-7{grid-column:span 12}}@media(max-width:620px){.two,.three,.four{grid-template-columns:1fr}.shell{padding-top:14px}header{align-items:flex-start;flex-direction:column}}
   </style>
 </head>
 <body>
   <main class="shell">
     <section id="login" class="card stack">
-      <div><h1>Media Operations</h1><p class="muted">Private control plane for the Easy Education PC worker.</p></div>
+      <div><h1>Media Operations</h1><p class="muted">Private control plane for Easy Education media workers.</p></div>
       <label>Automation secret<input id="secret" type="password" autocomplete="current-password" placeholder="Same AUTOMATION_SECRET as Vercel" /></label>
       <button class="btn primary" id="connect">Connect securely</button>
       <p id="loginError" class="notice error hidden"></p>
@@ -43,13 +33,12 @@
         <div><h1>Media Operations</h1><p class="muted">Manual queue · Watermark processing · Telegram delivery</p></div>
         <div class="row"><span class="pill" id="apiState"><span class="dot"></span>Connecting</span><button class="btn danger" id="globalToggle">Pause everything</button><button class="btn" id="logout">Lock</button></div>
       </header>
-
       <div id="notice" class="notice hidden"></div>
       <div class="row" style="margin:16px 0" id="metrics"></div>
 
       <div class="grid">
         <section class="card span-7 stack">
-          <div><h2>Create manual upload batch</h2><p class="tiny muted">Paste 1–10 authorized YouTube, Bunny, HLS or direct video links. They queue together but the 8GB worker encodes one at a time.</p></div>
+          <div><h2>Create manual upload batch</h2><p class="tiny muted">Paste 1–10 authorized YouTube, Bunny, HLS or direct video links. Workers encode one video at a time.</p></div>
           <label>Task name<input id="taskName" placeholder="Example: Engineering daily videos" /></label>
           <label>Video links<textarea id="urls" rows="7" placeholder="https://youtube.com/watch?v=...&#10;https://.../master.m3u8"></textarea></label>
           <div class="three">
@@ -70,23 +59,73 @@
         </section>
 
         <section class="card span-5 stack">
-          <div><h2>Watermark preset</h2><p class="tiny muted">Permanent, timed, ticker and combined profiles are rendered by FFmpeg on the PC.</p></div>
-          <div class="two"><label>Preset name<input id="presetName" placeholder="Engineering standard" /></label><label>Mode<select id="presetMode"><option value="permanent">Permanent</option><option value="timed">Timed popups</option><option value="ticker">News ticker</option><option value="combined">Combined</option><option value="none">None</option></select></label></div>
-          <label>Main text<input id="presetText" placeholder="Easy Education" /></label>
-          <label>Ticker text<input id="tickerText" placeholder="Easy Education • HSC 26 Engineering" /></label>
-          <div class="three"><label>Position<select id="position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option><option value="center">Center</option></select></label><label>Opacity<input id="opacity" type="number" value="0.28" min="0.05" max="1" step="0.05" /></label><label>Font size<input id="fontSize" type="number" value="36" min="14" max="120" /></label></div>
-          <label>Timed appearances <span class="muted">start-second:duration, one per line</span><textarea id="timed" rows="3" placeholder="300:10&#10;1800:12"></textarea></label>
+          <div><h2>Watermark preset</h2><p class="tiny muted">Only settings that affect the selected mode are shown. Saved presets work on Windows and Colab workers using the same FFmpeg filter.</p></div>
+          <div class="two">
+            <label>Preset name<input id="presetName" placeholder="Engineering standard" /></label>
+            <label>Watermark mode<select id="presetMode"><option value="permanent">Permanent watermark</option><option value="timed">Timed popup</option><option value="ticker">Ticker banner</option><option value="combined">Combined</option><option value="none">No watermark</option></select></label>
+          </div>
+          <p id="modeNote" class="mode-note"></p>
+
+          <div id="permanentSection" class="preset-section field-group">
+            <div class="section-head"><div><div class="section-kicker">Permanent</div><h3>Persistent watermark</h3></div><span class="pill">stays visible after start</span></div>
+            <label>Watermark text<input id="permanentText" placeholder="Easy Education" /></label>
+            <div class="three">
+              <label>Position<select id="permanentPosition"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option><option value="center">Center</option><option value="random">Random position</option></select></label>
+              <label>Text size<input id="permanentFontSize" type="number" value="36" min="14" max="120" /></label>
+              <label>Opacity<input id="permanentOpacity" type="number" value="0.28" min="0.05" max="1" step="0.05" /></label>
+            </div>
+            <label>Start showing after (minutes)<input id="permanentStartMin" type="number" value="0" min="0" max="1440" step="0.1" /><span class="help">0 = from the beginning. Example: 5 means the watermark starts at 05:00 and remains visible.</span></label>
+            <div id="randomPositionFields" class="field-group hidden">
+              <label>Move to a new random position every (seconds)<input id="permanentRandomEvery" type="number" value="30" min="5" max="3600" step="1" /><span class="help">The watermark stays on-screen; only its safe position changes. Recommended: 20–45 seconds.</span></label>
+            </div>
+          </div>
+
+          <div id="popupSection" class="preset-section field-group hidden">
+            <div class="section-head"><div><div class="section-kicker">Timed popup</div><h3>Short recurring watermark</h3></div><span class="pill">recommended 10 sec</span></div>
+            <label>Popup text<input id="popupText" placeholder="Easy Education" /></label>
+            <div class="three">
+              <label>First show after (minutes)<input id="popupFirstMin" type="number" value="5" min="0" max="1440" step="0.1" /></label>
+              <label>Show again every (minutes)<input id="popupRepeatMin" type="number" value="20" min="0" max="360" step="0.1" /><span class="help">0 = show only once.</span></label>
+              <label>Visible for (seconds)<input id="popupDuration" type="number" value="10" min="1" max="120" /></label>
+            </div>
+            <div class="three">
+              <label>Position<select id="popupPosition"><option value="rotate">Rotate positions automatically</option><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option><option value="center">Center</option></select></label>
+              <label>Text size<input id="popupFontSize" type="number" value="44" min="14" max="160" /></label>
+              <label>Opacity<input id="popupOpacity" type="number" value="0.70" min="0.10" max="1" step="0.05" /></label>
+            </div>
+          </div>
+
+          <div id="tickerSection" class="preset-section field-group hidden">
+            <div class="section-head"><div><div class="section-kicker">Ticker</div><h3>Scrolling bottom banner</h3></div><span class="pill">production default: periodic</span></div>
+            <label>Ticker text<input id="tickerText" placeholder="Easy Education • HSC 26 Engineering" /></label>
+            <div class="two">
+              <label>Display<select id="tickerDisplayMode"><option value="interval" selected>Repeat periodically</option><option value="always">Always visible</option></select></label>
+              <label>Scroll speed<select id="tickerSpeed"><option value="70">Slow</option><option value="110" selected>Normal</option><option value="160">Fast</option><option value="220">Very fast</option></select></label>
+            </div>
+            <div id="tickerIntervalFields" class="three">
+              <label>First show after (minutes)<input id="tickerFirstMin" type="number" value="0" min="0" max="1440" step="0.1" /></label>
+              <label>Show every (minutes)<input id="tickerRepeatMin" type="number" value="10" min="0.2" max="360" step="0.1" /></label>
+              <label>Stay visible for (seconds)<input id="tickerDuration" type="number" value="20" min="3" max="600" /></label>
+            </div>
+            <div class="three">
+              <label>Text size<input id="tickerFontSize" type="number" value="28" min="14" max="120" /></label>
+              <label>Text opacity<input id="tickerTextOpacity" type="number" value="0.95" min="0.1" max="1" step="0.05" /></label>
+              <label>Background opacity<input id="tickerBgOpacity" type="number" value="0.55" min="0" max="0.95" step="0.05" /></label>
+            </div>
+          </div>
+
+          <div id="presetSummary" class="summary"></div>
           <button class="btn good" id="savePreset">Save preset</button>
           <div id="presetList" class="list"></div>
         </section>
 
         <section class="card span-7">
-          <div class="row between"><div><h2>Workers</h2><p class="tiny muted">PC shutdown is safe. The lease expires after three minutes and resumes from saved files.</p></div><button class="btn small" id="refresh">Refresh</button></div>
+          <div class="row between"><div><h2>Workers</h2><p class="tiny muted">If a worker disconnects, its lease expires and another worker can continue the task.</p></div><button class="btn small" id="refresh">Refresh</button></div>
           <div id="workerList" class="list"></div>
         </section>
 
         <section class="card span-12">
-          <div class="row between"><div><h2>Tasks</h2><p class="tiny muted">Live status comes only from the Operations database; this page does not read Easy Education classes.</p></div><div class="row"><select id="taskFilter" style="width:auto"><option value="active">Active</option><option value="all">All</option><option value="completed">Completed</option><option value="failed">Failed</option></select><button class="btn small" id="refreshTasks">Refresh</button></div></div>
+          <div class="row between"><div><h2>Tasks</h2><p class="tiny muted">Live status comes from the Operations database.</p></div><div class="row"><select id="taskFilter" style="width:auto"><option value="active">Active</option><option value="all">All</option><option value="completed">Completed</option><option value="failed">Failed</option></select><button class="btn small" id="refreshTasks">Refresh</button></div></div>
           <div id="taskList" class="list" style="margin-top:14px"></div>
         </section>
       </div>
@@ -98,47 +137,123 @@
     let secret = sessionStorage.getItem("ee_media_secret") || ""
     let state = { channels: [], presets: [], tasks: [], workers: [], settings: {} }
     let pollTimer = null
-    const activeStates = new Set(["queued","claimed","downloading","processing","uploading","verifying","paused"])
-
-    function escape(value) { const div=document.createElement("div"); div.textContent=String(value??""); return div.innerHTML }
-    function notice(message, error=false) { const el=$("notice"); el.textContent=message; el.className=`notice${error?" error":""}`; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),7000) }
-    async function call(action, body={}) {
-      const response = await fetch(`/api/telegram-bot?action=${encodeURIComponent(action)}`, { method:"POST", headers:{Authorization:`Bearer ${secret}`,"Content-Type":"application/json"}, body:JSON.stringify(body) })
-      const payload = await response.json().catch(()=>({}))
-      if(!response.ok || payload.ok===false) throw new Error(payload.error || `Request failed (${response.status})`)
-      return payload
+    const activeStates = new Set(["queued","claimed","downloading","processing","uploading","verifying","paused","waiting_network"])
+    const modeCopy = {
+      permanent: "A watermark that stays visible after its configured start time. Random position can move it safely around the frame.",
+      timed: "A short watermark popup. Choose the first appearance, repeat interval and visible duration in plain time units.",
+      ticker: "A scrolling bottom banner. Keep it always visible or show it periodically to reduce distraction.",
+      combined: "Uses permanent watermark + timed popup + ticker together. Each section has independent text and timing.",
+      none: "No FFmpeg watermark is applied. The downloaded video goes directly to Telegram.",
     }
-    function links() { return [...new Set($("urls").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))] }
-    function setOptions(id, rows, empty) { const el=$(id); const current=el.value; el.innerHTML=`<option value="">${escape(empty)}</option>`+rows.map(row=>`<option value="${escape(row.id)}">${escape(row.name)}</option>`).join(""); if(rows.some(r=>r.id===current))el.value=current }
-    function render() {
-      const active=state.tasks.filter(t=>activeStates.has(t.status)).length, completed=state.tasks.filter(t=>t.status==="completed").length, failed=state.tasks.filter(t=>t.status==="failed").length, online=state.workers.filter(w=>w.online).length
+    const escape = (value) => { const div=document.createElement("div"); div.textContent=String(value??""); return div.innerHTML }
+    const minutesToSeconds = (value) => Math.max(0, Math.round(Number(value || 0) * 60))
+    const num = (id, fallback=0) => { const value=Number($(id).value); return Number.isFinite(value)?value:fallback }
+    function notice(message,error=false){const el=$("notice");el.textContent=message;el.className=`notice${error?" error":""}`;el.classList.remove("hidden");setTimeout(()=>el.classList.add("hidden"),7000)}
+    async function call(action,body={}){const response=await fetch(`/api/telegram-bot?action=${encodeURIComponent(action)}`,{method:"POST",headers:{Authorization:`Bearer ${secret}`,"Content-Type":"application/json"},body:JSON.stringify(body)});const payload=await response.json().catch(()=>({}));if(!response.ok||payload.ok===false)throw new Error(payload.error||`Request failed (${response.status})`);return payload}
+    function links(){return[...new Set($("urls").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))]}
+    function setOptions(id,rows,empty){const el=$(id),current=el.value;el.innerHTML=`<option value="">${escape(empty)}</option>`+rows.map(row=>`<option value="${escape(row.id)}">${escape(row.name)}</option>`).join("");if(rows.some(r=>r.id===current))el.value=current}
+
+    function updatePresetForm(){
+      const mode=$("presetMode").value
+      $("modeNote").textContent=modeCopy[mode]||""
+      $("permanentSection").classList.toggle("hidden",!["permanent","combined"].includes(mode))
+      $("popupSection").classList.toggle("hidden",!["timed","combined"].includes(mode))
+      $("tickerSection").classList.toggle("hidden",!["ticker","combined"].includes(mode))
+      $("randomPositionFields").classList.toggle("hidden",$("permanentPosition").value!=="random")
+      $("tickerIntervalFields").classList.toggle("hidden",$("tickerDisplayMode").value!=="interval")
+      updatePresetSummary()
+    }
+    function updatePresetSummary(){
+      const mode=$("presetMode").value, parts=[]
+      if(mode==="none"){ $("presetSummary").textContent="Preview: No watermark. Video will not be re-encoded for branding."; return }
+      if(["permanent","combined"].includes(mode)){
+        const start=num("permanentStartMin",0),pos=$("permanentPosition").value
+        parts.push(`Permanent: ${pos==="random"?`random position every ${num("permanentRandomEvery",30)}s`:pos}${start>0?` · starts at ${start} min`:" · from start"}`)
+      }
+      if(["timed","combined"].includes(mode)){
+        const repeat=num("popupRepeatMin",20)
+        parts.push(`Popup: first at ${num("popupFirstMin",5)} min · ${repeat>0?`every ${repeat} min`:"once"} · visible ${num("popupDuration",10)}s`)
+      }
+      if(["ticker","combined"].includes(mode)){
+        const display=$("tickerDisplayMode").value
+        parts.push(display==="always"?`Ticker: always visible · ${$("tickerSpeed").selectedOptions[0].text.toLowerCase()} speed`:`Ticker: every ${num("tickerRepeatMin",10)} min · visible ${num("tickerDuration",20)}s · ${$("tickerSpeed").selectedOptions[0].text.toLowerCase()} speed`)
+      }
+      $("presetSummary").textContent=`Preview: ${parts.join(" | ")}`
+    }
+    function presetPayload(){
+      const mode=$("presetMode").value
+      return {
+        name:$("presetName").value,
+        mode,
+        schemaVersion:2,
+        permanent:{
+          text:$("permanentText").value,
+          position:$("permanentPosition").value,
+          opacity:num("permanentOpacity",.28),
+          fontSize:num("permanentFontSize",36),
+          startAtSec:minutesToSeconds($("permanentStartMin").value),
+          randomChangeEverySec:num("permanentRandomEvery",30),
+        },
+        popup:{
+          text:$("popupText").value,
+          firstAfterSec:minutesToSeconds($("popupFirstMin").value),
+          repeatEverySec:minutesToSeconds($("popupRepeatMin").value),
+          durationSec:num("popupDuration",10),
+          position:$("popupPosition").value,
+          opacity:num("popupOpacity",.7),
+          fontSize:num("popupFontSize",44),
+        },
+        ticker:{
+          text:$("tickerText").value,
+          displayMode:$("tickerDisplayMode").value,
+          firstAfterSec:minutesToSeconds($("tickerFirstMin").value),
+          repeatEverySec:minutesToSeconds($("tickerRepeatMin").value),
+          durationSec:num("tickerDuration",20),
+          speedPxSec:num("tickerSpeed",110),
+          fontSize:num("tickerFontSize",28),
+          textOpacity:num("tickerTextOpacity",.95),
+          backgroundOpacity:num("tickerBgOpacity",.55),
+        },
+      }
+    }
+    function presetDescription(p){
+      if(p.mode==="none")return"No watermark"
+      if(Number(p.schemaVersion||0)>=2){
+        const bits=[]
+        if(["permanent","combined"].includes(p.mode)){const x=p.permanent||{};bits.push(x.position==="random"?`random every ${x.randomChangeEverySec||30}s`:x.position||"top-right")}
+        if(["timed","combined"].includes(p.mode)){const x=p.popup||{};bits.push(`popup ${x.repeatEverySec?`every ${Math.round(x.repeatEverySec/60)}m`:"once"}`)}
+        if(["ticker","combined"].includes(p.mode)){const x=p.ticker||{};bits.push(x.displayMode==="always"?"ticker always":`ticker every ${Math.round((x.repeatEverySec||600)/60)}m`)}
+        return bits.join(" · ")
+      }
+      return `${p.mode} · legacy preset`
+    }
+
+    function render(){
+      const active=state.tasks.filter(t=>activeStates.has(t.status)).length,completed=state.tasks.filter(t=>t.status==="completed").length,failed=state.tasks.filter(t=>t.status==="failed").length,online=state.workers.filter(w=>w.online).length
       $("metrics").innerHTML=[["Queued / active",active],["Completed",completed],["Failed",failed],["Workers online",online]].map(([a,b])=>`<div class="metric"><span class="tiny muted">${a}</span><strong>${b}</strong></div>`).join("")
-      $("globalToggle").textContent=state.settings.paused?"Resume everything":"Pause everything"; $("globalToggle").className=`btn ${state.settings.paused?"good":"danger"}`
-      setOptions("taskChannel",state.channels,"Choose channel"); setOptions("taskPreset",state.presets,"No watermark")
+      $("globalToggle").textContent=state.settings.paused?"Resume everything":"Pause everything";$("globalToggle").className=`btn ${state.settings.paused?"good":"danger"}`
+      setOptions("taskChannel",state.channels,"Choose channel");setOptions("taskPreset",state.presets,"No watermark")
       $("channelList").innerHTML=state.channels.length?state.channels.map(c=>`<div class="item row between"><div><strong>${escape(c.name)}</strong><div class="tiny muted mono">${escape(c.chatId)}${c.threadId?` · topic ${escape(c.threadId)}`:""}</div></div><button class="btn small danger" data-delete="channel" data-id="${escape(c.id)}">Delete</button></div>`).join(""):`<div class="empty">No channel configured</div>`
-      $("presetList").innerHTML=state.presets.length?state.presets.map(p=>`<div class="item row between"><div><strong>${escape(p.name)}</strong><div class="tiny muted">${escape(p.mode)} · opacity ${escape(p.opacity)}</div></div><button class="btn small danger" data-delete="preset" data-id="${escape(p.id)}">Delete</button></div>`).join(""):`<div class="empty">No preset configured</div>`
-      $("workerList").innerHTML=state.workers.length?state.workers.map(w=>`<div class="item row between"><div><strong>${escape(w.name||w.id)}</strong><div class="tiny muted">${escape(w.platform||"")} · v${escape(w.version||"?")}${w.currentTaskId?` · ${escape(w.currentTaskId)}`:""}</div></div><span class="pill"><span class="dot ${w.online?"online":""}"></span>${w.online?escape(w.status||"online"):"offline"}</span></div>`).join(""):`<div class="empty">No PC worker registered yet</div>`
+      $("presetList").innerHTML=state.presets.length?state.presets.map(p=>`<div class="item row between"><div><strong>${escape(p.name)}</strong><div class="tiny muted">${escape(presetDescription(p))}</div></div><button class="btn small danger" data-delete="preset" data-id="${escape(p.id)}">Delete</button></div>`).join(""):`<div class="empty">No preset configured</div>`
+      $("workerList").innerHTML=state.workers.length?state.workers.map(w=>`<div class="item row between"><div><strong>${escape(w.name||w.id)}</strong><div class="tiny muted">${escape(w.platform||"")} · v${escape(w.version||"?")}${w.currentTaskId?` · ${escape(w.currentTaskId)}`:""}</div></div><span class="pill"><span class="dot ${w.online?"online":""}"></span>${w.online?escape(w.status||"online"):"offline"}</span></div>`).join(""):`<div class="empty">No worker registered yet</div>`
       renderTasks()
     }
-    function renderTasks() {
-      const filter=$("taskFilter").value
-      const tasks=state.tasks.filter(t=>filter==="all"?true:filter==="active"?activeStates.has(t.status):filter==="completed"?t.status==="completed":t.status==="failed")
-      $("taskList").innerHTML=tasks.length?tasks.map(t=>{const p=t.progress||{}, percent=Math.round(Number(p.percent||0)); const buttons=t.status==="paused"?`<button class="btn small good" data-command="resume" data-task="${escape(t.id)}">Resume</button>`:activeStates.has(t.status)?`<button class="btn small" data-command="pause" data-task="${escape(t.id)}">Pause</button><button class="btn small danger" data-command="cancel" data-task="${escape(t.id)}">Cancel</button>`:t.status==="failed"||t.status==="cancelled"?`<button class="btn small good" data-command="retry" data-task="${escape(t.id)}">Retry</button>`:""; return `<article class="item"><div class="row between"><div style="min-width:0"><div class="task-title">${escape(t.name||t.id)}</div><div class="task-url tiny muted">${escape(t.source?.url||"")}</div></div><span class="pill status-${escape(t.status)}">${escape(t.status)}</span></div><div class="bar"><i style="width:${percent}%"></i></div><div class="row between tiny muted"><span>${escape(p.stage||t.status)} · ${percent}%${p.speed?` · ${escape(p.speed)}`:""}${p.eta?` · ETA ${escape(p.eta)}`:""}</span><span>${escape(t.channel?.name||t.channel?.chatId||"")}</span></div>${t.error?`<div class="notice error" style="margin-top:9px">${escape(t.error)}</div>`:""}<div class="row" style="margin-top:10px">${buttons}${t.result?.telegramMessageId?`<span class="tiny muted">Telegram message ${escape(t.result.telegramMessageId)}</span>`:""}</div></article>`}).join(""):`<div class="empty">No tasks in this view</div>`
-    }
-    async function refresh(silent=false) { try { const payload=await call("media-overview"); state=payload; $("apiState").innerHTML='<span class="dot online"></span>Connected'; render() } catch(error) { $("apiState").innerHTML='<span class="dot"></span>Disconnected'; if(!silent)notice(error.message,true); throw error } }
+    function renderTasks(){const filter=$("taskFilter").value;const tasks=state.tasks.filter(t=>filter==="all"?true:filter==="active"?activeStates.has(t.status):filter==="completed"?t.status==="completed":t.status==="failed");$("taskList").innerHTML=tasks.length?tasks.map(t=>{const p=t.progress||{},percent=Math.round(Number(p.percent||0));const buttons=t.status==="paused"?`<button class="btn small good" data-command="resume" data-task="${escape(t.id)}">Resume</button>`:activeStates.has(t.status)?`<button class="btn small" data-command="pause" data-task="${escape(t.id)}">Pause</button><button class="btn small danger" data-command="cancel" data-task="${escape(t.id)}">Cancel</button>`:t.status==="failed"||t.status==="cancelled"?`<button class="btn small good" data-command="retry" data-task="${escape(t.id)}">Retry</button>`:"";return`<article class="item"><div class="row between"><div style="min-width:0"><div class="task-title">${escape(t.name||t.id)}</div><div class="task-url tiny muted">${escape(t.source?.url||"")}</div></div><span class="pill status-${escape(t.status)}">${escape(t.status)}</span></div><div class="bar"><i style="width:${percent}%"></i></div><div class="row between tiny muted"><span>${escape(p.stage||t.status)} · ${percent}%${p.speed?` · ${escape(p.speed)}`:""}${p.eta?` · ETA ${escape(p.eta)}`:""}</span><span>${escape(t.channel?.name||t.channel?.chatId||"")}</span></div>${p.message?`<div class="tiny muted" style="margin-top:7px">${escape(p.message)}</div>`:""}${t.error?`<div class="notice error" style="margin-top:9px">${escape(t.error)}</div>`:""}<div class="row" style="margin-top:10px">${buttons}${t.result?.telegramMessageId?`<span class="tiny muted">Telegram message ${escape(t.result.telegramMessageId)}</span>`:""}</div></article>`}).join(""):`<div class="empty">No tasks in this view</div>`}
+    async function refresh(silent=false){try{const payload=await call("media-overview");state=payload;$("apiState").innerHTML='<span class="dot online"></span>Connected';render()}catch(error){$("apiState").innerHTML='<span class="dot"></span>Disconnected';if(!silent)notice(error.message,true);throw error}}
     function startPolling(){clearInterval(pollTimer);pollTimer=setInterval(()=>{if(document.visibilityState==="visible")refresh(true).catch(()=>{})},15000)}
     async function connect(){secret=$("secret").value.trim()||secret;if(!secret)return;sessionStorage.setItem("ee_media_secret",secret);await refresh();$("login").classList.add("hidden");$("app").classList.remove("hidden");startPolling()}
-    $("connect").onclick=()=>connect().catch(e=>{$("loginError").textContent=e.message;$("loginError").classList.remove("hidden")}); $("secret").onkeydown=e=>{if(e.key==="Enter")$("connect").click()}
-    $("logout").onclick=()=>{sessionStorage.removeItem("ee_media_secret");location.reload()}
-    $("urls").oninput=()=>$("linkCount").textContent=`${links().length} links`
-    $("saveChannel").onclick=async()=>{try{await call("media-save-channel",{name:$("channelName").value,chatId:$("channelChat").value,threadId:$("channelThread").value});$("channelName").value=$("channelChat").value=$("channelThread").value="";await refresh();notice("Telegram channel saved") }catch(e){notice(e.message,true)}}
-    $("savePreset").onclick=async()=>{try{const timed=$("timed").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean).map(v=>{const [start,duration]=v.split(":");return{start:Number(start),duration:Number(duration||10)}});await call("media-save-preset",{name:$("presetName").value,mode:$("presetMode").value,text:$("presetText").value,tickerText:$("tickerText").value,position:$("position").value,opacity:Number($("opacity").value),fontSize:Number($("fontSize").value),timed});await refresh();notice("Watermark preset saved") }catch(e){notice(e.message,true)}}
-    $("createTasks").onclick=async()=>{try{const rows=links();if(rows.length<1||rows.length>10)throw new Error("Paste between 1 and 10 links");const payload=await call("media-create-tasks",{urls:rows,name:$("taskName").value,channelId:$("taskChannel").value,presetId:$("taskPreset").value,quality:$("quality").value,caption:$("caption").value});$("urls").value="";$("linkCount").textContent="0 links";await refresh();notice(`${payload.tasks.length} tasks queued${payload.duplicates?.length?` · ${payload.duplicates.length} duplicates skipped`:""}. The PC worker will start immediately when online.`)}catch(e){notice(e.message,true)}}
+
+    $("connect").onclick=()=>connect().catch(e=>{$("loginError").textContent=e.message;$("loginError").classList.remove("hidden")});$("secret").onkeydown=e=>{if(e.key==="Enter")$("connect").click()};$("logout").onclick=()=>{sessionStorage.removeItem("ee_media_secret");location.reload()};$("urls").oninput=()=>$("linkCount").textContent=`${links().length} links`
+    $("presetMode").onchange=updatePresetForm;$("permanentPosition").onchange=updatePresetForm;$("tickerDisplayMode").onchange=updatePresetForm
+    document.querySelectorAll("#permanentSection input,#permanentSection select,#popupSection input,#popupSection select,#tickerSection input,#tickerSection select").forEach(el=>el.addEventListener("input",updatePresetSummary))
+    $("saveChannel").onclick=async()=>{try{await call("media-save-channel",{name:$("channelName").value,chatId:$("channelChat").value,threadId:$("channelThread").value});$("channelName").value=$("channelChat").value=$("channelThread").value="";await refresh();notice("Telegram channel saved")}catch(e){notice(e.message,true)}}
+    $("savePreset").onclick=async()=>{try{await call("media-save-preset",presetPayload());await refresh();notice("Watermark preset saved") }catch(e){notice(e.message,true)}}
+    $("createTasks").onclick=async()=>{try{const rows=links();if(rows.length<1||rows.length>10)throw new Error("Paste between 1 and 10 links");const payload=await call("media-create-tasks",{urls:rows,name:$("taskName").value,channelId:$("taskChannel").value,presetId:$("taskPreset").value,quality:$("quality").value,caption:$("caption").value});$("urls").value="";$("linkCount").textContent="0 links";await refresh();notice(`${payload.tasks.length} tasks queued${payload.duplicates?.length?` · ${payload.duplicates.length} duplicates skipped`:""}. An online worker will start immediately.`)}catch(e){notice(e.message,true)}}
     $("globalToggle").onclick=async()=>{try{await call("media-global-state",{paused:!state.settings.paused,reason:"Changed from Media Operations"});await refresh();notice(state.settings.paused?"All media processing paused":"Media processing resumed")}catch(e){notice(e.message,true)}}
     $("refresh").onclick=$("refreshTasks").onclick=()=>refresh().catch(()=>{});$("taskFilter").onchange=renderTasks
-    document.addEventListener("click",async e=>{const del=e.target.closest("[data-delete]");const command=e.target.closest("[data-command]");try{if(del){if(!confirm("Delete this configuration?"))return;await call("media-delete-config",{kind:del.dataset.delete,id:del.dataset.id});await refresh()}if(command){await call("media-control-task",{taskId:command.dataset.task,command:command.dataset.command});await refresh()}}catch(error){notice(error.message,true)}})
+    document.addEventListener("click",async e=>{const del=e.target.closest("[data-delete]"),command=e.target.closest("[data-command]");try{if(del){if(!confirm("Delete this configuration?"))return;await call("media-delete-config",{kind:del.dataset.delete,id:del.dataset.id});await refresh()}if(command){await call("media-control-task",{taskId:command.dataset.task,command:command.dataset.command});await refresh()}}catch(error){notice(error.message,true)}})
     document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&secret)refresh(true).catch(()=>{})})
-    if(secret){$("secret").value=secret;connect().catch(()=>{sessionStorage.removeItem("ee_media_secret");secret=""})}
+    updatePresetForm();if(secret){$("secret").value=secret;connect().catch(()=>{sessionStorage.removeItem("ee_media_secret");secret=""})}
   </script>
 </body>
 </html>

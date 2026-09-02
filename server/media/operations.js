@@ -9,10 +9,16 @@ const WORKERS = "mediaWorkers"
 const SETTINGS = "mediaSettings"
 const DEDUPE = "mediaDedupe"
 const LEASE_MS = 3 * 60 * 1000
-const ACTIVE = new Set(["queued", "claimed", "downloading", "processing", "uploading", "paused"])
+const ACTIVE = new Set(["queued", "claimed", "downloading", "processing", "uploading", "waiting_network", "paused"])
 
 function clean(value, max = 300) {
   return String(value ?? "").trim().slice(0, max)
+}
+
+function numberIn(value, min, max, fallback) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
 }
 
 function plain(doc) {
@@ -71,30 +77,94 @@ export async function saveMediaChannel(db, body) {
   return { id, name, chatId }
 }
 
+export function normalizeMediaPreset(body = {}) {
+  const mode = ["none", "permanent", "timed", "ticker", "combined"].includes(body.mode) ? body.mode : "permanent"
+  const permanentInput = body.permanent && typeof body.permanent === "object" ? body.permanent : {}
+  const popupInput = body.popup && typeof body.popup === "object" ? body.popup : {}
+  const tickerInput = body.ticker && typeof body.ticker === "object" ? body.ticker : {}
+  const legacyTimed = Array.isArray(body.timed) ? body.timed.slice(0, 10) : []
+  const permanentPosition = ["top-left", "top-right", "bottom-left", "bottom-right", "center", "random"].includes(permanentInput.position)
+    ? permanentInput.position
+    : ["top-left", "top-right", "bottom-left", "bottom-right", "center", "random"].includes(body.position)
+      ? body.position
+      : "top-right"
+  const popupPosition = ["rotate", "top-left", "top-right", "bottom-left", "bottom-right", "center"].includes(popupInput.position)
+    ? popupInput.position
+    : "rotate"
+  const tickerDisplayMode = ["always", "interval"].includes(tickerInput.displayMode) ? tickerInput.displayMode : "interval"
+
+  const permanent = {
+    text: clean(permanentInput.text ?? body.text, 300),
+    position: permanentPosition,
+    opacity: numberIn(permanentInput.opacity ?? body.opacity, 0.05, 1, 0.28),
+    fontSize: numberIn(permanentInput.fontSize ?? body.fontSize, 14, 120, 36),
+    startAtSec: numberIn(permanentInput.startAtSec, 0, 24 * 60 * 60, 0),
+    randomChangeEverySec: numberIn(permanentInput.randomChangeEverySec, 5, 60 * 60, 30),
+  }
+
+  const popup = {
+    text: clean(popupInput.text ?? body.text, 300),
+    firstAfterSec: numberIn(popupInput.firstAfterSec ?? legacyTimed[0]?.start, 0, 24 * 60 * 60, 300),
+    repeatEverySec: numberIn(popupInput.repeatEverySec, 0, 6 * 60 * 60, 1200),
+    durationSec: numberIn(popupInput.durationSec ?? legacyTimed[0]?.duration, 1, 120, 10),
+    position: popupPosition,
+    opacity: numberIn(popupInput.opacity ?? body.opacity, 0.1, 1, 0.7),
+    fontSize: numberIn(popupInput.fontSize ?? (Number(body.fontSize || 36) * 1.25), 14, 160, 44),
+  }
+
+  const ticker = {
+    text: clean(tickerInput.text ?? body.tickerText ?? body.text, 500),
+    displayMode: tickerDisplayMode,
+    firstAfterSec: numberIn(tickerInput.firstAfterSec, 0, 24 * 60 * 60, 0),
+    repeatEverySec: numberIn(tickerInput.repeatEverySec, 10, 6 * 60 * 60, 600),
+    durationSec: numberIn(tickerInput.durationSec, 3, 10 * 60, 20),
+    speedPxSec: numberIn(tickerInput.speedPxSec ?? body.tickerSpeed, 20, 500, 110),
+    fontSize: numberIn(tickerInput.fontSize ?? Math.max(18, Math.round(Number(body.fontSize || 36) * 0.75)), 14, 120, 28),
+    textOpacity: numberIn(tickerInput.textOpacity, 0.1, 1, 0.95),
+    backgroundOpacity: numberIn(tickerInput.backgroundOpacity, 0, 0.95, 0.55),
+  }
+
+  return {
+    schemaVersion: 2,
+    mode,
+    permanent,
+    popup,
+    ticker,
+    // Flat compatibility fields keep older clients/workers readable while v2 rolls out.
+    text: permanent.text || popup.text,
+    tickerText: ticker.text,
+    position: permanent.position,
+    opacity: permanent.opacity,
+    fontSize: permanent.fontSize,
+    tickerSpeed: ticker.speedPxSec,
+    timed: legacyTimed.slice(0, 10).map((item) => ({
+      start: numberIn(item.start, 0, 24 * 60 * 60, 0),
+      duration: numberIn(item.duration, 1, 120, 10),
+    })),
+  }
+}
+
 export async function saveMediaPreset(db, body) {
   const name = clean(body.name, 120)
   if (!name) throw new Error("Preset name is required")
   const id = clean(body.id, 80) || mediaId("preset", name, randomUUID())
-  const mode = ["none", "permanent", "timed", "ticker", "combined"].includes(body.mode) ? body.mode : "permanent"
-  const timed = Array.isArray(body.timed) ? body.timed.slice(0, 10).map((item) => ({
-    start: Math.max(0, Number(item.start || 0)),
-    duration: Math.max(1, Math.min(120, Number(item.duration || 10))),
-  })) : []
+  const preset = normalizeMediaPreset(body)
+
+  const needsPermanent = ["permanent", "combined"].includes(preset.mode)
+  const needsPopup = ["timed", "combined"].includes(preset.mode)
+  const needsTicker = ["ticker", "combined"].includes(preset.mode)
+  if (needsPermanent && !preset.permanent.text) throw new Error("Permanent watermark text is required")
+  if (needsPopup && !preset.popup.text) throw new Error("Popup watermark text is required")
+  if (needsTicker && !preset.ticker.text) throw new Error("Ticker text is required")
+
   await db.collection(PRESETS).doc(id).set({
     name,
-    mode,
-    text: clean(body.text, 300),
-    tickerText: clean(body.tickerText, 500),
+    ...preset,
     logoPath: clean(body.logoPath, 500) || null,
-    position: ["top-left", "top-right", "bottom-left", "bottom-right", "center"].includes(body.position) ? body.position : "top-right",
-    opacity: Math.max(0.05, Math.min(1, Number(body.opacity ?? 0.28))),
-    fontSize: Math.max(14, Math.min(120, Number(body.fontSize || 36))),
-    tickerSpeed: Math.max(20, Math.min(500, Number(body.tickerSpeed || 110))),
-    timed,
     updatedAtMs: Date.now(),
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true })
-  return { id, name, mode }
+  return { id, name, mode: preset.mode, schemaVersion: preset.schemaVersion }
 }
 
 export async function deleteMediaConfig(db, body) {
@@ -217,7 +287,7 @@ export async function claimMediaTask(db, body) {
   const settings = await db.collection(SETTINGS).doc("global").get()
   if (settings.exists && settings.data().paused) return { task: null, paused: true }
 
-  const candidates = await db.collection(TASKS).where("status", "in", ["queued", "claimed", "downloading", "processing", "uploading"]).limit(20).get()
+  const candidates = await db.collection(TASKS).where("status", "in", ["queued", "claimed", "downloading", "processing", "uploading", "waiting_network"]).limit(20).get()
   const now = Date.now()
   const candidate = candidates.docs
     .filter((doc) => {
@@ -273,7 +343,7 @@ export async function heartbeatMediaTask(db, body) {
 export async function updateMediaProgress(db, body) {
   const workerId = clean(body.workerId, 120)
   const taskId = clean(body.taskId, 120)
-  const stage = ["claimed", "downloading", "processing", "uploading", "verifying"].includes(body.stage) ? body.stage : "processing"
+  const stage = ["claimed", "downloading", "processing", "uploading", "waiting_network", "verifying"].includes(body.stage) ? body.stage : "processing"
   if (!workerId || !taskId) throw new Error("workerId and taskId are required")
   const progress = {
     stage,
