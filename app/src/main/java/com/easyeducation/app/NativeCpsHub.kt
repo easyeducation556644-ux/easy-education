@@ -41,6 +41,8 @@ fun NativeCpsHomeBlock(nav: NavHostController, state: NativeUiState) {
     val content = MaterialTheme.colorScheme.onPrimaryContainer
 
     Column(Modifier.fillMaxWidth()) {
+        NativeCpsEnrolledLiveHomeCard(nav, state)
+        Spacer(Modifier.height(10.dp))
         Card(
             modifier = Modifier.fillMaxWidth().clickable { nav.navigate("cps") },
             shape = CpsHomeRadius,
@@ -96,5 +98,5 @@ fun NativeCpsCourseScreen(
     state: NativeUiState,
     courseId: String,
 ) {
-    NativeCpsCourseExperienceV4(nav, viewModel, state, courseId)
+    NativeCpsCourseExperienceV5(nav, viewModel, state, courseId)
 }
