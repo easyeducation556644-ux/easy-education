@@ -1,8 +1,8 @@
 {
-  "versionCode": 2102800,
-  "versionName": "2.10.28",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.28/Easy-Education-2.10.28.apk",
-  "sha256": "720fd5cb14a0f32a01f5fd2d4b17816df526b976d535a56571750071843cf899",
+  "versionCode": 2102900,
+  "versionName": "2.10.29",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.29/Easy-Education-2.10.29.apk",
+  "sha256": "f3f2a0b55948e29b4cd3d50691cad3626fdfabbf1ea24cab6fd177198c28fe8b",
   "force": false,
-  "notes": "Leaderboard has been removed. Exam results, attempt history and retakes remain available."
+  "notes": "CPS live hotfix: enrolled ongoing live classes now appear on Home and inside the matching course, with direct in-app Join Live access."
 }
