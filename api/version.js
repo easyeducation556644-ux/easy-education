@@ -11,7 +11,6 @@ import examResultsHandler from '../server/api-resources/exam-results.js'
 import createPaymentHandler from '../server/api-resources/create-payment.js'
 import verifyPaymentHandler from '../server/api-resources/verify-payment.js'
 import uploadImageHandler from '../server/api-resources/upload-image.js'
-import unpiratorPlaybackHandler from '../server/api-resources/unpirator-playback.js'
 
 const APP_VERSION = 'v9.7'
 
@@ -22,7 +21,6 @@ export default async function versionHandler(req, res) {
   if (resource === 'sync-event') return syncEventHandler(req, res)
   if (resource === 'learning-push') return learningPushHandler(req, res)
   if (resource === 'rumble-embed') return rumbleEmbedHandler(req, res)
-  if (resource === 'unpirator-playback') return unpiratorPlaybackHandler(req, res)
   if (resource === 'cps') {
     const action = String(req.query?.action || '').trim()
     if (action === 'academic') return cpsAcademicHandler(req, res)
