@@ -36,7 +36,7 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
           onError: (playerError) => console.error("Unpirator player error:", playerError),
           bootstrap: async () => {
             const firebaseToken = await user.getIdToken()
-            const response = await fetch("/api/offline-video?action=unpirator-playback", {
+            const response = await fetch("/api/unpirator-playback", {
               method: "POST",
               credentials: "same-origin",
               signal: controller.signal,
