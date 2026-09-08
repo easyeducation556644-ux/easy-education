@@ -11,6 +11,8 @@ const RESPONSE_FIELDS = [
   "watermark",
 ]
 
+const DEFAULT_CLIENT = "easy-education-web"
+
 function sendError(res, status, message, code = "PLAYBACK_FAILED") {
   return res.status(status).json({ error: { code, message } })
 }
@@ -59,6 +61,11 @@ function normalizeYoutubeUrl(value) {
   }
 }
 
+function normalizeClient(value) {
+  const normalized = String(value || DEFAULT_CLIENT).trim()
+  return (normalized || DEFAULT_CLIENT).slice(0, 100)
+}
+
 function allowlistedSession(payload) {
   const output = {}
   for (const key of RESPONSE_FIELDS) {
@@ -105,11 +112,7 @@ export default async function unpiratorPlaybackHandler(req, res) {
       return sendError(res, 400, "Device ID is required", "DEVICE_ID_REQUIRED")
     }
 
-    const rawClient = body.client && typeof body.client === "object" ? body.client : {}
-    const client = {
-      ...(rawClient.browser ? { browser: String(rawClient.browser).slice(0, 160) } : {}),
-      ip: String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim().slice(0, 80),
-    }
+    const client = normalizeClient(DEFAULT_CLIENT)
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
