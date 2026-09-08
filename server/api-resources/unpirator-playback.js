@@ -115,7 +115,7 @@ export default async function unpiratorPlaybackHandler(req, res) {
     const client = normalizeClient(DEFAULT_CLIENT)
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 12_000)
+    const timeout = setTimeout(() => controller.abort(), 30_000)
     let upstream
     try {
       upstream = await fetch(`${apiUrl}/v1/playback/sessions`, {
