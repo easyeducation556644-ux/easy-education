@@ -29,6 +29,7 @@ import {
 import { db } from "../lib/firebase"
 import { useAuth } from "../contexts/AuthContext"
 import CustomVideoPlayer from "../components/CustomVideoPlayer"
+import UnpiratorYouTubePlayer from "../components/UnpiratorYouTubePlayer"
 import Breadcrumb from "../components/Breadcrumb"
 import ResourceViewer from "../components/ResourceViewer"
 import ClassReactions from "../components/ClassReactions"
@@ -387,11 +388,20 @@ export default function CourseWatch() {
           <div className="bg-card border border-border rounded-lg sm:rounded-xl overflow-hidden shadow-lg">
             <div className="aspect-video bg-black relative">
               {currentClass?.videoURL ? (
-                <CustomVideoPlayer
-                  url={offlineSaved && currentUser?.uid && RUMBLE_URL_PATTERN.test(currentClass.videoURL) ? offlinePlaybackUrl || getOfflineVideoUrl(currentUser.uid, currentClass.id) : currentClass.videoURL}
-                  onNext={handleNextVideo}
-                  onPrevious={handlePreviousVideo}
-                />
+                currentVideoIsYoutube && !nativeApp ? (
+                  <UnpiratorYouTubePlayer
+                    url={currentClass.videoURL}
+                    title={currentClass.title}
+                    user={currentUser}
+                    onEnded={handleNextVideo}
+                  />
+                ) : (
+                  <CustomVideoPlayer
+                    url={offlineSaved && currentUser?.uid && RUMBLE_URL_PATTERN.test(currentClass.videoURL) ? offlinePlaybackUrl || getOfflineVideoUrl(currentUser.uid, currentClass.id) : currentClass.videoURL}
+                    onNext={handleNextVideo}
+                    onPrevious={handlePreviousVideo}
+                  />
+                )
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-white"><div className="text-center"><Play className="w-16 h-16 mx-auto mb-4 opacity-50" /><p>No video available</p></div></div>
               )}
