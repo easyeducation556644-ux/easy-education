@@ -9,6 +9,7 @@ const RESPONSE_FIELDS = [
   "mode",
   "sessionExpiresAt",
   "watermark",
+  "attestation",
 ]
 
 const DEFAULT_CLIENT = "easy-education-web"

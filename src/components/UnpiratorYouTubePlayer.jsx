@@ -64,7 +64,7 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
                 title: title || undefined,
                 deviceId: getDeviceId(),
                 client: {
-                  browser: navigator.userAgent.slice(0, 120),
+                  browser: navigator.userAgent.slice(0, 100),
                 },
               }),
             })

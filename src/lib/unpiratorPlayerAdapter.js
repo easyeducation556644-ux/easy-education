@@ -1,5 +1,5 @@
 // Local compatibility adapter ported from @unpirator/player.
-// Source: masharzy/theunpirator packages/player/src/index.js @ 3832b122ac16c11c1eb0ef2836529618d0856226.
+// Source: masharzy/theunpirator packages/player/src/index.js @ 43fafe9b180825fdc431f6f6a0a11bc1062e9f35.
 // TODO(unpirator): replace this adapter with @unpirator/player once the package is published/installed.
 
 const WATERMARK_POSITIONS = [
@@ -35,6 +35,148 @@ function loadHlsRuntime() {
   })
 
   return hlsRuntimePromise
+}
+
+const youtubeMinterCache = new Map()
+const BOTGUARD_TIMEOUT_MS = 12_000
+
+function decodeBase64Url(value) {
+  const normalized = String(value).replace(/-/g, "+").replace(/_/g, "/").replace(/\./g, "=")
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4)
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0))
+}
+
+function encodeBase64Url(bytes) {
+  let value = ""
+  for (const byte of bytes) value += String.fromCharCode(byte)
+  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_")
+}
+
+function withTimeout(promise, message, timeoutMs = BOTGUARD_TIMEOUT_MS) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(message)), timeoutMs),
+    ),
+  ])
+}
+
+async function gatewayJson(baseUrl, path, token, body = {}) {
+  const response = await fetch(`${baseUrl}/${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Browser verification failed (${response.status})`)
+  }
+  return data
+}
+
+async function initializeYoutubeMinter(baseUrl, token) {
+  const { challenge } = await gatewayJson(baseUrl, "attestation/create", token)
+  if (
+    typeof challenge?.interpreterJavascript !== "string"
+    || typeof challenge?.program !== "string"
+    || typeof challenge?.globalName !== "string"
+  ) {
+    throw new Error("YouTube browser challenge was invalid")
+  }
+
+  new Function(challenge.interpreterJavascript)()
+  const vm = globalThis[challenge.globalName]
+  if (!vm?.a) throw new Error("YouTube browser verification could not start")
+
+  let setup
+  const functionsReady = new Promise((resolve) => {
+    setup = (asyncSnapshotFunction, shutdownFunction) =>
+      resolve({ asyncSnapshotFunction, shutdownFunction })
+  })
+
+  vm.a(
+    challenge.program,
+    setup,
+    true,
+    undefined,
+    () => {},
+    [[], []],
+  )
+
+  const { asyncSnapshotFunction, shutdownFunction } = await withTimeout(
+    functionsReady,
+    "YouTube browser verification timed out",
+  )
+  if (typeof asyncSnapshotFunction !== "function") {
+    throw new Error("YouTube browser verification was unavailable")
+  }
+
+  const webPoSignalOutput = []
+  const botguardResponse = await withTimeout(
+    new Promise((resolve, reject) => {
+      try {
+        asyncSnapshotFunction(resolve, [undefined, undefined, webPoSignalOutput, undefined])
+      } catch (error) {
+        reject(error)
+      }
+    }),
+    "YouTube browser verification timed out",
+  )
+
+  const integrity = await gatewayJson(baseUrl, "attestation/integrity", token, {
+    botguardResponse,
+  })
+  const getMinter = webPoSignalOutput[0]
+  if (typeof getMinter !== "function") {
+    throw new Error("YouTube browser token generator was unavailable")
+  }
+
+  const mint = await getMinter(decodeBase64Url(integrity.integrityToken))
+  if (typeof mint !== "function") throw new Error("YouTube browser token generator failed")
+
+  return {
+    expiresAt:
+      Date.now() + Math.max(60, Number(integrity.estimatedTtlSeconds || 3600) - 600) * 1000,
+    mint,
+    shutdownFunction,
+  }
+}
+
+async function youtubeMinter(baseUrl, token) {
+  const current = youtubeMinterCache.get(baseUrl)
+  if (current && current.expiresAt > Date.now()) return current
+  if (current?.promise) return current.promise
+
+  const promise = initializeYoutubeMinter(baseUrl, token)
+    .then((result) => {
+      youtubeMinterCache.set(baseUrl, result)
+      return result
+    })
+    .catch((error) => {
+      youtubeMinterCache.delete(baseUrl)
+      throw error
+    })
+
+  youtubeMinterCache.set(baseUrl, { promise, expiresAt: Date.now() + BOTGUARD_TIMEOUT_MS })
+  return promise
+}
+
+async function createProviderProof(state, baseUrl) {
+  if (state.attestation?.provider !== "youtube") return null
+
+  const contentBinding = state.attestation.contentBinding
+  if (!/^[A-Za-z0-9_-]{6,20}$/.test(contentBinding || "")) {
+    throw new Error("YouTube browser verification binding was invalid")
+  }
+
+  const { mint } = await youtubeMinter(baseUrl, state.token)
+  const bytes = await mint(new TextEncoder().encode(contentBinding))
+  if (!(bytes instanceof Uint8Array) || !bytes.length) {
+    throw new Error("YouTube browser token was invalid")
+  }
+
+  return { type: "youtube_web", contentBinding, token: encodeBase64Url(bytes) }
 }
 
 function protectedPlaybackSupported() {
@@ -285,7 +427,11 @@ function segmentWorkerRuntime() {
             method: "POST",
             credentials: "include",
             headers: auth(),
-            body: JSON.stringify({ publicKey, playerBuild: "protected-v1" }),
+            body: JSON.stringify({
+              publicKey,
+              playerBuild: "protected-v1",
+              providerProof: data.providerProof,
+            }),
           }),
         )
         const raw = await crypto.subtle.decrypt(
@@ -368,20 +514,25 @@ class ProtectedSegmentRuntime {
   }
 
   async mount() {
+    const mediaUrl = new URL(this.state.playbackUrl)
+    mediaUrl.search = ""
+    const baseUrl = mediaUrl.toString().replace(/\/media$/, "")
+    const providerProof = await createProviderProof(this.state, baseUrl)
     const workerUrl = URL.createObjectURL(
       new Blob([`(${segmentWorkerRuntime.toString()})()`], { type: "text/javascript" }),
     )
     this.workerUrl = workerUrl
     this.worker = new Worker(workerUrl)
     this.worker.onmessage = ({ data }) => this.onWorkerMessage(data)
-
-    const mediaUrl = new URL(this.state.playbackUrl)
-    mediaUrl.search = ""
-    const baseUrl = mediaUrl.toString().replace(/\/media$/, "")
     const ready = new Promise((resolve, reject) => {
       this.ready = { resolve, reject }
     })
-    this.worker.postMessage({ type: "bootstrap", baseUrl, token: this.state.token })
+    this.worker.postMessage({
+      type: "bootstrap",
+      baseUrl,
+      token: this.state.token,
+      providerProof,
+    })
     this.manifest = await ready
 
     this.videoVariant = chooseVideoVariant(this.manifest.video)
