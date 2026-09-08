@@ -18,7 +18,12 @@ function getDeviceId() {
 
 export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
   const rootRef = useRef(null)
+  const onEndedRef = useRef(onEnded)
   const [error, setError] = useState("")
+
+  useEffect(() => {
+    onEndedRef.current = onEnded
+  }, [onEnded])
 
   useEffect(() => {
     if (!rootRef.current || !url || !user) return
@@ -67,9 +72,7 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
           return
         }
 
-        if (typeof onEnded === "function") {
-          player.video?.addEventListener("ended", onEnded)
-        }
+        player.video?.addEventListener("ended", () => onEndedRef.current?.())
       } catch (playbackError) {
         if (!active || playbackError?.name === "AbortError") return
         console.error("Unable to start Unpirator playback:", playbackError)
@@ -82,7 +85,7 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
       controller.abort()
       player?.destroy()
     }
-  }, [url, title, user, onEnded])
+  }, [url, title, user])
 
   return (
     <div className="relative h-full w-full bg-black">
