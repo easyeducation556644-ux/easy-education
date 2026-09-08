@@ -16,6 +16,14 @@ function getDeviceId() {
   }
 }
 
+function getSafePlaybackError(error) {
+  const message = String(error?.message || "")
+  if (/supported secure browser|does not support protected playback/i.test(message)) {
+    return "This browser does not support protected playback. Please use a supported secure browser."
+  }
+  return "Protected playback is temporarily unavailable. Please try again."
+}
+
 export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
   const rootRef = useRef(null)
   const onEndedRef = useRef(onEnded)
@@ -38,7 +46,9 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
       try {
         player = await mountProtectedPlayer({
           element: rootRef.current,
-          onError: (playerError) => console.error("Unpirator player error:", playerError),
+          onError: (playerError) => {
+            if (active) setError(getSafePlaybackError(playerError))
+          },
           bootstrap: async () => {
             const firebaseToken = await user.getIdToken()
             const response = await fetch("/api/unpirator-playback", {
@@ -75,8 +85,7 @@ export default function UnpiratorYouTubePlayer({ url, title, user, onEnded }) {
         player.video?.addEventListener("ended", () => onEndedRef.current?.())
       } catch (playbackError) {
         if (!active || playbackError?.name === "AbortError") return
-        console.error("Unable to start Unpirator playback:", playbackError)
-        setError("Protected playback is temporarily unavailable. Please try again.")
+        setError(getSafePlaybackError(playbackError))
       }
     })()
 
