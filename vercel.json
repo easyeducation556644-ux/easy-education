@@ -10,6 +10,7 @@
     {"source":"/api/create-payment","destination":"/api/version?resource=create-payment"},
     {"source":"/api/verify-payment","destination":"/api/version?resource=verify-payment"},
     {"source":"/api/upload-image","destination":"/api/version?resource=upload-image"},
+    {"source":"/api/unpirator-playback","destination":"/api/version?resource=unpirator-playback"},
     {"source":"/api/:path*","destination":"/api/:path*"},
     {"source":"/(.*)","destination":"/index.html"}
   ],
