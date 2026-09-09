@@ -1,4 +1,4 @@
-import { getAdminServices } from "../../api/utils/firebase-admin.js"
+import { getAdminServices, requireVerifiedUser } from "../../api/utils/firebase-admin.js"
 
 function sendError(res, status, message, code = "PLAYBACK_FAILED") {
   return res.status(status).json({ error: { code, message } })
@@ -81,6 +81,10 @@ async function hasCourseAccess(db, uid, sourceUrl) {
   })
 }
 
+function hasBearerToken(req) {
+  return /^Bearer\s+\S+/i.test(String(req.headers?.authorization || "").trim())
+}
+
 export default async function unpiratorPlaybackHandler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST")
@@ -95,7 +99,12 @@ export default async function unpiratorPlaybackHandler(req, res) {
     assertSameOrigin(req)
 
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {})
-    if (body.userId !== undefined || body.externalUserId !== undefined || body.apiKey !== undefined) {
+    if (
+      body.currentUser !== undefined
+      || body.userId !== undefined
+      || body.externalUserId !== undefined
+      || body.apiKey !== undefined
+    ) {
       return sendError(res, 400, "Viewer identity and API credentials cannot be supplied by the browser", "INVALID_REQUEST")
     }
     if (body.assetId) {
@@ -107,17 +116,20 @@ export default async function unpiratorPlaybackHandler(req, res) {
       return sendError(res, 400, "A valid YouTube URL is required", "INVALID_YOUTUBE_URL")
     }
 
-    const idToken = String(body.currentUser?.idToken || "").trim()
-    if (!idToken) return sendError(res, 401, "Sign in required", "AUTH_REQUIRED")
-
-    const { auth, db } = getAdminServices()
     let viewer
     try {
-      viewer = await auth.verifyIdToken(idToken)
+      viewer = await requireVerifiedUser(req)
     } catch {
-      return sendError(res, 401, "Invalid or expired authentication token", "AUTH_INVALID")
+      const bearerPresent = hasBearerToken(req)
+      return sendError(
+        res,
+        401,
+        bearerPresent ? "Invalid or expired authentication token" : "Sign in required",
+        bearerPresent ? "AUTH_INVALID" : "AUTH_REQUIRED",
+      )
     }
 
+    const { db } = getAdminServices()
     if (!(await hasCourseAccess(db, viewer.uid, sourceUrl))) {
       return sendError(res, 403, "You do not have access to this lesson", "ACCESS_DENIED")
     }
