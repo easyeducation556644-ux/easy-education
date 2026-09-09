@@ -45,7 +45,8 @@ export default function UnpiratorYouTubePlayer({ url: youtubeUrl, title, user, o
     <div className="relative w-full h-full bg-black">
       <UnpiratorPlayer
         src={youtubeUrl}
-        endpoint="/api/unpirator-playback"
+        youtubeDirect
+        endpoint="/api/unpirator/playback"
         title={title}
         getAccessToken={getAccessToken}
         onReady={handleReady}
