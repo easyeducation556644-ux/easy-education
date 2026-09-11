@@ -1,1 +1,0 @@
-Channel router is dispatched through api/version.js to stay within Vercel Hobby's function-count limit.

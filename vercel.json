@@ -1,6 +1,8 @@
 {
   "rewrites": [
     {"source":"/api/google-drive/callback","destination":"/api/telegram-bot?action=drive-callback"},
+    {"source":"/api/channel-router-bot","destination":"/api/version?resource=channel-router-bot"},
+    {"source":"/api/channel-router-setup","destination":"/api/version?resource=channel-router-setup"},
     {"source":"/api/firestore-read-usage","destination":"/api/version?resource=firestore-read-usage"},
     {"source":"/api/sync-event","destination":"/api/version?resource=sync-event"},
     {"source":"/api/learning-push","destination":"/api/version?resource=learning-push"},
@@ -19,14 +21,12 @@
     {"source":"/api/manifest.json","headers":[{"key":"Content-Type","value":"application/json"},{"key":"Cache-Control","value":"public, max-age=0, must-revalidate"}]}
   ],
   "functions": {
-    "api/version.js":{"maxDuration":30},
+    "api/version.js":{"maxDuration":60},
     "api/payment-webhook.js":{"maxDuration":30},
     "api/process-enrollment.js":{"maxDuration":30},
     "api/dynamic-manifest.js":{"maxDuration":10},
     "api/security-events.js":{"maxDuration":10},
     "api/telegram-bot.js":{"maxDuration":300},
-    "api/channel-router-bot.js":{"maxDuration":60},
-    "api/channel-router-setup.js":{"maxDuration":30},
     "api/offline-video.js":{"maxDuration":300}
   }
 }
