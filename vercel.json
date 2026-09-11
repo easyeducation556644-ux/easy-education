@@ -25,6 +25,8 @@
     "api/dynamic-manifest.js":{"maxDuration":10},
     "api/security-events.js":{"maxDuration":10},
     "api/telegram-bot.js":{"maxDuration":300},
+    "api/channel-router-bot.js":{"maxDuration":60},
+    "api/channel-router-setup.js":{"maxDuration":30},
     "api/offline-video.js":{"maxDuration":300}
   }
 }
