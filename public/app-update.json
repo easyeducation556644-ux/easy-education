@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103100,
-  "versionName": "2.10.31",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.31/Easy-Education-2.10.31.apk",
-  "sha256": "6e7c71f930fe130e17c6a2616ff29d7c91be0bb1a9810a6f4800aa14163439bc",
+  "versionCode": 2103200,
+  "versionName": "2.10.32",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.32/Easy-Education-2.10.32.apk",
+  "sha256": "ffb95f88cb34a682148d97bfb4878cc795ef8b58c74773a06bcaac4d94db2433",
   "force": false,
-  "notes": "CPS live fullscreen now rotates to landscape and uses true immersive fullscreen."
+  "notes": "EdgeCourse is now available natively with free/open access to courses, classes, videos and materials."
 }
