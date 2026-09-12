@@ -27,6 +27,7 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
         when (data["type"]) {
             "new_class" -> showNewClass(data)
             "comment_reply" -> showCommentReply(data)
+            "cps_live_started" -> showCpsLiveStarted(data)
         }
     }
 
@@ -80,6 +81,58 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
             .notify(("reply:$classId:$parentCommentId:${System.currentTimeMillis() / 1000L}").hashCode(), notification)
     }
 
+    private fun showCpsLiveStarted(data: Map<String, String>) {
+        val liveId = data["liveId"].orEmpty().ifBlank { data["classId"].orEmpty() }
+        val courseId = data["courseId"].orEmpty()
+        val liveTitle = data["liveTitle"].orEmpty()
+            .ifBlank { data["title"].orEmpty() }
+            .ifBlank { "Live class" }
+        val courseTitle = data["courseTitle"].orEmpty().ifBlank { "Your course" }
+        val liveUrl = data["liveUrl"].orEmpty()
+
+        createChannel(
+            LIVE_CHANNEL_ID,
+            "Live classes",
+            "Alerts when a live class starts in one of your enrolled courses",
+        )
+
+        val contentIntent = if (liveUrl.startsWith("http://") || liveUrl.startsWith("https://")) {
+            val liveIntent = Intent(this, NativeCpsLivePlayerActivity::class.java)
+                .putExtra("cps_live_title", liveTitle)
+                .putExtra("cps_live_url", liveUrl)
+                .putExtra("cps_live_id", liveId)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            PendingIntent.getActivity(
+                this,
+                "cps-live:$liveId".hashCode(),
+                liveIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        } else {
+            val fallbackPath = if (courseId.isNotBlank()) "/course/cps:$courseId" else "/my-courses"
+            openPendingIntent(fallbackPath, "cps-live:$liveId")
+        }
+
+        val notification = NotificationCompat.Builder(this, LIVE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.presence_video_online)
+            .setContentTitle("🔴 LIVE NOW • $courseTitle")
+            .setContentText(liveTitle)
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "$liveTitle\nTap to join the live class now.",
+                ),
+            )
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(contentIntent)
+            .build()
+
+        getSystemService(NotificationManager::class.java)
+            .notify(("cps-live:$liveId").hashCode(), notification)
+    }
+
     private fun openPendingIntent(openPath: String, key: String): PendingIntent {
         val openIntent = Intent(this, MainActivity::class.java)
             .putExtra(MainActivity.EXTRA_OPEN_PATH, openPath)
@@ -105,6 +158,7 @@ class EasyEducationMessagingService : FirebaseMessagingService() {
     companion object {
         private const val CLASS_CHANNEL_ID = "learning_updates"
         private const val REPLY_CHANNEL_ID = "comment_replies"
+        private const val LIVE_CHANNEL_ID = "cps_live_classes"
         private const val PREFS = "easy_education_push"
         private const val KEY_LAST_FCM_TOKEN = "last_fcm_token"
     }
