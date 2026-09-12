@@ -2,6 +2,7 @@ import firestoreReadUsageHandler from '../server/api-resources/firestore-read-us
 import syncEventHandler from './_sync-event.js'
 import learningPushHandler from '../server/api-resources/learning-push.js'
 import cpsLivePushHandler from '../server/api-resources/cps-live-push.js'
+import edgeCourseHandler from '../server/api-resources/edgecourse.js'
 import rumbleEmbedHandler from '../server/api-resources/rumble-embed.js'
 import cpsHandler from '../server/cps-readonly-v2.js'
 import cpsAcademicHandler from '../server/api-resources/cps-academic-v3.js'
@@ -25,6 +26,7 @@ export default async function versionHandler(req, res) {
   if (resource === 'sync-event') return syncEventHandler(req, res)
   if (resource === 'learning-push') return learningPushHandler(req, res)
   if (resource === 'cps-live-push') return cpsLivePushHandler(req, res)
+  if (resource === 'edgecourse') return edgeCourseHandler(req, res)
   if (resource === 'rumble-embed') return rumbleEmbedHandler(req, res)
   if (resource === 'cps') {
     const action = String(req.query?.action || '').trim()
