@@ -1,0 +1,87 @@
+name: Stage native EdgeCourse integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/edgecourse-native-stage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edgecourse-native-stage
+  cancel-in-progress: false
+
+jobs:
+  wire-and-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Wire EdgeCourse into native navigation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          ui_path = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          ui = ui_path.read_text(encoding='utf-8')
+
+          old_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || startsWith("course/")'
+          new_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || startsWith("course/")'
+          if new_routes not in ui:
+              if old_routes not in ui:
+                  raise SystemExit('Could not locate inCourseRoutes() EdgeCourse insertion point')
+              ui = ui.replace(old_routes, new_routes, 1)
+
+          old_nav = 'composable("cps") { NativeCpsCatalogScreen(nav, state) }; composable("courses")'
+          new_nav = 'composable("cps") { NativeCpsCatalogScreen(nav, state) }; composable("edgecourse") { NativeEdgeCourseCatalogScreen(nav) }; composable("edgecourse/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry -> NativeEdgeCourseDetailScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty())) }; composable("courses")'
+          if 'composable("edgecourse") { NativeEdgeCourseCatalogScreen(nav) }' not in ui:
+              if old_nav not in ui:
+                  raise SystemExit('Could not locate V2NavHost EdgeCourse insertion point')
+              ui = ui.replace(old_nav, new_nav, 1)
+
+          old_home = 'item { NativeCpsHomeBlock(nav, state) }\n        item { Card('
+          new_home = 'item { NativeCpsHomeBlock(nav, state) }\n        item { NativeEdgeCourseHomeBlock(nav) }\n        item { Card('
+          if 'item { NativeEdgeCourseHomeBlock(nav) }' not in ui:
+              if old_home not in ui:
+                  raise SystemExit('Could not locate V2Home EdgeCourse insertion point')
+              ui = ui.replace(old_home, new_home, 1)
+
+          ui_path.write_text(ui, encoding='utf-8')
+
+          manifest = Path('app/src/main/AndroidManifest.xml').read_text(encoding='utf-8')
+          required = [
+              'NativeEdgeCourseRepository.kt',
+              'NativeEdgeCourseScreens.kt',
+              'NativeEdgeCoursePlayerActivity.kt',
+          ]
+          java_dir = Path('app/src/main/java/com/easyeducation/app')
+          missing = [name for name in required if not (java_dir / name).exists()]
+          if missing:
+              raise SystemExit(f'Missing EdgeCourse Android files: {missing}')
+          if '.NativeEdgeCoursePlayerActivity' not in manifest:
+              raise SystemExit('NativeEdgeCoursePlayerActivity is not registered in AndroidManifest.xml')
+
+      - name: Compile Android Kotlin
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin --no-daemon
+
+      - name: Commit Android wiring
+        run: |
+          if git diff --quiet; then
+            echo 'EdgeCourse navigation already wired.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          git commit -m 'Wire EdgeCourse into native app navigation'
+          git push origin HEAD:android
