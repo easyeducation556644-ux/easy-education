@@ -69,10 +69,17 @@ jobs:
           if '.NativeEdgeCoursePlayerActivity' not in manifest:
               raise SystemExit('NativeEdgeCoursePlayerActivity is not registered in AndroidManifest.xml')
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
       - name: Compile Android Kotlin
-        run: |
-          chmod +x gradlew
-          ./gradlew :app:compileDebugKotlin --no-daemon
+        run: gradle :app:compileDebugKotlin --no-daemon
 
       - name: Commit Android wiring
         run: |
