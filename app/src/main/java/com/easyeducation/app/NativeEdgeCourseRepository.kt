@@ -4,7 +4,9 @@ import android.content.Context
 import com.google.android.gms.tasks.Tasks
 import com.google.firebase.auth.FirebaseAuth
 import okhttp3.OkHttpClient
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -19,6 +21,8 @@ data class NativeEdgeCourse(
     val hasAccess: Boolean,
     val accessType: String,
     val accessExpiresAtMs: Long,
+    val inMyCourses: Boolean = false,
+    val addedAtMs: Long = 0L,
 )
 
 data class NativeEdgeCatalog(
@@ -121,15 +125,30 @@ class NativeEdgeCourseRepository(context: Context) {
         )
     }
 
-    private fun request(url: String): JSONObject {
+    fun myCourses(): List<NativeEdgeCourse> {
+        val root = request("$APP_ORIGIN/api/edgecourse?action=my-courses")
+        return root.array("courses").mapObjects(::parseCourse)
+    }
+
+    fun addToMyCourses(courseId: String): NativeEdgeCourse {
+        val root = request(
+            "$APP_ORIGIN/api/edgecourse?action=add-to-my-courses",
+            JSONObject().put("courseId", courseId.trim()),
+        )
+        val courseJson = root.optJSONObject("course") ?: error("EdgeCourse could not be added to My Courses")
+        return parseCourse(courseJson)
+    }
+
+    private fun request(url: String, body: JSONObject? = null): JSONObject {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")
         val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")
-        val request = Request.Builder()
+        val builder = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $idToken")
             .header("Accept", "application/json")
-            .get()
-            .build()
+        if (body == null) builder.get()
+        else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        val request = builder.build()
         http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             val json = runCatching { JSONObject(body) }.getOrElse {
@@ -151,6 +170,8 @@ class NativeEdgeCourseRepository(context: Context) {
         hasAccess = json.optBoolean("hasAccess", true),
         accessType = json.optString("accessType", "free"),
         accessExpiresAtMs = json.optLong("accessExpiresAtMs", 0L),
+        inMyCourses = json.optBoolean("inMyCourses", false),
+        addedAtMs = json.optLong("addedAtMs", 0L),
     )
 
     private fun parseHeader(json: JSONObject) = NativeEdgeHeader(

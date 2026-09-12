@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,6 +68,7 @@ import androidx.navigation.navArgument
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 private enum class EdgePage { HOME, HEADER, SECTION, MODULE, MATERIALS, ITEM, CLASS }
 private val EdgeHeroShape = RoundedCornerShape(24.dp)
@@ -273,6 +276,9 @@ fun NativeEdgeCourseDetailScreen(
     var loading by remember(courseId) { mutableStateOf(true) }
     var error by remember(courseId) { mutableStateOf<String?>(null) }
     var detail by remember(courseId) { mutableStateOf<NativeEdgeCourseDetail?>(null) }
+    var addingToMyCourses by remember(courseId) { mutableStateOf(false) }
+    var addToMyCoursesError by remember(courseId) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(courseId) {
         loading = true
@@ -302,6 +308,23 @@ fun NativeEdgeCourseDetailScreen(
         viewModel = viewModel,
         state = state,
         detail = data,
+        addingToMyCourses = addingToMyCourses,
+        addToMyCoursesError = addToMyCoursesError,
+        onAddToMyCourses = {
+            if (!addingToMyCourses && !data.course.inMyCourses) {
+                addingToMyCourses = true
+                addToMyCoursesError = null
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { repository.addToMyCourses(courseId) } }
+                        .onSuccess { updated ->
+                            detail = detail?.copy(course = updated.copy(inMyCourses = true))
+                            viewModel.refreshOnline()
+                        }
+                        .onFailure { addToMyCoursesError = it.message ?: "Could not add this course" }
+                    addingToMyCourses = false
+                }
+            }
+        },
     )
 }
 
@@ -311,6 +334,9 @@ private fun EdgeCourseExperience(
     viewModel: NativeAppViewModel,
     state: NativeUiState,
     detail: NativeEdgeCourseDetail,
+    addingToMyCourses: Boolean,
+    addToMyCoursesError: String?,
+    onAddToMyCourses: () -> Unit,
 ) {
     val course = detail.course
     var pageName by rememberSaveable(course.id) { mutableStateOf(EdgePage.HOME.name) }
@@ -345,7 +371,13 @@ private fun EdgeCourseExperience(
     }
 
     when (page) {
-        EdgePage.HOME -> EdgeCourseHomePage(nav, detail) { selected ->
+        EdgePage.HOME -> EdgeCourseHomePage(
+            nav = nav,
+            detail = detail,
+            addingToMyCourses = addingToMyCourses,
+            addToMyCoursesError = addToMyCoursesError,
+            onAddToMyCourses = onAddToMyCourses,
+        ) { selected ->
             headerId = selected.id
             pageName = EdgePage.HEADER.name
         }
@@ -420,6 +452,9 @@ private fun EdgeCourseExperience(
 private fun EdgeCourseHomePage(
     nav: NavHostController,
     detail: NativeEdgeCourseDetail,
+    addingToMyCourses: Boolean,
+    addToMyCoursesError: String?,
+    onAddToMyCourses: () -> Unit,
     onHeader: (NativeEdgeHeader) -> Unit,
 ) {
     val course = detail.course
@@ -462,6 +497,38 @@ private fun EdgeCourseHomePage(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Button(
+                            onClick = onAddToMyCourses,
+                            enabled = !course.inMyCourses && !addingToMyCourses,
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            shape = EdgePillShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary,
+                                contentColor = MaterialTheme.colorScheme.onTertiary,
+                                disabledContainerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                disabledContentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            ),
+                        ) {
+                            if (addingToMyCourses) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Adding…", fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(19.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (course.inMyCourses) "Added to My Course ✓" else "Add to my course",
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                            }
+                        }
+                        if (!addToMyCoursesError.isNullOrBlank()) {
+                            Text(
+                                addToMyCoursesError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                 }
             }

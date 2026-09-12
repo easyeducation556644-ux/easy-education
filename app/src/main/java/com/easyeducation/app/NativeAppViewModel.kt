@@ -26,6 +26,7 @@ data class NativeUiState(
     val courses: List<NativeCourse> = emptyList(),
     val cpsCourses: List<NativeCpsCourseEntry> = emptyList(),
     val cpsLiveHighlights: List<NativeCpsLiveClass> = emptyList(),
+    val edgeMyCourses: List<NativeEdgeCourse> = emptyList(),
     val courseContent: Map<String, NativeCourseContent> = emptyMap(),
     val cpsCourseExtras: Map<String, NativeCpsCourseExtras> = emptyMap(),
     val downloads: List<SecureDownloadTask> = emptyList(),
@@ -42,6 +43,7 @@ private data class NativeSyncResult(
     val profile: NativeUserProfile,
     val courses: List<NativeCourse>,
     val cpsCatalog: NativeCpsCatalog,
+    val edgeCourses: List<NativeEdgeCourse>,
     val restriction: String?,
 )
 
@@ -50,6 +52,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val repository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeRepository(application) }
     private val cpsRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeCpsRepository(application) }
+    private val edgeRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeEdgeCourseRepository(application) }
     private val downloads by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { SecureMediaStore(application) }
     private val qualityResolver by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { DownloadQualityResolver(application) }
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
@@ -77,6 +80,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                 courses = emptyList(),
                 cpsCourses = emptyList(),
                 cpsLiveHighlights = emptyList(),
+                edgeMyCourses = emptyList(),
                 courseContent = emptyMap(),
                 cpsCourseExtras = emptyMap(),
                 downloads = emptyList(),
@@ -153,12 +157,26 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
 
-    private fun mergeMyCourses(easyEducationCourses: List<NativeCourse>, cpsCatalog: NativeCpsCatalog): List<NativeCourse> {
+    private fun mergeMyCourses(
+        easyEducationCourses: List<NativeCourse>,
+        cpsCatalog: NativeCpsCatalog,
+        edgeCourses: List<NativeEdgeCourse> = _state.value.edgeMyCourses,
+    ): List<NativeCourse> {
         val now = System.currentTimeMillis()
         val activeCps = cpsCatalog.courses
             .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }
             .map { it.course }
-        return (activeCps + easyEducationCourses + trialOurCourseCards())
+        val selectedEdge = edgeCourses.map { edge ->
+            NativeCourse(
+                id = "edgecourse:${edge.id}",
+                title = edge.title,
+                description = "",
+                thumbnailUrl = edge.thumbnailUrl,
+                price = 0.0,
+                courseFormat = "edgecourse",
+            )
+        }
+        return (selectedEdge + activeCps + easyEducationCourses + trialOurCourseCards())
             .distinctBy { it.id }
             .map { it.copy(description = "") }
     }
@@ -217,6 +235,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                         profile = profile,
                         courses = emptyList(),
                         cpsCatalog = NativeCpsCatalog(),
+                        edgeCourses = emptyList(),
                         restriction = profile.restrictionMessage(),
                     )
                 }
@@ -227,10 +246,14 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val cpsCatalog = runCatching { cpsRepository.browse() }
                     .getOrElse { cpsRepository.cachedCatalog() }
+                val edgeCourses = runCatching {
+                    withContext(Dispatchers.IO) { edgeRepository.myCourses() }
+                }.getOrDefault(_state.value.edgeMyCourses)
                 NativeSyncResult(
                     profile = profile,
-                    courses = mergeMyCourses(easyEducationCourses, cpsCatalog),
+                    courses = mergeMyCourses(easyEducationCourses, cpsCatalog, edgeCourses),
                     cpsCatalog = cpsCatalog,
+                    edgeCourses = edgeCourses,
                     restriction = null,
                 )
             }.onSuccess { result ->
@@ -241,6 +264,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                     courses = result.courses,
                     cpsCourses = result.cpsCatalog.courses,
                     cpsLiveHighlights = result.cpsCatalog.liveHighlights,
+                    edgeMyCourses = result.edgeCourses,
                     courseContent = _state.value.courseContent.filterKeys { !cpsRepository.isCpsCourse(it) || it in visibleCpsIds },
                     cpsCourseExtras = _state.value.cpsCourseExtras.filterKeys { it in visibleCpsIds },
                     syncing = false,
@@ -260,6 +284,7 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun loadCourse(courseId: String, force: Boolean = false) {
         if (courseId.isBlank() || _state.value.restrictionMessage != null) return
+        if (courseId.startsWith("edgecourse:")) return
 
         if (cpsRepository.isCpsCourse(courseId)) {
             if (!cpsCourseLoading.add(courseId)) return
@@ -299,11 +324,11 @@ class NativeAppViewModel(application: Application) : AndroidViewModel(applicatio
                                     accessExpiresAtMs = bundle.extras.accessExpiresAtMs,
                                 )
                             }
-                            val easyOnly = _state.value.courses.filterNot { cpsRepository.isCpsCourse(it.id) }
+                            val easyOnly = _state.value.courses.filterNot { cpsRepository.isCpsCourse(it.id) || it.courseFormat == "edgecourse" }
                             val updatedCps = NativeCpsCatalog(updatedCatalog, _state.value.cpsLiveHighlights)
                             _state.value = _state.value.copy(
                                 cpsCourses = updatedCatalog,
-                                courses = mergeMyCourses(easyOnly, updatedCps),
+                                courses = mergeMyCourses(easyOnly, updatedCps, _state.value.edgeMyCourses),
                                 courseContent = _state.value.courseContent + (courseId to bundle.content),
                                 cpsCourseExtras = _state.value.cpsCourseExtras + (courseId to bundle.extras),
                             )
