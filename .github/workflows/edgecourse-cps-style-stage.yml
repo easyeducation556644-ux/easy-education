@@ -1,0 +1,112 @@
+name: Stage CPS-style EdgeCourse refactor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/edgecourse-cps-style-stage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edgecourse-cps-style-stage
+  cancel-in-progress: false
+
+jobs:
+  wire-and-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Wire EdgeCourse into app class page
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          ui_path = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          ui = ui_path.read_text(encoding='utf-8')
+          old_call = 'NativeEdgeCourseDetailScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()))'
+          new_call = 'NativeEdgeCourseDetailScreen(nav, viewModel, state, Uri.decode(entry.arguments?.getString("courseId").orEmpty()))'
+          if new_call not in ui:
+              if old_call not in ui:
+                  raise SystemExit('Could not locate EdgeCourse detail route call')
+              ui = ui.replace(old_call, new_call, 1)
+          ui_path.write_text(ui, encoding='utf-8')
+
+          watch_path = Path('app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt')
+          watch = watch_path.read_text(encoding='utf-8')
+          marker = 'NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)'
+          if marker not in watch:
+              pattern = re.compile(
+                  r'        item\(key = "player-\$classId"\) \{\n(?P<body>.*?)\n        \}\n\n        item\(key = "title-\$classId"\)',
+                  re.S,
+              )
+              match = pattern.search(watch)
+              if not match:
+                  raise SystemExit('Could not locate class-page player block')
+              native_body = match.group('body')
+              replacement = '''        item(key = "player-$classId") {
+              if (course.courseFormat == "edgecourse" && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {
+                  NativeEdgeCourseInlinePlayer(
+                      sourceUrl = classItem.sourceUrl,
+                      edgeCourseId = course.id.removePrefix("edgecourse:"),
+                      title = classItem.title,
+                      onBack = {
+                          NativeWatchBackdrop.clear()
+                          nav.popBackStack()
+                      },
+                      modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                  )
+              } else {
+          ''' + native_body + '''
+              }
+          }
+
+          item(key = "title-$classId")'''
+              watch = watch[:match.start()] + replacement + watch[match.end():]
+          watch_path.write_text(watch, encoding='utf-8')
+
+          edge = Path('app/src/main/java/com/easyeducation/app/NativeEdgeCourseScreens.kt').read_text(encoding='utf-8')
+          if 'AnimatedVisibility' in edge or 'expanded by rememberSaveable' in edge:
+              raise SystemExit('Dropdown/accordion implementation is still present in EdgeCourse screens')
+          for token in [
+              'EdgePage.HEADER',
+              'EdgePage.SECTION',
+              'EdgePage.MODULE',
+              'EdgeWatchHost',
+              'YoutubeClassWatchPage(watchNav, viewModel, state, cid, classId)',
+          ]:
+              if token not in edge:
+                  raise SystemExit(f'Missing EdgeCourse screen-flow token: {token}')
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Compile Android Kotlin
+        run: gradle :app:compileDebugKotlin --no-daemon
+
+      - name: Commit Android wiring
+        run: |
+          if git diff --quiet; then
+            echo 'EdgeCourse class-page wiring already applied.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt
+          git commit -m 'Open EdgeCourse classes in Easy Education class page'
+          git push origin HEAD:android
