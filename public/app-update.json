@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103200,
-  "versionName": "2.10.32",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.32/Easy-Education-2.10.32.apk",
-  "sha256": "ffb95f88cb34a682148d97bfb4878cc795ef8b58c74773a06bcaac4d94db2433",
+  "versionCode": 2103300,
+  "versionName": "2.10.33",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.33/Easy-Education-2.10.33.apk",
+  "sha256": "8c3bb5834c46844dc16a2e7a6994732cdd50b22de9a456e547610d1eb5c632b6",
   "force": false,
-  "notes": "EdgeCourse is now available natively with free/open access to courses, classes, videos and materials."
+  "notes": "EdgeCourse now matches CPS card/navigation style and classes open in the normal Easy Education class page."
 }
