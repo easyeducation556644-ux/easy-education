@@ -206,6 +206,18 @@ fun YoutubeClassWatchPage(
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         item(key = "player-$classId") {
+    if (course.courseFormat == "edgecourse" && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {
+        NativeEdgeCourseInlinePlayer(
+            sourceUrl = classItem.sourceUrl,
+            edgeCourseId = course.id.removePrefix("edgecourse:"),
+            title = classItem.title,
+            onBack = {
+                NativeWatchBackdrop.clear()
+                nav.popBackStack()
+            },
+            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+        )
+    } else {
             NativeInlinePlayer(
                 classId = classId,
                 sourceUrl = classItem.sourceUrl,
@@ -232,9 +244,10 @@ fun YoutubeClassWatchPage(
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
-        }
+    }
+}
 
-        item(key = "title-$classId") {
+item(key = "title-$classId") {
             Surface(
                 modifier = Modifier.fillMaxWidth().clickable { descriptionSheet = true },
                 color = MaterialTheme.colorScheme.surface,
