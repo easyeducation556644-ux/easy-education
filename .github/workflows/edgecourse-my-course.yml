@@ -1,0 +1,322 @@
+name: EdgeCourse My Course membership
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/edgecourse-my-course.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch EdgeCourse backend membership
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/api-resources/edgecourse.js')
+          s = p.read_text()
+          s = s.replace('const ENTITLEMENTS = "edgeCourseEntitlements"\n', 'const ENTITLEMENTS = "edgeCourseEntitlements"\nconst MY_COURSES = "edgeCourseUserCourses"\n')
+
+          old = '''async function courseDetail(req, res, authenticated) {
+            const courseId = text(req.query?.courseId)
+            if (!courseId || !/^[A-Za-z0-9_-]{1,120}$/.test(courseId)) {
+              return res.status(400).json({ error: "A valid EdgeCourse courseId is required" })
+            }
+            const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+            const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+            const access = await courseAccess(authenticated, courseId)
+            const headers = asArray(rawCourse?.section_headers).map((header, index) => normalizeHeader(header, index, access))
+            return res.status(200).json({
+              accessMode: ACCESS_MODE,
+              course: normalizeCourse({ ...rawCourse, id: courseId }, access),
+              headers,
+              counts: detailCounts(headers),
+            })
+          }
+          '''
+          new = '''function requestBody(req) {
+            if (req.body && typeof req.body === "object") return req.body
+            if (typeof req.body === "string" && req.body.trim()) {
+              try { return JSON.parse(req.body) } catch { return {} }
+            }
+            return {}
+          }
+
+          function validCourseId(value) {
+            const courseId = text(value)
+            return /^[A-Za-z0-9_-]{1,120}$/.test(courseId) ? courseId : ""
+          }
+
+          async function membershipSnapshot(authenticated, courseId) {
+            const uid = authenticated.decodedToken.uid
+            return authenticated.db.collection(MY_COURSES).doc(`${uid}_${courseId}`).get()
+          }
+
+          function membershipActive(snapshot) {
+            if (!snapshot?.exists) return false
+            const data = snapshot.data() || {}
+            return String(data.status || "active").toLowerCase() === "active"
+          }
+
+          async function courseDetail(req, res, authenticated) {
+            const courseId = validCourseId(req.query?.courseId)
+            if (!courseId) {
+              return res.status(400).json({ error: "A valid EdgeCourse courseId is required" })
+            }
+            const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+            const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+            const [access, membership] = await Promise.all([
+              courseAccess(authenticated, courseId),
+              membershipSnapshot(authenticated, courseId),
+            ])
+            const headers = asArray(rawCourse?.section_headers).map((header, index) => normalizeHeader(header, index, access))
+            return res.status(200).json({
+              accessMode: ACCESS_MODE,
+              course: { ...normalizeCourse({ ...rawCourse, id: courseId }, access), inMyCourses: membershipActive(membership) },
+              headers,
+              counts: detailCounts(headers),
+            })
+          }
+
+          async function myCourses(req, res, authenticated) {
+            const uid = authenticated.decodedToken.uid
+            const snapshot = await authenticated.db.collection(MY_COURSES)
+              .where("userId", "==", uid)
+              .get()
+            const memberships = snapshot.docs
+              .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+              .filter((item) => String(item.status || "active").toLowerCase() === "active")
+              .filter((item) => validCourseId(item.courseId))
+              .sort((a, b) => Number(b.addedAtMs || 0) - Number(a.addedAtMs || 0))
+              .slice(0, 60)
+
+            const courses = await Promise.all(memberships.map(async (membership) => {
+              const courseId = validCourseId(membership.courseId)
+              const access = await courseAccess(authenticated, courseId)
+              try {
+                const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+                const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+                return {
+                  ...normalizeCourse({ ...rawCourse, id: courseId }, access),
+                  inMyCourses: true,
+                  addedAtMs: Number(membership.addedAtMs || 0),
+                }
+              } catch {
+                return {
+                  id: courseId,
+                  title: text(membership.title) || "EdgeCourse",
+                  description: text(membership.description),
+                  thumbnailUrl: safeHttpUrl(membership.thumbnailUrl, EDGE_SITE_ORIGIN),
+                  sourcePrice: Number(membership.sourcePrice || 0),
+                  price: 0,
+                  sourceUrl: text(membership.sourceUrl) || `${EDGE_SITE_ORIGIN}/courses/${encodeURIComponent(courseId)}`,
+                  source: "edgecourse",
+                  hasAccess: Boolean(access.active),
+                  accessType: access.type,
+                  accessExpiresAtMs: Number(access.expiresAtMs || 0),
+                  accessMode: ACCESS_MODE,
+                  inMyCourses: true,
+                  addedAtMs: Number(membership.addedAtMs || 0),
+                }
+              }
+            }))
+
+            return res.status(200).json({ courses })
+          }
+
+          async function addToMyCourses(req, res, authenticated) {
+            const body = requestBody(req)
+            const courseId = validCourseId(body.courseId || req.query?.courseId)
+            if (!courseId) return res.status(400).json({ error: "A valid EdgeCourse courseId is required" })
+
+            const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+            const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+            const access = await courseAccess(authenticated, courseId)
+            const course = normalizeCourse({ ...rawCourse, id: courseId }, access)
+            const uid = authenticated.decodedToken.uid
+            const ref = authenticated.db.collection(MY_COURSES).doc(`${uid}_${courseId}`)
+            const previous = await ref.get()
+            const previousData = previous.exists ? previous.data() || {} : {}
+            const now = Date.now()
+            const alreadyActive = previous.exists && String(previousData.status || "active").toLowerCase() === "active"
+            const addedAtMs = alreadyActive && Number(previousData.addedAtMs || 0) > 0
+              ? Number(previousData.addedAtMs)
+              : now
+
+            await ref.set({
+              userId: uid,
+              courseId,
+              provider: "edgecourse",
+              status: "active",
+              addedAtMs,
+              updatedAtMs: now,
+              title: course.title,
+              description: course.description,
+              thumbnailUrl: course.thumbnailUrl,
+              sourceUrl: course.sourceUrl,
+              sourcePrice: course.sourcePrice,
+            }, { merge: true })
+
+            return res.status(alreadyActive ? 200 : 201).json({
+              added: true,
+              alreadyAdded: alreadyActive,
+              course: { ...course, inMyCourses: true, addedAtMs },
+            })
+          }
+          '''
+          if old not in s:
+              raise SystemExit('courseDetail block not found')
+          s = s.replace(old, new)
+
+          old2 = '''  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+            if (req.method === "OPTIONS") return res.status(204).end()
+            if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" })
+
+            try {
+              const authenticated = await requireAuthenticatedUser(req)
+              const action = text(req.query?.action) || "catalog"
+              if (action === "catalog") return await catalog(req, res, authenticated)
+              if (action === "course") return await courseDetail(req, res, authenticated)
+              return res.status(400).json({ error: "Unknown EdgeCourse action" })
+          '''
+          new2 = '''  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            if (req.method === "OPTIONS") return res.status(204).end()
+
+            try {
+              const authenticated = await requireAuthenticatedUser(req)
+              const action = text(req.query?.action) || "catalog"
+              if (req.method === "POST") {
+                if (action === "add-to-my-courses") return await addToMyCourses(req, res, authenticated)
+                return res.status(400).json({ error: "Unknown EdgeCourse action" })
+              }
+              if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" })
+              if (action === "catalog") return await catalog(req, res, authenticated)
+              if (action === "course") return await courseDetail(req, res, authenticated)
+              if (action === "my-courses") return await myCourses(req, res, authenticated)
+              return res.status(400).json({ error: "Unknown EdgeCourse action" })
+          '''
+          if old2 not in s:
+              raise SystemExit('handler block not found')
+          s = s.replace(old2, new2)
+          p.write_text(s)
+
+      - name: Commit backend
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/api-resources/edgecourse.js
+          git commit -m "Add EdgeCourse My Course membership API"
+          git push origin HEAD:main
+
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Patch Android EdgeCourse membership
+        shell: python
+        run: |
+          from pathlib import Path
+
+          # Repository: membership fields + GET/POST actions.
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt')
+          s = p.read_text()
+          s = s.replace('import okhttp3.Request\n', 'import okhttp3.MediaType.Companion.toMediaType\nimport okhttp3.Request\nimport okhttp3.RequestBody.Companion.toRequestBody\n')
+          s = s.replace('''    val accessExpiresAtMs: Long,\n)\n''', '''    val accessExpiresAtMs: Long,\n    val inMyCourses: Boolean = false,\n    val addedAtMs: Long = 0L,\n)\n''', 1)
+          anchor = '''    fun course(courseId: String): NativeEdgeCourseDetail {\n        val safeId = URLEncoder.encode(courseId.trim(), Charsets.UTF_8.name())\n        val root = request("$APP_ORIGIN/api/edgecourse?action=course&courseId=$safeId")\n        val courseJson = root.optJSONObject("course") ?: error("EdgeCourse detail is missing course metadata")\n        return NativeEdgeCourseDetail(\n            course = parseCourse(courseJson),\n            headers = root.array("headers").mapObjects(::parseHeader),\n            counts = parseCounts(root.optJSONObject("counts")),\n            accessMode = root.optString("accessMode", "free"),\n        )\n    }\n\n'''
+          insert = anchor + '''    fun myCourses(): List<NativeEdgeCourse> {\n        val root = request("$APP_ORIGIN/api/edgecourse?action=my-courses")\n        return root.array("courses").mapObjects(::parseCourse)\n    }\n\n    fun addToMyCourses(courseId: String): NativeEdgeCourse {\n        val root = request(\n            "$APP_ORIGIN/api/edgecourse?action=add-to-my-courses",\n            JSONObject().put("courseId", courseId.trim()),\n        )\n        val courseJson = root.optJSONObject("course") ?: error("EdgeCourse could not be added to My Courses")\n        return parseCourse(courseJson)\n    }\n\n'''
+          if anchor not in s: raise SystemExit('repo course anchor not found')
+          s = s.replace(anchor, insert)
+          old = '''    private fun request(url: String): JSONObject {\n        val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")\n        val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")\n        val request = Request.Builder()\n            .url(url)\n            .header("Authorization", "Bearer $idToken")\n            .header("Accept", "application/json")\n            .get()\n            .build()\n'''
+          new = '''    private fun request(url: String, body: JSONObject? = null): JSONObject {\n        val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")\n        val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")\n        val builder = Request.Builder()\n            .url(url)\n            .header("Authorization", "Bearer $idToken")\n            .header("Accept", "application/json")\n        if (body == null) builder.get()\n        else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))\n        val request = builder.build()\n'''
+          if old not in s: raise SystemExit('repo request anchor not found')
+          s = s.replace(old, new)
+          s = s.replace('''        accessExpiresAtMs = json.optLong("accessExpiresAtMs", 0L),\n    )\n''', '''        accessExpiresAtMs = json.optLong("accessExpiresAtMs", 0L),\n        inMyCourses = json.optBoolean("inMyCourses", false),\n        addedAtMs = json.optLong("addedAtMs", 0L),\n    )\n''', 1)
+          p.write_text(s)
+
+          # Screen: accent Add to my course button, idempotent success state.
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeEdgeCourseScreens.kt')
+          s = p.read_text()
+          s = s.replace('import androidx.compose.material3.Button\n', 'import androidx.compose.material3.Button\nimport androidx.compose.material3.ButtonDefaults\n')
+          s = s.replace('import androidx.compose.runtime.remember\n', 'import androidx.compose.runtime.remember\nimport androidx.compose.runtime.rememberCoroutineScope\n')
+          s = s.replace('import kotlinx.coroutines.withContext\n', 'import kotlinx.coroutines.withContext\nimport kotlinx.coroutines.launch\n')
+          s = s.replace('''    var detail by remember(courseId) { mutableStateOf<NativeEdgeCourseDetail?>(null) }\n\n    LaunchedEffect(courseId) {\n''', '''    var detail by remember(courseId) { mutableStateOf<NativeEdgeCourseDetail?>(null) }\n    var addingToMyCourses by remember(courseId) { mutableStateOf(false) }\n    var addToMyCoursesError by remember(courseId) { mutableStateOf<String?>(null) }\n    val scope = rememberCoroutineScope()\n\n    LaunchedEffect(courseId) {\n''')
+          s = s.replace('''    EdgeCourseExperience(\n        nav = nav,\n        viewModel = viewModel,\n        state = state,\n        detail = data,\n    )\n''', '''    EdgeCourseExperience(\n        nav = nav,\n        viewModel = viewModel,\n        state = state,\n        detail = data,\n        addingToMyCourses = addingToMyCourses,\n        addToMyCoursesError = addToMyCoursesError,\n        onAddToMyCourses = {\n            if (!addingToMyCourses && !data.course.inMyCourses) {\n                addingToMyCourses = true\n                addToMyCoursesError = null\n                scope.launch {\n                    runCatching { withContext(Dispatchers.IO) { repository.addToMyCourses(courseId) } }\n                        .onSuccess { updated ->\n                            detail = detail?.copy(course = updated.copy(inMyCourses = true))\n                            viewModel.refreshOnline()\n                        }\n                        .onFailure { addToMyCoursesError = it.message ?: "Could not add this course" }\n                    addingToMyCourses = false\n                }\n            }\n        },\n    )\n''')
+          s = s.replace('''    state: NativeUiState,\n    detail: NativeEdgeCourseDetail,\n) {\n''', '''    state: NativeUiState,\n    detail: NativeEdgeCourseDetail,\n    addingToMyCourses: Boolean,\n    addToMyCoursesError: String?,\n    onAddToMyCourses: () -> Unit,\n) {\n''', 1)
+          s = s.replace('''        EdgePage.HOME -> EdgeCourseHomePage(nav, detail) { selected ->\n            headerId = selected.id\n            pageName = EdgePage.HEADER.name\n        }\n''', '''        EdgePage.HOME -> EdgeCourseHomePage(\n            nav = nav,\n            detail = detail,\n            addingToMyCourses = addingToMyCourses,\n            addToMyCoursesError = addToMyCoursesError,\n            onAddToMyCourses = onAddToMyCourses,\n        ) { selected ->\n            headerId = selected.id\n            pageName = EdgePage.HEADER.name\n        }\n''')
+          s = s.replace('''private fun EdgeCourseHomePage(\n    nav: NavHostController,\n    detail: NativeEdgeCourseDetail,\n    onHeader: (NativeEdgeHeader) -> Unit,\n) {\n''', '''private fun EdgeCourseHomePage(\n    nav: NavHostController,\n    detail: NativeEdgeCourseDetail,\n    addingToMyCourses: Boolean,\n    addToMyCoursesError: String?,\n    onAddToMyCourses: () -> Unit,\n    onHeader: (NativeEdgeHeader) -> Unit,\n) {\n''')
+          marker = '''                        Text(\n                            "${detail.counts.sections} sections • ${detail.counts.items} items • ${detail.counts.videos} classes • ${detail.counts.materials} materials",\n                            style = MaterialTheme.typography.bodySmall,\n                            color = MaterialTheme.colorScheme.onSurfaceVariant,\n                        )\n'''
+          addition = marker + '''                        Button(\n                            onClick = onAddToMyCourses,\n                            enabled = !course.inMyCourses && !addingToMyCourses,\n                            modifier = Modifier.fillMaxWidth().height(50.dp),\n                            shape = EdgePillShape,\n                            colors = ButtonDefaults.buttonColors(\n                                containerColor = MaterialTheme.colorScheme.tertiary,\n                                contentColor = MaterialTheme.colorScheme.onTertiary,\n                                disabledContainerColor = MaterialTheme.colorScheme.tertiaryContainer,\n                                disabledContentColor = MaterialTheme.colorScheme.onTertiaryContainer,\n                            ),\n                        ) {\n                            if (addingToMyCourses) {\n                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)\n                                Spacer(Modifier.width(8.dp))\n                                Text("Adding…", fontWeight = FontWeight.Bold)\n                            } else {\n                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(19.dp))\n                                Spacer(Modifier.width(8.dp))\n                                Text(\n                                    if (course.inMyCourses) "Added to My Course ✓" else "Add to my course",\n                                    fontWeight = FontWeight.ExtraBold,\n                                )\n                            }\n                        }\n                        if (!addToMyCoursesError.isNullOrBlank()) {\n                            Text(\n                                addToMyCoursesError,\n                                style = MaterialTheme.typography.bodySmall,\n                                color = MaterialTheme.colorScheme.error,\n                            )\n                        }\n'''
+          if marker not in s: raise SystemExit('screen hero marker not found')
+          s = s.replace(marker, addition, 1)
+          p.write_text(s)
+
+          # ViewModel: merge persisted EdgeCourse memberships into My Courses.
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeAppViewModel.kt')
+          s = p.read_text()
+          s = s.replace('''    val cpsLiveHighlights: List<NativeCpsLiveClass> = emptyList(),\n''', '''    val cpsLiveHighlights: List<NativeCpsLiveClass> = emptyList(),\n    val edgeMyCourses: List<NativeEdgeCourse> = emptyList(),\n''')
+          s = s.replace('''    val cpsCatalog: NativeCpsCatalog,\n    val restriction: String?,\n''', '''    val cpsCatalog: NativeCpsCatalog,\n    val edgeCourses: List<NativeEdgeCourse>,\n    val restriction: String?,\n''')
+          s = s.replace('''    private val cpsRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeCpsRepository(application) }\n''', '''    private val cpsRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeCpsRepository(application) }\n    private val edgeRepository by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { NativeEdgeCourseRepository(application) }\n''')
+          s = s.replace('''                cpsLiveHighlights = emptyList(),\n                courseContent = emptyMap(),\n''', '''                cpsLiveHighlights = emptyList(),\n                edgeMyCourses = emptyList(),\n                courseContent = emptyMap(),\n''')
+          old_merge = '''    private fun mergeMyCourses(easyEducationCourses: List<NativeCourse>, cpsCatalog: NativeCpsCatalog): List<NativeCourse> {\n        val now = System.currentTimeMillis()\n        val activeCps = cpsCatalog.courses\n            .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }\n            .map { it.course }\n        return (activeCps + easyEducationCourses + trialOurCourseCards())\n            .distinctBy { it.id }\n            .map { it.copy(description = "") }\n    }\n'''
+          new_merge = '''    private fun mergeMyCourses(\n        easyEducationCourses: List<NativeCourse>,\n        cpsCatalog: NativeCpsCatalog,\n        edgeCourses: List<NativeEdgeCourse> = _state.value.edgeMyCourses,\n    ): List<NativeCourse> {\n        val now = System.currentTimeMillis()\n        val activeCps = cpsCatalog.courses\n            .filter { it.hasAccess && (it.accessExpiresAtMs == 0L || it.accessExpiresAtMs > now) }\n            .map { it.course }\n        val selectedEdge = edgeCourses.map { edge ->\n            NativeCourse(\n                id = "edgecourse:${edge.id}",\n                title = edge.title,\n                description = "",\n                thumbnailUrl = edge.thumbnailUrl,\n                price = 0.0,\n                courseFormat = "edgecourse",\n            )\n        }\n        return (selectedEdge + activeCps + easyEducationCourses + trialOurCourseCards())\n            .distinctBy { it.id }\n            .map { it.copy(description = "") }\n    }\n'''
+          if old_merge not in s: raise SystemExit('viewmodel merge block not found')
+          s = s.replace(old_merge, new_merge)
+          s = s.replace('''                        cpsCatalog = NativeCpsCatalog(),\n                        restriction = profile.restrictionMessage(),\n''', '''                        cpsCatalog = NativeCpsCatalog(),\n                        edgeCourses = emptyList(),\n                        restriction = profile.restrictionMessage(),\n''')
+          anchor = '''                val cpsCatalog = runCatching { cpsRepository.browse() }\n                    .getOrElse { cpsRepository.cachedCatalog() }\n                NativeSyncResult(\n                    profile = profile,\n                    courses = mergeMyCourses(easyEducationCourses, cpsCatalog),\n                    cpsCatalog = cpsCatalog,\n                    restriction = null,\n                )\n'''
+          repl = '''                val cpsCatalog = runCatching { cpsRepository.browse() }\n                    .getOrElse { cpsRepository.cachedCatalog() }\n                val edgeCourses = runCatching {\n                    withContext(Dispatchers.IO) { edgeRepository.myCourses() }\n                }.getOrDefault(_state.value.edgeMyCourses)\n                NativeSyncResult(\n                    profile = profile,\n                    courses = mergeMyCourses(easyEducationCourses, cpsCatalog, edgeCourses),\n                    cpsCatalog = cpsCatalog,\n                    edgeCourses = edgeCourses,\n                    restriction = null,\n                )\n'''
+          if anchor not in s: raise SystemExit('viewmodel sync block not found')
+          s = s.replace(anchor, repl)
+          s = s.replace('''                    cpsLiveHighlights = result.cpsCatalog.liveHighlights,\n                    courseContent = _state.value.courseContent.filterKeys''', '''                    cpsLiveHighlights = result.cpsCatalog.liveHighlights,\n                    edgeMyCourses = result.edgeCourses,\n                    courseContent = _state.value.courseContent.filterKeys''')
+          s = s.replace('''    fun loadCourse(courseId: String, force: Boolean = false) {\n        if (courseId.isBlank() || _state.value.restrictionMessage != null) return\n\n        if (cpsRepository.isCpsCourse(courseId)) {\n''', '''    fun loadCourse(courseId: String, force: Boolean = false) {\n        if (courseId.isBlank() || _state.value.restrictionMessage != null) return\n        if (courseId.startsWith("edgecourse:")) return\n\n        if (cpsRepository.isCpsCourse(courseId)) {\n''')
+          s = s.replace('''                            val easyOnly = _state.value.courses.filterNot { cpsRepository.isCpsCourse(it.id) }\n                            val updatedCps = NativeCpsCatalog(updatedCatalog, _state.value.cpsLiveHighlights)\n                            _state.value = _state.value.copy(\n                                cpsCourses = updatedCatalog,\n                                courses = mergeMyCourses(easyOnly, updatedCps),\n''', '''                            val easyOnly = _state.value.courses.filterNot { cpsRepository.isCpsCourse(it.id) || it.courseFormat == "edgecourse" }\n                            val updatedCps = NativeCpsCatalog(updatedCatalog, _state.value.cpsLiveHighlights)\n                            _state.value = _state.value.copy(\n                                cpsCourses = updatedCatalog,\n                                courses = mergeMyCourses(easyOnly, updatedCps, _state.value.edgeMyCourses),\n''')
+          p.write_text(s)
+
+          # My Courses card routes EdgeCourse selections back into EdgeCourse detail.
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+          old = '''else items(state.courses, key = { it.id }) { course -> V2CourseCard(course) { nav.navigate("course/${course.id}") } }; item { Spacer(Modifier.height(12.dp)) } } }\n'''
+          new = '''else items(state.courses, key = { it.id }) { course -> V2CourseCard(course) {\n            if (course.courseFormat == "edgecourse" || course.id.startsWith("edgecourse:")) {\n                nav.navigate("edgecourse/${Uri.encode(course.id.removePrefix("edgecourse:"))}")\n            } else {\n                nav.navigate("course/${course.id}")\n            }\n        } }; item { Spacer(Modifier.height(12.dp)) } } }\n'''
+          if old not in s: raise SystemExit('V2Courses route block not found')
+          s = s.replace(old, new)
+          p.write_text(s)
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Android Kotlin
+        working-directory: native
+        run: gradle :app:compileDebugKotlin
+
+      - name: Commit Android implementation
+        working-directory: native
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt app/src/main/java/com/easyeducation/app/NativeEdgeCourseScreens.kt app/src/main/java/com/easyeducation/app/NativeAppViewModel.kt app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          git commit -m "Add EdgeCourse courses to My Courses"
+          git push origin HEAD:android
