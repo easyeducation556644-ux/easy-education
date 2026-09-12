@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103300,
-  "versionName": "2.10.33",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.33/Easy-Education-2.10.33.apk",
-  "sha256": "8c3bb5834c46844dc16a2e7a6994732cdd50b22de9a456e547610d1eb5c632b6",
+  "versionCode": 2103400,
+  "versionName": "2.10.34",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.34/Easy-Education-2.10.34.apk",
+  "sha256": "fbdc592f1b59ae906591cd6f3c2ad69fa5df1c62002cecc6ef0fc0a7c0369720",
   "force": false,
-  "notes": "EdgeCourse now matches CPS card/navigation style and classes open in the normal Easy Education class page."
+  "notes": "EdgeCourse courses can now be added persistently to My Courses with the new Add to my course button."
 }
