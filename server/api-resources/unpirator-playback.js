@@ -1,5 +1,9 @@
 import { getAdminServices, requireVerifiedUser } from "../../api/utils/firebase-admin.js"
 
+function msSince(started) {
+  return Math.max(0, Date.now() - started)
+}
+
 function sendError(res, status, message, code = "PLAYBACK_FAILED") {
   return res.status(status).json({ error: { code, message } })
 }
@@ -55,26 +59,37 @@ function normalizeClient(value) {
   }
 }
 
-async function hasCourseAccess(db, uid, sourceUrl) {
+async function hasCourseAccess(db, uid, sourceUrl, timing = {}) {
+  let started = Date.now()
   const userSnapshot = await db.collection("users").doc(uid).get()
+  timing.userReadMs = msSince(started)
   if (userSnapshot.exists && userSnapshot.data()?.role === "admin") return true
 
+  started = Date.now()
   const classesSnapshot = await db.collection("classes")
     .where("videoURL", "==", sourceUrl)
     .limit(10)
     .get()
+  timing.classLookupMs = msSince(started)
   if (classesSnapshot.empty) return false
 
   const courseIds = [...new Set(classesSnapshot.docs.map((item) => item.data()?.courseId).filter(Boolean))]
+  started = Date.now()
   for (const courseId of courseIds) {
     const enrollment = await db.collection("userCourses").doc(`${uid}_${courseId}`).get()
-    if (enrollment.exists) return true
+    if (enrollment.exists) {
+      timing.enrollmentMs = msSince(started)
+      return true
+    }
   }
+  timing.enrollmentMs = msSince(started)
 
+  started = Date.now()
   const payments = await db.collection("payments")
     .where("userId", "==", uid)
     .where("status", "==", "approved")
     .get()
+  timing.paymentsMs = msSince(started)
   return payments.docs.some((item) => {
     const courses = item.data()?.courses
     return Array.isArray(courses) && courses.some((entry) => courseIds.includes(entry?.id))
@@ -86,6 +101,8 @@ function hasBearerToken(req) {
 }
 
 export default async function unpiratorPlaybackHandler(req, res) {
+  const requestStarted = Date.now()
+  const timing = {}
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST")
     return sendError(res, 405, "Method not allowed", "METHOD_NOT_ALLOWED")
@@ -118,7 +135,9 @@ export default async function unpiratorPlaybackHandler(req, res) {
 
     let viewer
     try {
+      const started = Date.now()
       viewer = await requireVerifiedUser(req)
+      timing.authMs = msSince(started)
     } catch {
       const bearerPresent = hasBearerToken(req)
       return sendError(
@@ -130,9 +149,14 @@ export default async function unpiratorPlaybackHandler(req, res) {
     }
 
     const { db } = getAdminServices()
-    if (!(await hasCourseAccess(db, viewer.uid, sourceUrl))) {
+    const accessStarted = Date.now()
+    if (!(await hasCourseAccess(db, viewer.uid, sourceUrl, timing))) {
+      timing.accessTotalMs = msSince(accessStarted)
+      timing.totalMs = msSince(requestStarted)
+      console.info(JSON.stringify({ component: "playback-timing", phase: "easy-education", status: 403, ...timing }))
       return sendError(res, 403, "You do not have access to this lesson", "ACCESS_DENIED")
     }
+    timing.accessTotalMs = msSince(accessStarted)
 
     const apiUrl = String(process.env.UNPIRATOR_API_URL || "").replace(/\/$/, "")
     const apiKey = String(process.env.UNPIRATOR_API_KEY || "")
@@ -149,6 +173,7 @@ export default async function unpiratorPlaybackHandler(req, res) {
     const timeout = setTimeout(() => controller.abort(), 30_000)
     let upstream
     try {
+      const upstreamStarted = Date.now()
       upstream = await fetch(`${apiUrl}/v1/playback/sessions`, {
         method: "POST",
         signal: controller.signal,
@@ -169,11 +194,37 @@ export default async function unpiratorPlaybackHandler(req, res) {
           client: normalizeClient(body.client),
         }),
       })
+      timing.unpiratorMs = msSince(upstreamStarted)
     } finally {
       clearTimeout(timeout)
     }
 
     const payload = await upstream.json().catch(() => ({}))
+    timing.totalMs = msSince(requestStarted)
+    res.setHeader(
+      "Server-Timing",
+      [
+        ["ee_auth", timing.authMs],
+        ["ee_user", timing.userReadMs],
+        ["ee_classes", timing.classLookupMs],
+        ["ee_enrollment", timing.enrollmentMs],
+        ["ee_payments", timing.paymentsMs],
+        ["ee_access", timing.accessTotalMs],
+        ["unpirator", timing.unpiratorMs],
+        ["ee_total", timing.totalMs],
+      ]
+        .filter(([, value]) => Number.isFinite(value))
+        .map(([name, value]) => `${name};dur=${value}`)
+        .join(", "),
+    )
+    console.info(
+      JSON.stringify({
+        component: "playback-timing",
+        phase: "easy-education",
+        status: upstream.status,
+        ...timing,
+      }),
+    )
     return res.status(upstream.status).json(payload)
   } catch (error) {
     if (error?.name === "AbortError") {
