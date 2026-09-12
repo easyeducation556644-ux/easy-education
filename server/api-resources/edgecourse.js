@@ -6,6 +6,7 @@ const CATALOG_URL = `${EDGE_API_ORIGIN}/api/courses/`
 const DETAIL_PREFIX = `${EDGE_API_ORIGIN}/api/v2/course-detail/`
 const ACCESS_MODE = String(process.env.EDGECOURSE_ACCESS_MODE || "free").trim().toLowerCase() === "premium" ? "premium" : "free"
 const ENTITLEMENTS = "edgeCourseEntitlements"
+const MY_COURSES = "edgeCourseUserCourses"
 const MAX_SEARCH = 120
 const MAX_PAGE = 1000
 
@@ -298,20 +299,133 @@ async function catalog(req, res, authenticated) {
   })
 }
 
+function requestBody(req) {
+  if (req.body && typeof req.body === "object") return req.body
+  if (typeof req.body === "string" && req.body.trim()) {
+    try { return JSON.parse(req.body) } catch { return {} }
+  }
+  return {}
+}
+
+function validCourseId(value) {
+  const courseId = text(value)
+  return /^[A-Za-z0-9_-]{1,120}$/.test(courseId) ? courseId : ""
+}
+
+async function membershipSnapshot(authenticated, courseId) {
+  const uid = authenticated.decodedToken.uid
+  return authenticated.db.collection(MY_COURSES).doc(`${uid}_${courseId}`).get()
+}
+
+function membershipActive(snapshot) {
+  if (!snapshot?.exists) return false
+  const data = snapshot.data() || {}
+  return String(data.status || "active").toLowerCase() === "active"
+}
+
 async function courseDetail(req, res, authenticated) {
-  const courseId = text(req.query?.courseId)
-  if (!courseId || !/^[A-Za-z0-9_-]{1,120}$/.test(courseId)) {
+  const courseId = validCourseId(req.query?.courseId)
+  if (!courseId) {
     return res.status(400).json({ error: "A valid EdgeCourse courseId is required" })
   }
   const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
   const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
-  const access = await courseAccess(authenticated, courseId)
+  const [access, membership] = await Promise.all([
+    courseAccess(authenticated, courseId),
+    membershipSnapshot(authenticated, courseId),
+  ])
   const headers = asArray(rawCourse?.section_headers).map((header, index) => normalizeHeader(header, index, access))
   return res.status(200).json({
     accessMode: ACCESS_MODE,
-    course: normalizeCourse({ ...rawCourse, id: courseId }, access),
+    course: { ...normalizeCourse({ ...rawCourse, id: courseId }, access), inMyCourses: membershipActive(membership) },
     headers,
     counts: detailCounts(headers),
+  })
+}
+
+async function myCourses(req, res, authenticated) {
+  const uid = authenticated.decodedToken.uid
+  const snapshot = await authenticated.db.collection(MY_COURSES)
+    .where("userId", "==", uid)
+    .get()
+  const memberships = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((item) => String(item.status || "active").toLowerCase() === "active")
+    .filter((item) => validCourseId(item.courseId))
+    .sort((a, b) => Number(b.addedAtMs || 0) - Number(a.addedAtMs || 0))
+    .slice(0, 60)
+
+  const courses = await Promise.all(memberships.map(async (membership) => {
+    const courseId = validCourseId(membership.courseId)
+    const access = await courseAccess(authenticated, courseId)
+    try {
+      const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+      const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+      return {
+        ...normalizeCourse({ ...rawCourse, id: courseId }, access),
+        inMyCourses: true,
+        addedAtMs: Number(membership.addedAtMs || 0),
+      }
+    } catch {
+      return {
+        id: courseId,
+        title: text(membership.title) || "EdgeCourse",
+        description: text(membership.description),
+        thumbnailUrl: safeHttpUrl(membership.thumbnailUrl, EDGE_SITE_ORIGIN),
+        sourcePrice: Number(membership.sourcePrice || 0),
+        price: 0,
+        sourceUrl: text(membership.sourceUrl) || `${EDGE_SITE_ORIGIN}/courses/${encodeURIComponent(courseId)}`,
+        source: "edgecourse",
+        hasAccess: Boolean(access.active),
+        accessType: access.type,
+        accessExpiresAtMs: Number(access.expiresAtMs || 0),
+        accessMode: ACCESS_MODE,
+        inMyCourses: true,
+        addedAtMs: Number(membership.addedAtMs || 0),
+      }
+    }
+  }))
+
+  return res.status(200).json({ courses })
+}
+
+async function addToMyCourses(req, res, authenticated) {
+  const body = requestBody(req)
+  const courseId = validCourseId(body.courseId || req.query?.courseId)
+  if (!courseId) return res.status(400).json({ error: "A valid EdgeCourse courseId is required" })
+
+  const payload = await edgeFetch(`${DETAIL_PREFIX}${encodeURIComponent(courseId)}/`)
+  const rawCourse = payload?.course && typeof payload.course === "object" ? payload.course : payload
+  const access = await courseAccess(authenticated, courseId)
+  const course = normalizeCourse({ ...rawCourse, id: courseId }, access)
+  const uid = authenticated.decodedToken.uid
+  const ref = authenticated.db.collection(MY_COURSES).doc(`${uid}_${courseId}`)
+  const previous = await ref.get()
+  const previousData = previous.exists ? previous.data() || {} : {}
+  const now = Date.now()
+  const alreadyActive = previous.exists && String(previousData.status || "active").toLowerCase() === "active"
+  const addedAtMs = alreadyActive && Number(previousData.addedAtMs || 0) > 0
+    ? Number(previousData.addedAtMs)
+    : now
+
+  await ref.set({
+    userId: uid,
+    courseId,
+    provider: "edgecourse",
+    status: "active",
+    addedAtMs,
+    updatedAtMs: now,
+    title: course.title,
+    description: course.description,
+    thumbnailUrl: course.thumbnailUrl,
+    sourceUrl: course.sourceUrl,
+    sourcePrice: course.sourcePrice,
+  }, { merge: true })
+
+  return res.status(alreadyActive ? 200 : 201).json({
+    added: true,
+    alreadyAdded: alreadyActive,
+    course: { ...course, inMyCourses: true, addedAtMs },
   })
 }
 
@@ -320,15 +434,20 @@ export default async function edgeCourseHandler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://easy-education.vercel.app")
   res.setHeader("Vary", "Origin")
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
   if (req.method === "OPTIONS") return res.status(204).end()
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" })
 
   try {
     const authenticated = await requireAuthenticatedUser(req)
     const action = text(req.query?.action) || "catalog"
+    if (req.method === "POST") {
+      if (action === "add-to-my-courses") return await addToMyCourses(req, res, authenticated)
+      return res.status(400).json({ error: "Unknown EdgeCourse action" })
+    }
+    if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" })
     if (action === "catalog") return await catalog(req, res, authenticated)
     if (action === "course") return await courseDetail(req, res, authenticated)
+    if (action === "my-courses") return await myCourses(req, res, authenticated)
     return res.status(400).json({ error: "Unknown EdgeCourse action" })
   } catch (error) {
     console.error("EdgeCourse API error", error)
