@@ -1,0 +1,35 @@
+name: Verify external course hierarchy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/verify-external-course-hierarchy.yml"
+  workflow_dispatch:
+
+jobs:
+  compile-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Verify hierarchy implementation
+        run: |
+          grep -q 'data class NativeExternalSection' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'Lectures / Chapters' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'Course content' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+
+      - name: Compile Android
+        run: gradle :app:compileDebugKotlin
