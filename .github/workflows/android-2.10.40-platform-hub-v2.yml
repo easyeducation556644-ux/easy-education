@@ -1,0 +1,304 @@
+name: Android 2.10.40 Platform hub retry
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.40-platform-hub-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      VERSION: "2.10.40"
+      VERSION_CODE: "2104000"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Add Udvash live models and API methods
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt')
+          s = p.read_text()
+
+          if 'data class NativeUdvashLiveClass(' not in s:
+              marker = 'data class NativeUdvashClassDetail('
+              if marker not in s:
+                  raise SystemExit('Udvash model marker not found')
+              models = '''data class NativeUdvashLiveClass(
+              val sourceAccountId: String,
+              val lectureId: Int,
+              val isInteractiveClass: Boolean,
+              val lectureType: Int,
+              val subjectName: String,
+              val lectureName: String,
+              val syllabusHtml: String,
+              val courseId: Int,
+              val routineId: Int,
+              val studentProgramId: Long,
+              val isLive: Boolean,
+              val startDateTime: String,
+              val endDateTime: String,
+              val programSessionName: String,
+              val courseName: String,
+              val isServiceBlocked: Boolean,
+          )
+
+          data class NativeUdvashLiveSnapshot(
+              val totalLiveClass: Int,
+              val totalUpcomingClass: Int,
+              val joinButtonBeforeMinutes: Int,
+              val classes: List<NativeUdvashLiveClass>,
+          )
+
+          data class NativeUdvashJoinResult(
+              val contentUrl: String,
+              val qnaUrl: String,
+              val registrationNo: String,
+          )
+
+          '''
+              s = s.replace(marker, models + marker, 1)
+
+          if 'fun liveClasses(cachedOnly: Boolean = false)' not in s:
+              marker = '    fun classDetail(\n'
+              if marker not in s:
+                  raise SystemExit('Udvash classDetail marker not found')
+              methods = '''    fun liveClasses(cachedOnly: Boolean = false): NativeUdvashLiveSnapshot =
+                  parseLiveClasses(payload("live-classes", "$APP_ORIGIN/api/udvash?action=live-classes", cachedOnly))
+
+              fun joinLiveClass(
+                  sourceAccountId: String,
+                  courseId: Int,
+                  routineId: Int,
+                  studentProgramId: Long,
+              ): NativeUdvashJoinResult {
+                  val target = buildString {
+                      append("$APP_ORIGIN/api/udvash?action=join-live")
+                      append("&sourceAccountId=").append(URLEncoder.encode(sourceAccountId, Charsets.UTF_8.name()))
+                      append("&courseId=").append(courseId)
+                      append("&routineId=").append(routineId)
+                      append("&studentProgramId=").append(studentProgramId)
+                  }
+                  return parseJoinResult(request(target))
+              }
+
+          '''
+              s = s.replace(marker, methods + marker, 1)
+
+          if 'fun cachedLiveClasses()' not in s:
+              marker = '    fun cachedCatalog(): List<NativeUdvashCourse> = runCatching { catalog(true) }.getOrDefault(emptyList())'
+              if marker not in s:
+                  raise SystemExit('Udvash cache marker not found')
+              s = s.replace(marker, '    fun cachedLiveClasses(): NativeUdvashLiveSnapshot? = runCatching { liveClasses(true) }.getOrNull()\n' + marker, 1)
+
+          if 'private fun parseLiveClasses(root: JSONObject)' not in s:
+              marker = '    private fun parseClassDetail(root: JSONObject): NativeUdvashClassDetail {'
+              if marker not in s:
+                  raise SystemExit('Udvash parser marker not found')
+              parser = '''    private fun parseLiveClasses(root: JSONObject): NativeUdvashLiveSnapshot = NativeUdvashLiveSnapshot(
+                  totalLiveClass = root.optInt("totalLiveClass", 0),
+                  totalUpcomingClass = root.optInt("totalUpcomingClass", 0),
+                  joinButtonBeforeMinutes = root.optInt("joinButtonBeforeMinutes", 10),
+                  classes = root.array("classes").mapObjects { json ->
+                      NativeUdvashLiveClass(
+                          sourceAccountId = json.optString("sourceAccountId"),
+                          lectureId = json.optInt("lectureId"),
+                          isInteractiveClass = json.optBoolean("isInteractiveClass", false),
+                          lectureType = json.optInt("lectureType"),
+                          subjectName = json.optString("subjectName"),
+                          lectureName = json.optString("lectureName").ifBlank { "Udvash Live Class" },
+                          syllabusHtml = json.optString("syllabusHtml"),
+                          courseId = json.optInt("courseId"),
+                          routineId = json.optInt("routineId"),
+                          studentProgramId = json.optLong("studentProgramId"),
+                          isLive = json.optBoolean("isLive", false),
+                          startDateTime = json.optString("startDateTime"),
+                          endDateTime = json.optString("endDateTime"),
+                          programSessionName = json.optString("programSessionName"),
+                          courseName = json.optString("courseName"),
+                          isServiceBlocked = json.optBoolean("isServiceBlocked", false),
+                      )
+                  },
+              )
+
+              private fun parseJoinResult(root: JSONObject): NativeUdvashJoinResult = NativeUdvashJoinResult(
+                  contentUrl = root.optString("contentUrl"),
+                  qnaUrl = root.optString("qnaUrl"),
+                  registrationNo = root.optString("registrationNo"),
+              )
+
+          '''
+              s = s.replace(marker, parser + marker, 1)
+
+          p.write_text(s)
+
+      - name: Add Bondi Pathshala Android provider
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt')
+          s = p.read_text()
+          if 'NativeExternalProvider("bondipathshala", "Bondi Pathshala")' not in s:
+              marker = '            NativeExternalProvider("medilogy", "Medilogy"),'
+              if marker not in s:
+                  raise SystemExit('External provider marker not found')
+              s = s.replace(marker, marker + '\n            NativeExternalProvider("bondipathshala", "Bondi Pathshala"),', 1)
+          s = s.replace('            NativeExternalProvider("bpschool", "BP School"),\n', '')
+          p.write_text(s)
+
+      - name: Consolidate home cards and add routes
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+
+          old = '''}; item { NativeCpsHomeBlock(nav, state) }
+                  item { NativeEdgeCourseHomeBlock(nav) }
+                  item { NativeUdvashHomeBlock(nav) }
+                  item { NativeExternalPlatformsHomeBlock(nav) }'''
+          new = '''}; item { NativePlatformsHomeCard(nav, state) }
+                  item { NativeLiveClassesHomeCard(nav, state) }'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'NativePlatformsHomeCard(nav, state)' not in s:
+              raise SystemExit('Exact home provider block not found')
+
+          old_route = '        composable("home") { V2Home(nav, viewModel, state) }; composable("cps") { NativeCpsCatalogScreen(nav, state) };'
+          new_route = '''        composable("home") { V2Home(nav, viewModel, state) }
+                  composable("manual-courses") { NativeManualCoursesScreen(nav, state) }
+                  composable("live-classes") { NativeLivePlatformsScreen(nav, state) }
+                  composable("live-classes/udvash") { NativeUdvashLiveClassesScreen(nav) }
+                  composable("live-classes/cps") { NativeCpsGlobalLiveScreen(nav, state) }
+                  composable("cps") { NativeCpsCatalogScreen(nav, state) };'''
+          if old_route in s:
+              s = s.replace(old_route, new_route, 1)
+          elif 'composable("live-classes/udvash")' not in s:
+              raise SystemExit('Nav home/cps marker not found')
+
+          old_routes = 'startsWith("provider-class/") || startsWith("course/")'
+          if 'startsWith("manual-courses")' not in s and old_routes in s:
+              s = s.replace(old_routes, 'startsWith("provider-class/") || startsWith("manual-courses") || startsWith("live-classes") || startsWith("course/")', 1)
+          p.write_text(s)
+
+      - name: Bump Android version
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/build.gradle.kts')
+          s = p.read_text()
+          if 'versionCode = 2103900' in s:
+              s = s.replace('versionCode = 2103900', 'versionCode = 2104000', 1)
+          if 'versionName = "2.10.39"' in s:
+              s = s.replace('versionName = "2.10.39"', 'versionName = "2.10.40"', 1)
+          if 'versionCode = 2104000' not in s or 'versionName = "2.10.40"' not in s:
+              raise SystemExit('Android version bump failed')
+          p.write_text(s)
+
+      - name: Verify requested source behavior
+        shell: bash
+        run: |
+          grep -q 'NativePlatformsHomeCard(nav, state)' app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'NativeLiveClassesHomeCard(nav, state)' app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'composable("live-classes/udvash")' app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'Easy Education manual uploaded courses' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'NativeExternalProvider("bondipathshala", "Bondi Pathshala")' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          ! grep -q 'NativeExternalProvider("bpschool", "BP School")' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin
+
+      - name: Commit Android platform hub
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "Release Android 2.10.40 learning platform hub"
+            git push origin HEAD:android
+          fi
+
+      - name: Restore signing keystore
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "Platforms card consolidates course providers with Easy Education manual courses first. Live Classes dashboard adds running/upcoming counts, CPS live listing and Udvash live routines with formatted syllabus and secure join. Bondi Pathshala is wired as Course -> Subject -> Chapter -> Class using server-side authorization configuration."
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Checkout main for updater
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: web
+          fetch-depth: 0
+
+      - name: Publish updater metadata
+        working-directory: web
+        run: |
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "Platforms hub, live-class dashboard, Udvash live join flow and Bondi Pathshala structured courses."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION platform hub metadata"
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.40-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
