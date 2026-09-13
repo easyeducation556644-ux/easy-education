@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103500,
-  "versionName": "2.10.35",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.35/Easy-Education-2.10.35.apk",
-  "sha256": "f4f49fc23375ff19c9ce1f142313afabf34ccfa5db9fa48ea20a99a8f7289a07",
+  "versionCode": 2103600,
+  "versionName": "2.10.36",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.36/Easy-Education-2.10.36.apk",
+  "sha256": "c0909578832b89b53c89f6ef16a91a05c007482751a2037b11584513d9e62b08",
   "force": false,
-  "notes": "Adds native Udvash course browsing and class playback foundation."
+  "notes": "Cache-first Udvash refresh, standard class page/resources, signed-source recovery, plus iEducation, Medilogy and BP School."
 }
