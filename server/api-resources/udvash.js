@@ -771,6 +771,122 @@ async function liveCardDetail(req, res, authenticated) {
   return res.status(200).json({ detail: normalizeCardDetail(payload), fetchedAtMs: Date.now() })
 }
 
+
+async function eligibleLiveSources(authenticated) {
+  const accountSnapshot = await authenticated.db.collection(ACCOUNTS).get()
+  const allAccounts = accountSnapshot.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((account) => text(account.status).toLowerCase() !== "inactive")
+    .sort((a, b) => Number(b.lastCheckedAtMs || 0) - Number(a.lastCheckedAtMs || 0))
+  if (isFullAdminProfile(authenticated.userProfile)) return allAccounts
+  const entitlementSnapshot = await authenticated.db.collection(ENTITLEMENTS)
+    .where("userId", "==", authenticated.decodedToken.uid)
+    .get()
+  const courseIds = entitlementSnapshot.docs
+    .map((doc) => doc.data() || {})
+    .filter((data) => entitlementActive(data))
+    .map((data) => String(data.masterCourseId || data.courseId || ""))
+    .filter(Boolean)
+  if (!courseIds.length) return []
+  const courseSnapshots = await authenticated.db.getAll(
+    ...courseIds.map((courseId) => authenticated.db.collection(COURSES).doc(courseId)),
+  )
+  const allowedAccountIds = new Set()
+  courseSnapshots.forEach((snap) => {
+    if (!snap.exists) return
+    asArray((snap.data() || {}).sourceAccountIds).forEach((id) => id && allowedAccountIds.add(String(id)))
+  })
+  return allAccounts.filter((account) => allowedAccountIds.has(account.id))
+}
+
+function normalizeLiveRoutine(row, sourceAccountId) {
+  return {
+    sourceAccountId,
+    lectureId: intValue(row?.lectureId),
+    isInteractiveClass: Boolean(row?.isInteractiveClass),
+    lectureType: intValue(row?.lectureType),
+    subjectName: text(row?.subjectName),
+    lectureName: text(row?.lectureName) || "Udvash Live Class",
+    syllabusHtml: text(row?.syllabus),
+    hasVideo: Boolean(row?.hasVideo),
+    hasNotes: Boolean(row?.hasNotes),
+    programId: intValue(row?.programId),
+    sessionId: intValue(row?.sessionId),
+    studentProgramId: Number(row?.studentProgramId || 0),
+    routineId: intValue(row?.routineId),
+    isLive: Boolean(row?.isLive),
+    courseId: intValue(row?.courseId),
+    motherCourseId: intValue(row?.motherCourseId),
+    batchId: intValue(row?.batchId),
+    routineDate: text(row?.routineDate),
+    startDateTime: text(row?.routineStartDateTime),
+    endDateTime: text(row?.routineEndDateTime),
+    actualLectureEndTime: text(row?.actualLectureEndTime),
+    programSessionName: text(row?.programSessionName),
+    courseName: text(row?.courseName),
+    isServiceBlocked: Boolean(row?.isServiceBlocked),
+  }
+}
+
+async function liveClasses(req, res, authenticated) {
+  const accounts = await eligibleLiveSources(authenticated)
+  if (!accounts.length) {
+    return res.status(200).json({ totalLiveClass: 0, totalUpcomingClass: 0, joinButtonBeforeMinutes: 10, classes: [], fetchedAtMs: Date.now() })
+  }
+  const results = await mapLimit(accounts, 3, async (account) => {
+    try {
+      const payload = await accountRequest(account.id, authenticated.db, "/Routine/Class/LiveClasses?courseId=0&subjectId=0&lectureType=0&pageNumber=0")
+      const data = payload?.data || {}
+      return {
+        joinButtonBeforeMinutes: intValue(data.studentVisibleClassJoinButtonBeforeInMin, 10),
+        classes: asArray(data.classRoutineList).map((row) => normalizeLiveRoutine(row, account.id)),
+      }
+    } catch (error) {
+      console.warn("[udvash-live]", account.id, error?.message || error)
+      return { joinButtonBeforeMinutes: 10, classes: [] }
+    }
+  })
+  const dedupe = new Map()
+  results.flatMap((result) => result.classes).forEach((row) => {
+    const key = `${row.sourceAccountId}:${row.routineId || row.lectureId}`
+    if (!dedupe.has(key)) dedupe.set(key, row)
+  })
+  const classes = [...dedupe.values()].sort((a, b) => {
+    if (a.isLive !== b.isLive) return a.isLive ? -1 : 1
+    return String(a.startDateTime).localeCompare(String(b.startDateTime))
+  })
+  return res.status(200).json({
+    totalLiveClass: classes.filter((row) => row.isLive).length,
+    totalUpcomingClass: classes.filter((row) => !row.isLive).length,
+    joinButtonBeforeMinutes: Math.max(0, ...results.map((result) => result.joinButtonBeforeMinutes || 10)),
+    classes,
+    fetchedAtMs: Date.now(),
+  })
+}
+
+async function joinLiveClass(req, res, authenticated) {
+  const sourceAccountId = validId(req.query?.sourceAccountId)
+  const courseId = intValue(req.query?.courseId)
+  const routineId = intValue(req.query?.routineId)
+  const studentProgramId = Number(req.query?.studentProgramId || 0)
+  if (!sourceAccountId || !courseId || !routineId || !studentProgramId) {
+    return res.status(400).json({ error: "sourceAccountId, courseId, routineId and studentProgramId are required" })
+  }
+  const eligible = await eligibleLiveSources(authenticated)
+  if (!eligible.some((account) => account.id === sourceAccountId)) {
+    return res.status(403).json({ error: "This Udvash live account is not available for this user" })
+  }
+  const query = new URLSearchParams({
+    courseId: String(courseId), routineId: String(routineId), studentProgramId: String(studentProgramId), env: "production",
+  })
+  const payload = await accountRequest(sourceAccountId, authenticated.db, `/Routine/Class/JoinInteractiveClass?${query.toString()}`)
+  const data = payload?.data || {}
+  return res.status(200).json({
+    contentUrl: text(data.contentUrl), qnaUrl: text(data.qnaUrl), registrationNo: text(data.registrationNo),
+    executionTimeMs: Number(data.executionTimeMs || 0), fetchedAtMs: Date.now(),
+  })
+}
+
 async function adminGrantAccess(req, res, authenticated) {
   assertAdmin(authenticated)
   const body = requestBody(req)
@@ -831,6 +947,9 @@ export default async function udvashHandler(req, res) {
     if ((req.method === "POST" || req.method === "DELETE") && action === "admin-delete-account") return adminDeleteAccount(req, res, authenticated)
     if (req.method === "POST" && action === "admin-grant-access") return adminGrantAccess(req, res, authenticated)
     if (req.method === "POST" && action === "admin-revoke-access") return adminRevokeAccess(req, res, authenticated)
+
+    if (req.method === "GET" && action === "live-classes") return liveClasses(req, res, authenticated)
+    if (req.method === "GET" && action === "join-live") return joinLiveClass(req, res, authenticated)
 
     if (req.method === "GET" && action === "catalog") return catalog(res, authenticated)
     if (req.method === "GET" && action === "subjects") return subjects(req, res, authenticated)

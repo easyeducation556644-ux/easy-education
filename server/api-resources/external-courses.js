@@ -15,6 +15,13 @@ const PROVIDERS = {
     listUrl: "https://medilogy.com.bd/api/course/admin/course/all-course/",
     detailUrl: (id) => `https://medilogy.com.bd/api/course/admin/course/${encodeURIComponent(id)}/`,
   },
+  bondipathshala: {
+      id: "bondipathshala",
+      name: "Bondi Pathshala",
+      origin: "https://admin.bondipathshala.education",
+      listUrl: "https://admin.bondipathshala.education/api/course",
+      topicUrl: (id) => `https://admin.bondipathshala.education/api/topic?id=${encodeURIComponent(id)}&type=course`,
+    },
   bpschool: {
     id: "bpschool",
     name: "BP School",
@@ -72,7 +79,9 @@ function normalizeCourseList(payload) {
     payload?.data?.results,
     payload?.data?.result,
     payload?.data?.courses,
+    payload?.data?.Courses,
     payload?.courses,
+    payload?.Courses,
   )
 }
 
@@ -86,7 +95,7 @@ function providerOrThrow(value) {
   return provider
 }
 
-async function upstreamJson(url) {
+async function upstreamJson(url, extraHeaders = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 25_000)
   try {
@@ -96,6 +105,7 @@ async function upstreamJson(url) {
         Accept: "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
         "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",
+        ...extraHeaders,
       },
       redirect: "follow",
       signal: controller.signal,
@@ -107,6 +117,7 @@ async function upstreamJson(url) {
       const message = text(payload?.message, payload?.error) || `Provider request failed (${response.status})`
       const error = new Error(message)
       error.statusCode = 502
+      error.upstreamStatus = response.status
       throw error
     }
     return payload
@@ -151,6 +162,7 @@ function providerDetailUrls(provider, courseId) {
 }
 
 function courseIdentity(row, provider) {
+  if (provider.id === "bondipathshala") return text(row?.CourseId, row?.courseId, row?.id, row?._id, row?.slug)
   if (provider.id === "bpschool") return text(row?.slug, row?.id, row?._id)
   return text(row?.id, row?._id, row?.slug)
 }
@@ -161,9 +173,9 @@ function normalizeCourse(row, provider) {
   return {
     id,
     slug,
-    title: text(row?.name, row?.title, row?.course_name, row?.courseTitle) || `${provider.name} Course`,
-    description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.about)).slice(0, 900),
-    thumbnailUrl: absoluteUrl(text(row?.thumbnail, row?.course_image, row?.image, row?.cover_image, row?.thumb, row?.image_url), provider.origin),
+    title: text(row?.name, row?.title, row?.CourseName, row?.CourseTitle, row?.course_name, row?.courseTitle) || `${provider.name} Course`,
+    description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.Description, row?.about)).slice(0, 900),
+    thumbnailUrl: absoluteUrl(text(row?.thumbnail, row?.course_image, row?.image, row?.Image, row?.CourseImage, row?.cover_image, row?.thumb, row?.image_url), provider.origin),
     batch: text(row?.batch, row?.category, row?.slug),
     price: Number(row?.discount ?? row?.price ?? row?.amount ?? 0) || 0,
     provider: provider.id,
@@ -428,7 +440,102 @@ function normalizeCourseStructure(root, provider, courseId) {
   return { sections, classes: flatClasses }
 }
 
+
+function bondiAuthToken() {
+  const token = text(process.env.BONDIPATHSHALA_AUTH_TOKEN)
+  if (!token) {
+    const error = new Error("Bondi Pathshala token is not configured")
+    error.statusCode = 503
+    throw error
+  }
+  return token.replace(/^Bearer\s+/i, "")
+}
+
+async function bondiJson(url) {
+  const token = bondiAuthToken()
+  try {
+    return await upstreamJson(url, { Authorization: `Bearer ${token}` })
+  } catch (error) {
+    if (![401, 403].includes(Number(error?.upstreamStatus || 0))) throw error
+    return upstreamJson(url, { Authorization: token })
+  }
+}
+
+function bondiVideoUrl(video) {
+  const raw = text(video?.VideoLink, video?.videoLink, video?.url)
+  if (!raw) return ""
+  if (/^https?:\/\//i.test(raw)) return raw
+  const type = text(video?.VideoType, video?.videoType).toLowerCase()
+  if (type.includes("youtube") || type === "yt") return `https://www.youtube.com/watch?v=${encodeURIComponent(raw)}`
+  if (type.includes("bunny")) {
+    const parts = raw.split("/").map((part) => part.trim()).filter(Boolean)
+    if (parts.length >= 2) return `https://iframe.mediadelivery.net/embed/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`
+  }
+  return absoluteUrl(raw, "https://admin.bondipathshala.education")
+}
+
+function normalizeBondiStructure(topicPayload, provider, courseId) {
+  const topics = Array.isArray(topicPayload) ? topicPayload : normalizeCourseList(topicPayload)
+  const sectionsById = new Map()
+  const flatClasses = []
+  topics.forEach((topic, topicIndex) => {
+    const subjectId = text(topic?.SubjectId, topic?.subjectId, topic?.SubjectName, topic?.subjectName) || `subject-${topicIndex + 1}`
+    const subjectName = text(topic?.SubjectName, topic?.subjectName) || "Subject"
+    if (!sectionsById.has(subjectId)) {
+      sectionsById.set(subjectId, { id: `${courseId}:subject:${subjectId}`, rawId: subjectId, title: subjectName, description: "", order: sectionsById.size + 1, lectures: [] })
+    }
+    const section = sectionsById.get(subjectId)
+    const topicId = text(topic?.TopicId, topic?.topicId) || `topic-${topicIndex + 1}`
+    const topicTitle = text(topic?.TopicTitle, topic?.topicTitle) || `Chapter ${section.lectures.length + 1}`
+    const lectureId = `${section.id}:chapter:${topicId}`
+    const videos = firstArray(topic?.Videos, topic?.videos)
+    const items = videos.map((video, videoIndex) => {
+      const videoId = text(video?.VideoId, video?.videoId) || `video-${videoIndex + 1}`
+      const sourceUrl = bondiVideoUrl(video)
+      const title = text(video?.VideoTitle, video?.videoTitle) || topicTitle
+      const duration = numberOr(video?.DurationInMinute ?? video?.durationInMinute, 0)
+      const item = {
+        id: `${lectureId}:item:${videoId}`, rawId: videoId, title,
+        topic: duration > 0 ? `${duration} minutes` : text(topic?.TopicDescription, topic?.topicDescription),
+        type: text(video?.VideoType, video?.videoType) || "Video", linkType: text(video?.VideoType, video?.videoType),
+        sourceUrl, playable: Boolean(sourceUrl), teacherName: provider.name, imageUrl: "", order: videoIndex + 1, resourceLinks: [],
+      }
+      if (sourceUrl) flatClasses.push({
+        id: item.id, rawId: videoId, title, topic: item.topic, sectionId: section.id, lectureId,
+        sectionTitle: subjectName, chapterTitle: topicTitle, sourceUrl, teacherName: provider.name,
+        imageUrl: "", order: topicIndex * 1000 + videoIndex + 1, resourceLinks: [],
+      })
+      return item
+    })
+    section.lectures.push({ id: lectureId, rawId: topicId, title: topicTitle, description: stripHtml(text(topic?.TopicDescription, topic?.topicDescription)).slice(0, 500), order: section.lectures.length + 1, items })
+  })
+  return { sections: [...sectionsById.values()], classes: flatClasses }
+}
+
+async function bondiCatalog(req, res, provider) {
+  const payload = await bondiJson(provider.listUrl)
+  const courses = normalizeCourseList(payload).map((row) => normalizeCourse(row, provider)).filter((course) => course.id)
+  return res.status(200).json({ provider: { id: provider.id, name: provider.name }, courses, sourceEndpoint: provider.listUrl, fetchedAtMs: Date.now() })
+}
+
+async function bondiCourseDetail(req, res, provider) {
+  const courseId = text(req.query?.courseId)
+  if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
+  const [catalogPayload, topicPayload] = await Promise.all([bondiJson(provider.listUrl), bondiJson(provider.topicUrl(courseId))])
+  const sourceRow = normalizeCourseList(catalogPayload).find((row) => courseIdentity(row, provider) === courseId) || { CourseId: courseId }
+  const course = normalizeCourse(sourceRow, provider)
+  const structure = normalizeBondiStructure(topicPayload, provider, courseId)
+  const lectureCount = structure.sections.reduce((sum, section) => sum + section.lectures.length, 0)
+  const itemCount = structure.sections.reduce((sum, section) => sum + section.lectures.reduce((inner, lecture) => inner + lecture.items.length, 0), 0)
+  return res.status(200).json({
+    provider: { id: provider.id, name: provider.name }, course, sections: structure.sections, classes: structure.classes,
+    counts: { sections: structure.sections.length, lectures: lectureCount, items: itemCount, classes: structure.classes.length, resources: 0 },
+    sourceEndpoint: provider.topicUrl(courseId), fetchedAtMs: Date.now(),
+  })
+}
+
 async function catalog(req, res, provider) {
+  if (provider.id === "bondipathshala") return bondiCatalog(req, res, provider)
   const { payload, url } = await upstreamJsonFirst(providerCatalogUrls(provider))
   const courses = normalizeCourseList(payload)
     .map((row) => normalizeCourse(row, provider))
@@ -442,6 +549,7 @@ async function catalog(req, res, provider) {
 }
 
 async function courseDetail(req, res, provider) {
+  if (provider.id === "bondipathshala") return bondiCourseDetail(req, res, provider)
   const courseId = text(req.query?.courseId)
   if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
   const { payload, url } = await upstreamJsonFirst(providerDetailUrls(provider, courseId))
