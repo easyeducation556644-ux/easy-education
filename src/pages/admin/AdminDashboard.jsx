@@ -35,6 +35,7 @@ import AdminOverview from "./AdminOverview"
 import ReadUsage from "./ReadUsage"
 import ManageUsers from "./ManageUsers"
 import ManageTrials from "./ManageTrials"
+import ManageUdvash from "./ManageUdvash"
 import ManageCourses from "./ManageCourses"
 import ManageClasses from "./ManageClasses"
 import ManageClassGroups from "./ManageClassGroups"
@@ -153,6 +154,15 @@ export default function AdminDashboard() {
       description: "Create Foundation/Special class cards and place classes inside them.",
       icon: Layers3,
     }] : []),
+    ...(fullAdmin ? [{
+      id: "__udvash",
+      label: "Udvash",
+      name: "Udvash",
+      path: "/admin/udvash",
+      description: "Manage Udvash source accounts, structure sync and premium access.",
+      icon: BookOpen,
+      fullAdminOnly: true,
+    }] : []),
     ...(fullAdmin ? [{ id: "__trials", label: "Trials", name: "Trials", path: "/admin/trials", description: "Create and manage claim-first trials.", icon: Gift, fullAdminOnly: true }] : []),
   ]
 
@@ -225,6 +235,7 @@ export default function AdminDashboard() {
               <Route path="ban-notifications" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_ALERTS}><BannedNotifications /></AdminRoute>} />
               <Route path="ban-management" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.BAN_MANAGEMENT}><BanManagement /></AdminRoute>} />
               <Route path="users" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.USERS}><ManageUsers /></AdminRoute>} />
+              <Route path="udvash" element={<AdminRoute fullOnly><ManageUdvash /></AdminRoute>} />
               <Route path="trials" element={<AdminRoute fullOnly><ManageTrials /></AdminRoute>} />
               <Route path="categories" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.CATEGORIES}><ManageCategories /></AdminRoute>} />
               <Route path="courses" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.COURSES}><ManageCourses /></AdminRoute>} />
