@@ -67,6 +67,38 @@ data class NativeUdvashNote(
     val fileSizeKB: Double,
 )
 
+data class NativeUdvashLiveClass(
+    val sourceAccountId: String,
+    val lectureId: Int,
+    val isInteractiveClass: Boolean,
+    val lectureType: Int,
+    val subjectName: String,
+    val lectureName: String,
+    val syllabusHtml: String,
+    val courseId: Int,
+    val routineId: Int,
+    val studentProgramId: Long,
+    val isLive: Boolean,
+    val startDateTime: String,
+    val endDateTime: String,
+    val programSessionName: String,
+    val courseName: String,
+    val isServiceBlocked: Boolean,
+)
+
+data class NativeUdvashLiveSnapshot(
+    val totalLiveClass: Int,
+    val totalUpcomingClass: Int,
+    val joinButtonBeforeMinutes: Int,
+    val classes: List<NativeUdvashLiveClass>,
+)
+
+data class NativeUdvashJoinResult(
+    val contentUrl: String,
+    val qnaUrl: String,
+    val registrationNo: String,
+)
+
 data class NativeUdvashClassDetail(
     val masterCourseId: Int,
     val subjectId: Int,
@@ -138,6 +170,25 @@ class NativeUdvashRepository(context: Context) {
         ),
     )
 
+    fun liveClasses(cachedOnly: Boolean = false): NativeUdvashLiveSnapshot =
+        parseLiveClasses(payload("live-classes", "$APP_ORIGIN/api/udvash?action=live-classes", cachedOnly))
+
+    fun joinLiveClass(
+        sourceAccountId: String,
+        courseId: Int,
+        routineId: Int,
+        studentProgramId: Long,
+    ): NativeUdvashJoinResult {
+        val target = buildString {
+            append("$APP_ORIGIN/api/udvash?action=join-live")
+            append("&sourceAccountId=").append(URLEncoder.encode(sourceAccountId, Charsets.UTF_8.name()))
+            append("&courseId=").append(courseId)
+            append("&routineId=").append(routineId)
+            append("&studentProgramId=").append(studentProgramId)
+        }
+        return parseJoinResult(request(target))
+    }
+
     fun classDetail(
         courseId: String,
         subjectId: Int,
@@ -153,6 +204,7 @@ class NativeUdvashRepository(context: Context) {
         ),
     )
 
+    fun cachedLiveClasses(): NativeUdvashLiveSnapshot? = runCatching { liveClasses(true) }.getOrNull()
     fun cachedCatalog(): List<NativeUdvashCourse> = runCatching { catalog(true) }.getOrDefault(emptyList())
     fun cachedSubjects(courseId: String): List<NativeUdvashSubject> = runCatching { subjects(courseId, true) }.getOrDefault(emptyList())
     fun cachedChapters(courseId: String, subjectId: Int): List<NativeUdvashChapter> =
@@ -217,6 +269,38 @@ class NativeUdvashRepository(context: Context) {
             rank = json.optInt("rank", 0),
         )
     }.sortedWith(compareBy<NativeUdvashCard> { it.rank }.thenBy { it.title })
+
+    private fun parseLiveClasses(root: JSONObject): NativeUdvashLiveSnapshot = NativeUdvashLiveSnapshot(
+        totalLiveClass = root.optInt("totalLiveClass", 0),
+        totalUpcomingClass = root.optInt("totalUpcomingClass", 0),
+        joinButtonBeforeMinutes = root.optInt("joinButtonBeforeMinutes", 10),
+        classes = root.array("classes").mapObjects { json ->
+            NativeUdvashLiveClass(
+                sourceAccountId = json.optString("sourceAccountId"),
+                lectureId = json.optInt("lectureId"),
+                isInteractiveClass = json.optBoolean("isInteractiveClass", false),
+                lectureType = json.optInt("lectureType"),
+                subjectName = json.optString("subjectName"),
+                lectureName = json.optString("lectureName").ifBlank { "Udvash Live Class" },
+                syllabusHtml = json.optString("syllabusHtml"),
+                courseId = json.optInt("courseId"),
+                routineId = json.optInt("routineId"),
+                studentProgramId = json.optLong("studentProgramId"),
+                isLive = json.optBoolean("isLive", false),
+                startDateTime = json.optString("startDateTime"),
+                endDateTime = json.optString("endDateTime"),
+                programSessionName = json.optString("programSessionName"),
+                courseName = json.optString("courseName"),
+                isServiceBlocked = json.optBoolean("isServiceBlocked", false),
+            )
+        },
+    )
+
+    private fun parseJoinResult(root: JSONObject): NativeUdvashJoinResult = NativeUdvashJoinResult(
+        contentUrl = root.optString("contentUrl"),
+        qnaUrl = root.optString("qnaUrl"),
+        registrationNo = root.optString("registrationNo"),
+    )
 
     private fun parseClassDetail(root: JSONObject): NativeUdvashClassDetail {
         val json = root.optJSONObject("detail") ?: error("Udvash class details are unavailable")
