@@ -283,7 +283,6 @@ class NativeExternalCoursesRepository(context: Context) {
         val providers = listOf(
             NativeExternalProvider("ieducation", "iEducation"),
             NativeExternalProvider("medilogy", "Medilogy"),
-            NativeExternalProvider("bpschool", "BP School"),
         )
 
         fun providerTitle(id: String): String = providers.firstOrNull { it.id == id }?.name ?: id.ifBlank { "Learning" }
