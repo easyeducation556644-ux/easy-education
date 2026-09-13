@@ -84,9 +84,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
 
       - name: Compile Android Kotlin
-        run: ./gradlew :app:compileDebugKotlin --stacktrace
+        run: gradle :app:compileDebugKotlin --stacktrace
 
       - name: Commit Android integration
         shell: bash
