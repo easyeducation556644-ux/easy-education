@@ -7,14 +7,23 @@ on:
       - ".github/workflows/verify-external-course-hierarchy.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   compile-android:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout main for result publishing
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
       - name: Checkout Android branch
         uses: actions/checkout@v4
         with:
           ref: android
+          path: native
 
       - uses: actions/setup-java@v4
         with:
@@ -27,9 +36,37 @@ jobs:
 
       - name: Verify hierarchy implementation
         run: |
-          grep -q 'data class NativeExternalSection' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
-          grep -q 'Lectures / Chapters' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
-          grep -q 'Course content' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'data class NativeExternalSection' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'Lectures / Chapters' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'Course content' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
 
-      - name: Compile Android
-        run: gradle :app:compileDebugKotlin
+      - name: Compile Android and capture result
+        id: compile
+        shell: bash
+        run: |
+          set +e
+          cd native
+          gradle :app:compileDebugKotlin > ../external-course-hierarchy-compile.log 2>&1
+          code=$?
+          cd ..
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          tail -n 120 external-course-hierarchy-compile.log
+          exit 0
+
+      - name: Publish verification result
+        run: |
+          mkdir -p verification
+          cp external-course-hierarchy-compile.log verification/external-course-hierarchy-compile.log
+          cat > verification/external-course-hierarchy-status.txt <<EOF
+          android_commit=9d652730659ba3960daa2004424fe16f77a46921
+          compile_exit_code=${{ steps.compile.outputs.exit_code }}
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add verification/external-course-hierarchy-compile.log verification/external-course-hierarchy-status.txt
+          git commit -m "Record external hierarchy compile verification" || true
+          git push origin HEAD:main
+
+      - name: Fail if compile failed
+        if: steps.compile.outputs.exit_code != '0'
+        run: exit 1
