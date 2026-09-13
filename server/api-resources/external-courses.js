@@ -32,12 +32,13 @@ function text(...values) {
   return ""
 }
 
-function asArray(value) {
-  return Array.isArray(value) ? value : []
-}
-
 function firstArray(...values) {
   return values.find(Array.isArray) || []
+}
+
+function numberOr(value, fallback) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
 }
 
 function stripHtml(value) {
@@ -47,6 +48,8 @@ function stripHtml(value) {
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -91,7 +94,8 @@ async function upstreamJson(url) {
       method: "GET",
       headers: {
         Accept: "application/json, text/plain, */*",
-        "User-Agent": "EasyEducation/1.0 LearningProvider",
+        "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",
       },
       redirect: "follow",
       signal: controller.signal,
@@ -158,7 +162,7 @@ function normalizeCourse(row, provider) {
     id,
     slug,
     title: text(row?.name, row?.title, row?.course_name, row?.courseTitle) || `${provider.name} Course`,
-    description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.about)).slice(0, 600),
+    description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.about)).slice(0, 900),
     thumbnailUrl: absoluteUrl(text(row?.thumbnail, row?.course_image, row?.image, row?.cover_image, row?.thumb, row?.image_url), provider.origin),
     batch: text(row?.batch, row?.category, row?.slug),
     price: Number(row?.discount ?? row?.price ?? row?.amount ?? 0) || 0,
@@ -234,6 +238,22 @@ function itemPrimaryUrl(item, origin) {
     classVideoUrl(item?.class_video ?? item?.classVideo, origin),
     item?.StreamyardLink,
     item?.streamyardLink,
+    item?.lecture_material_link,
+    item?.lectureMaterialLink,
+    item?.practice_link,
+    item?.practiceLink,
+    item?.solution_link,
+    item?.solutionLink,
+    item?.marked_link,
+    item?.markedLink,
+    item?.ebook_link,
+    item?.ebookLink,
+    item?.pdf_link,
+    item?.pdfLink,
+    item?.exam_link,
+    item?.examLink,
+    item?.redirect_link,
+    item?.redirectLink,
   )
   return absoluteUrl(raw, origin)
 }
@@ -247,7 +267,7 @@ function looksPlayable(url, item = {}) {
     || /\.(?:mp4|webm|ogg|mov)(?:\?|#|$)/i.test(url)
 }
 
-function resourceLinks(item, origin, labelPrefix = "Resource") {
+function resourceLinks(item, origin, includePrimary = false) {
   const candidates = [
     ["Lecture material", item?.lecture_material_link ?? item?.lectureMaterialLink],
     ["Practice", item?.practice_link ?? item?.practiceLink],
@@ -260,24 +280,27 @@ function resourceLinks(item, origin, labelPrefix = "Resource") {
     ["Resource", item?.resource_url ?? item?.resourceUrl],
     ["Note", item?.note_url ?? item?.noteUrl],
   ]
+  if (includePrimary) candidates.unshift([text(item?.type, item?.link_type) || "Resource", itemPrimaryUrl(item, origin)])
+
   const seen = new Set()
   const result = []
   for (const [label, value] of candidates) {
     const url = absoluteUrl(value, origin)
     if (!url || seen.has(url)) continue
     seen.add(url)
-    result.push({ label: label || labelPrefix, url })
+    result.push({ label: label || "Resource", url })
   }
   return result
 }
 
-function resourceFromStandalone(item, origin, index) {
-  const url = itemPrimaryUrl(item, origin) || absoluteUrl(text(item?.lecture_material_link, item?.pdf_link, item?.link, item?.href), origin)
-  if (!url || looksPlayable(url, item)) return null
-  return {
-    label: text(item?.title, item?.name) || `Resource ${index + 1}`,
-    url,
-  }
+function uniqueResources(values) {
+  const seen = new Set()
+  return values.filter((item) => {
+    const key = text(item?.url)
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function nodeItems(node) {
@@ -310,77 +333,99 @@ function detailRoot(payload) {
   return payload || {}
 }
 
-function uniqueResources(values) {
-  const seen = new Set()
-  return values.filter((item) => {
-    const key = text(item?.url)
-    if (!key || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
+function normalizeCourseStructure(root, provider, courseId) {
+  const rawSections = firstArray(root?.sections, root?.chapters, root?.modules, root?.course_sections, root?.courseSections)
+  const sectionNodes = rawSections.length ? rawSections : [root]
+  const flatClasses = []
+  let generatedItem = 0
 
-function normalizeSectionClasses(root, provider, courseId) {
-  const sections = firstArray(root?.sections, root?.chapters, root?.modules, root?.course_sections, root?.courseSections)
-  const groups = sections.length ? sections : [root]
-  const output = []
-  let classCounter = 0
+  const sections = sectionNodes.map((section, sectionIndex) => {
+    const sectionRawId = text(section?.id, section?._id, section?.slug) || `${sectionIndex + 1}`
+    const sectionId = `${courseId}:section:${sectionRawId}`
+    const sectionTitle = text(section?.title, section?.name, section?.subjectName) || `Section ${sectionIndex + 1}`
+    const sectionDescription = stripHtml(text(section?.description, section?.short_description, section?.about)).slice(0, 500)
+    let rawLectures = nodeChildren(section)
+    if (!rawLectures.length && nodeItems(section).length) rawLectures = [section]
+    if (!rawLectures.length && section === root) rawLectures = nodeChildren(root)
+    if (!rawLectures.length) rawLectures = [section]
 
-  function appendClass(sectionTitle, chapterTitle, item, siblingResources = [], index = 0) {
-    const sourceUrl = itemPrimaryUrl(item, provider.origin)
-    if (!looksPlayable(sourceUrl, item)) return
-    classCounter += 1
-    const id = text(item?.id, item?._id, item?.slug) || `${courseId}-${classCounter}`
-    const ownResources = resourceLinks(item, provider.origin)
-    output.push({
-      id: String(id),
-      title: text(item?.title, item?.name, item?.topic) || `Class ${classCounter}`,
-      topic: text(item?.description, item?.topic),
-      sectionTitle: sectionTitle || provider.name,
-      chapterTitle: chapterTitle || sectionTitle || "Classes",
-      sourceUrl,
-      teacherName: text(item?.teacher_name, item?.teacherName, item?.instructor_name, item?.instructorName) || provider.name,
-      imageUrl: absoluteUrl(text(item?.thumbnail, item?.image, item?.image_url, item?.imageUrl), provider.origin),
-      order: Number(item?.serial ?? item?.order ?? item?.rank ?? index ?? classCounter) || classCounter,
-      resourceLinks: uniqueResources([...ownResources, ...siblingResources]),
-    })
-  }
+    const lectures = rawLectures.map((lecture, lectureIndex) => {
+      const lectureRawId = text(lecture?.id, lecture?._id, lecture?.slug) || `${lectureIndex + 1}`
+      const lectureId = `${sectionId}:lecture:${lectureRawId}`
+      const lectureTitle = text(lecture?.title, lecture?.name, lecture?.chapterName) || `Lecture ${lectureIndex + 1}`
+      const lectureDescription = stripHtml(text(lecture?.description, lecture?.topic, lecture?.notice, lecture?.lecture_notice)).slice(0, 500)
+      let rawItems = nodeItems(lecture)
+      if (!rawItems.length && lecture !== section && looksPlayable(itemPrimaryUrl(lecture, provider.origin), lecture)) rawItems = [lecture]
 
-  groups.forEach((section, sectionIndex) => {
-    const sectionTitle = text(section?.title, section?.name) || `Section ${sectionIndex + 1}`
-    let children = nodeChildren(section)
-    if (!children.length && nodeItems(section).length) children = [section]
-    if (!children.length && section === root) children = nodeChildren(root)
-    if (!children.length) children = [section]
+      const siblingResources = uniqueResources(rawItems.flatMap((item) => {
+        const url = itemPrimaryUrl(item, provider.origin)
+        return looksPlayable(url, item) ? [] : resourceLinks(item, provider.origin, true)
+      }))
 
-    children.forEach((child, childIndex) => {
-      const chapterTitle = text(child?.title, child?.name) || `Chapter ${childIndex + 1}`
-      const items = nodeItems(child)
-      const siblingResources = uniqueResources(items
-        .map((item, index) => resourceFromStandalone(item, provider.origin, index))
-        .filter(Boolean))
-      const playableItems = items.filter((item) => looksPlayable(itemPrimaryUrl(item, provider.origin), item))
-      if (playableItems.length) {
-        playableItems.forEach((item, itemIndex) => appendClass(sectionTitle, chapterTitle, item, siblingResources, itemIndex))
-      } else if (looksPlayable(itemPrimaryUrl(child, provider.origin), child)) {
-        appendClass(sectionTitle, chapterTitle, child, resourceLinks(child, provider.origin), childIndex)
-      } else {
-        const grandchildren = nodeChildren(child)
-        grandchildren.forEach((grandchild, grandIndex) => {
-          const grandTitle = text(grandchild?.title, grandchild?.name) || chapterTitle
-          const grandItems = nodeItems(grandchild)
-          const grandResources = uniqueResources(grandItems
-            .map((item, index) => resourceFromStandalone(item, provider.origin, index))
-            .filter(Boolean))
-          grandItems
-            .filter((item) => looksPlayable(itemPrimaryUrl(item, provider.origin), item))
-            .forEach((item, itemIndex) => appendClass(sectionTitle, grandTitle, item, grandResources, itemIndex + grandIndex))
-        })
+      const items = rawItems.map((item, itemIndex) => {
+        generatedItem += 1
+        const rawItemId = text(item?.id, item?._id, item?.slug) || `${generatedItem}`
+        const id = `${lectureId}:item:${rawItemId}`
+        const sourceUrl = itemPrimaryUrl(item, provider.origin)
+        const playable = looksPlayable(sourceUrl, item)
+        const ownResources = resourceLinks(item, provider.origin, !playable)
+        const resources = playable ? uniqueResources([...ownResources, ...siblingResources]) : ownResources
+        const normalized = {
+          id,
+          rawId: rawItemId,
+          title: text(item?.title, item?.name, item?.topic) || `Content ${itemIndex + 1}`,
+          topic: stripHtml(text(item?.description, item?.topic, item?.lecture_notice, item?.lectureNotice)).slice(0, 700),
+          type: text(item?.type, item?.content_type, item?.contentType) || (playable ? "Class" : "Resource"),
+          linkType: text(item?.link_type, item?.linkType),
+          sourceUrl,
+          playable,
+          teacherName: text(item?.teacher_name, item?.teacherName, item?.instructor_name, item?.instructorName) || provider.name,
+          imageUrl: absoluteUrl(text(item?.thumbnail, item?.image, item?.image_url, item?.imageUrl), provider.origin),
+          order: numberOr(item?.serial ?? item?.order ?? item?.rank, itemIndex + 1),
+          resourceLinks: resources,
+        }
+        if (playable) {
+          flatClasses.push({
+            id,
+            rawId: rawItemId,
+            title: normalized.title,
+            topic: normalized.topic,
+            sectionId,
+            lectureId,
+            sectionTitle,
+            chapterTitle: lectureTitle,
+            sourceUrl,
+            teacherName: normalized.teacherName,
+            imageUrl: normalized.imageUrl,
+            order: normalized.order,
+            resourceLinks: resources,
+          })
+        }
+        return normalized
+      }).sort((a, b) => a.order - b.order)
+
+      return {
+        id: lectureId,
+        rawId: lectureRawId,
+        title: lectureTitle,
+        description: lectureDescription,
+        order: numberOr(lecture?.serial ?? lecture?.order ?? lecture?.rank, lectureIndex + 1),
+        items,
       }
-    })
-  })
+    }).sort((a, b) => a.order - b.order)
 
-  return output
+    return {
+      id: sectionId,
+      rawId: sectionRawId,
+      title: sectionTitle,
+      description: sectionDescription,
+      order: numberOr(section?.serial ?? section?.order ?? section?.rank, sectionIndex + 1),
+      lectures,
+    }
+  }).sort((a, b) => a.order - b.order)
+
+  flatClasses.sort((a, b) => a.order - b.order)
+  return { sections, classes: flatClasses }
 }
 
 async function catalog(req, res, provider) {
@@ -402,14 +447,20 @@ async function courseDetail(req, res, provider) {
   const { payload, url } = await upstreamJsonFirst(providerDetailUrls(provider, courseId))
   const root = detailRoot(payload)
   const course = normalizeCourse({ ...root, id: courseIdentity(root, provider) || courseId, slug: text(root?.slug, courseId) }, provider)
-  const classes = normalizeSectionClasses(root, provider, course.id)
+  const structure = normalizeCourseStructure(root, provider, course.id)
+  const lectureCount = structure.sections.reduce((sum, section) => sum + section.lectures.length, 0)
+  const itemCount = structure.sections.reduce((sum, section) => sum + section.lectures.reduce((inner, lecture) => inner + lecture.items.length, 0), 0)
   return res.status(200).json({
     provider: { id: provider.id, name: provider.name },
     course,
-    classes,
+    sections: structure.sections,
+    classes: structure.classes,
     counts: {
-      classes: classes.length,
-      resources: classes.reduce((sum, item) => sum + item.resourceLinks.length, 0),
+      sections: structure.sections.length,
+      lectures: lectureCount,
+      items: itemCount,
+      classes: structure.classes.length,
+      resources: structure.classes.reduce((sum, item) => sum + item.resourceLinks.length, 0),
     },
     sourceEndpoint: url,
     fetchedAtMs: Date.now(),
