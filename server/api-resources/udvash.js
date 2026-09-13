@@ -578,6 +578,43 @@ async function adminDeleteAccount(req, res, authenticated) {
 }
 
 async function catalog(res, authenticated) {
+  // The Android client already paints its route cache first. This request is therefore the
+  // live revalidation pass: refresh only the course route, never crawl subjects/chapters.
+  const accountSnapshot = await authenticated.db.collection(ACCOUNTS).get()
+  const activeAccounts = accountSnapshot.docs
+    .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+    .filter((account) => text(account.status).toLowerCase() !== "inactive")
+
+  await mapLimit(activeAccounts, 3, async (account) => {
+    try {
+      const courseTypeId = intValue(account.courseTypeId, DEFAULT_COURSE_TYPE_ID)
+      const payload = await accountRequest(account.id, authenticated.db, `/Content/Courses?id=${courseTypeId}`)
+      const rows = asArray(payload?.data?.masterCourseList)
+        .map((row) => normalizeCourse(row, account.id, courseTypeId))
+        .filter((row) => row.masterCourseId)
+      await mapLimit(rows, 8, async (course) => {
+        await authenticated.db.collection(COURSES).doc(String(course.masterCourseId)).set({
+          ...course,
+          sourceAccountId: FieldValue.delete(),
+          sourceAccountIds: FieldValue.arrayUnion(account.id),
+          updatedAtMs: Date.now(),
+        }, { merge: true })
+      })
+      await authenticated.db.collection(ACCOUNTS).doc(account.id).set({
+        courseCount: rows.length,
+        lastCheckedAtMs: Date.now(),
+        lastError: "",
+        status: "active",
+        updatedAtMs: Date.now(),
+      }, { merge: true })
+    } catch (error) {
+      await authenticated.db.collection(ACCOUNTS).doc(account.id).set({
+        lastError: text(error?.message).slice(0, 500),
+        updatedAtMs: Date.now(),
+      }, { merge: true }).catch(() => {})
+    }
+  })
+
   const snapshot = await authenticated.db.collection(COURSES).get()
   const now = Date.now()
   let entitlementMap = new Map()
@@ -609,7 +646,7 @@ async function catalog(res, authenticated) {
       }
     })
     .sort((a, b) => (a.rank - b.rank) || a.title.localeCompare(b.title))
-  return res.status(200).json({ accessMode: "premium", courses })
+  return res.status(200).json({ accessMode: "premium", courses, fetchedAtMs: Date.now() })
 }
 
 async function structureForCourse(authenticated, courseId) {
@@ -627,22 +664,59 @@ async function structureForCourse(authenticated, courseId) {
 async function subjects(req, res, authenticated) {
   const courseId = validId(req.query?.courseId)
   if (!courseId) return res.status(400).json({ error: "courseId is required" })
-  const { structure } = await structureForCourse(authenticated, courseId)
-  const rows = asArray(structure.subjects).map(({ chapters, ...subject }) => ({
+  const { source, structure } = await structureForCourse(authenticated, courseId)
+  const courseTypeId = intValue(source.account?.courseTypeId, structure.masterCourseTypeId || DEFAULT_COURSE_TYPE_ID)
+  const payload = await accountRequest(
+    source.accountId,
+    authenticated.db,
+    `/Content/Subjects?courseTypeId=${courseTypeId}&masterCourseId=${courseId}`,
+  )
+  const cachedSubjects = new Map(asArray(structure.subjects).map((subject) => [intValue(subject?.subjectId), subject]))
+  const liveSubjects = asArray(payload?.data?.subjectList)
+    .map(normalizeSubject)
+    .filter((subject) => subject.subjectId)
+    .map((subject) => ({ ...subject, chapters: asArray(cachedSubjects.get(subject.subjectId)?.chapters) }))
+  const courseContents = asArray(payload?.data?.courseWiseContentViewModelList).map(courseWideContent)
+  const fetchedAtMs = Date.now()
+  await authenticated.db.collection(STRUCTURES).doc(`${source.accountId}_${courseId}`).set({
+    subjects: liveSubjects,
+    courseContents,
+    syncedAtMs: fetchedAtMs,
+  }, { merge: true })
+  const rows = liveSubjects.map(({ chapters, ...subject }) => ({
     ...subject,
     chapterCount: asArray(chapters).length,
   }))
-  return res.status(200).json({ course: structure.course || {}, subjects: rows, syncedAtMs: Number(structure.syncedAtMs || 0) })
+  return res.status(200).json({ course: structure.course || {}, subjects: rows, syncedAtMs: fetchedAtMs })
 }
 
 async function chapters(req, res, authenticated) {
   const courseId = validId(req.query?.courseId)
   const subjectId = intValue(req.query?.subjectId)
   if (!courseId || !subjectId) return res.status(400).json({ error: "courseId and subjectId are required" })
-  const { structure } = await structureForCourse(authenticated, courseId)
-  const subject = asArray(structure.subjects).find((row) => intValue(row?.subjectId) === subjectId)
-  if (!subject) return res.status(404).json({ error: "Subject not found in cached Udvash structure" })
-  return res.status(200).json({ subject: { ...subject, chapters: undefined }, chapters: asArray(subject.chapters), syncedAtMs: Number(structure.syncedAtMs || 0) })
+  const { source, structure } = await structureForCourse(authenticated, courseId)
+  const subjects = asArray(structure.subjects)
+  const subject = subjects.find((row) => intValue(row?.subjectId) === subjectId)
+  if (!subject) return res.status(404).json({ error: "Subject not found in Udvash structure" })
+  const payload = await accountRequest(
+    source.accountId,
+    authenticated.db,
+    `/Content/Chapters?masterCourseId=${courseId}&subjectId=${subjectId}&ln=Bn`,
+  )
+  const liveChapters = asArray(payload?.data?.masterChapterList)
+    .map(normalizeChapter)
+    .filter((chapter) => chapter.masterChapterId)
+  const fetchedAtMs = Date.now()
+  const nextSubjects = subjects.map((row) => intValue(row?.subjectId) === subjectId ? { ...row, chapters: liveChapters } : row)
+  await authenticated.db.collection(STRUCTURES).doc(`${source.accountId}_${courseId}`).set({
+    subjects: nextSubjects,
+    syncedAtMs: fetchedAtMs,
+  }, { merge: true })
+  return res.status(200).json({
+    subject: { ...subject, chapters: undefined },
+    chapters: liveChapters,
+    syncedAtMs: fetchedAtMs,
+  })
 }
 
 async function liveContentTypes(req, res, authenticated) {
