@@ -168,7 +168,14 @@ fun NativeEdgeCourseInlinePlayer(
                             return scheme != "http" && scheme != "https"
                         }
                     }
-                    val coursePage = "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"
+                    val coursePage = if (edgeCourseId.startsWith("external:")) {
+                runCatching {
+                    val source = Uri.parse(sourceUrl)
+                    "${source.scheme}://${source.host}/"
+                }.getOrDefault("https://easy-education.vercel.app/")
+            } else {
+                "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"
+            }
                     loadDataWithBaseURL(
                         coursePage,
                         edgeEmbedHtml(edgeEmbedUrl(sourceUrl)),

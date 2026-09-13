@@ -250,7 +250,7 @@ private fun NavHostController.navigateHome(currentRoute: String) {
     if (popBackStack("home", inclusive = false)) return
     navigate("home") { popUpTo(graph.startDestinationId) { inclusive = true; saveState = false }; launchSingleTop = true; restoreState = false }
 }
-private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
+private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("provider/") || startsWith("provider-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
 private fun nativeStartRoute(initialPath: String?): String {
     val path = initialPath?.trim().orEmpty(); if (path.isBlank()) return "home"
     val segments = runCatching { Uri.parse(path).pathSegments }.getOrDefault(emptyList())
@@ -293,14 +293,31 @@ private fun V2NavHost(nav: NavHostController, viewModel: NativeAppViewModel, sta
         composable("udvash-class/{courseId}/{subjectId}/{chapterId}/{contentTypeId}/{contentId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType }, navArgument("contentId") { type = NavType.IntType })) { entry ->
             NativeUdvashClassScreen(
                 nav = nav,
+                viewModel = viewModel,
+                appState = state,
                 courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
                 subjectId = entry.arguments?.getInt("subjectId") ?: 0,
                 chapterId = entry.arguments?.getInt("chapterId") ?: 0,
                 contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,
                 contentId = entry.arguments?.getInt("contentId") ?: 0,
-                online = state.online,
             )
-        }; composable("courses") { V2Courses(nav, state) }; composable("downloads") { V2Downloads(viewModel, state) }; composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDevices) }; composable("exam-history") { NativeExamHistoryScreen(nav) }; composable("past-classes") { V2PastCourses(nav, viewModel, state) }
+        }
+    composable("provider/{provider}", listOf(navArgument("provider") { type = NavType.StringType })) { entry ->
+        NativeExternalCatalogScreen(nav, Uri.decode(entry.arguments?.getString("provider").orEmpty()))
+    }
+    composable("provider/{provider}/{courseId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType })) { entry ->
+        NativeExternalCourseScreen(nav, Uri.decode(entry.arguments?.getString("provider").orEmpty()), Uri.decode(entry.arguments?.getString("courseId").orEmpty()))
+    }
+    composable("provider-class/{provider}/{courseId}/{classId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType }, navArgument("classId") { type = NavType.StringType })) { entry ->
+        NativeExternalClassScreen(
+            nav = nav,
+            viewModel = viewModel,
+            appState = state,
+            providerId = Uri.decode(entry.arguments?.getString("provider").orEmpty()),
+            courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+            classId = Uri.decode(entry.arguments?.getString("classId").orEmpty()),
+        )
+    }; composable("courses") { V2Courses(nav, state) }; composable("downloads") { V2Downloads(viewModel, state) }; composable("profile") { V2Profile(nav, viewModel, state, themeMode, onThemeMode, activeDevices) }; composable("exam-history") { NativeExamHistoryScreen(nav) }; composable("past-classes") { V2PastCourses(nav, viewModel, state) }
         composable("past-classes/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry -> V2PastClassPage(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty()) }; composable("add-course") { V2AddCourse(nav, viewModel, state) }; composable("course/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry -> V2Course(nav, viewModel, state, entry.arguments?.getString("courseId").orEmpty()) }; composable("archive/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry -> NativeArchiveCourseScreen(nav, state, entry.arguments?.getString("courseId").orEmpty()) }
         composable("archive-chapter/{courseId}/{subject}/{chapter}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subject") { type = NavType.StringType }, navArgument("chapter") { type = NavType.StringType })) { entry -> NativeArchiveChapterScreen(nav, state, entry.arguments?.getString("courseId").orEmpty(), Uri.decode(entry.arguments?.getString("subject").orEmpty()), Uri.decode(entry.arguments?.getString("chapter").orEmpty())) }
         composable("subject/{courseId}/{subject}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subject") { type = NavType.StringType })) { entry -> V2Subject(nav, state, entry.arguments?.getString("courseId").orEmpty(), Uri.decode(entry.arguments?.getString("subject").orEmpty())) }
@@ -317,6 +334,7 @@ private fun V2Home(nav: NavHostController, viewModel: NativeAppViewModel, state:
         item { Spacer(Modifier.height(6.dp)) }; item { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Hi ${state.profile?.name?.substringBefore(' ')?.ifBlank { "Student" } ?: "Student"}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Your learning space", color = MaterialTheme.colorScheme.onSurfaceVariant) }; Surface(shape = CircleShape, color = if (state.online) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) { Icon(if (state.online) Icons.Default.CheckCircle else Icons.Default.CloudOff, if (state.online) "Online" else "Offline", Modifier.padding(11.dp).size(22.dp), tint = if (state.online) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant) } } }; item { NativeCpsHomeBlock(nav, state) }
         item { NativeEdgeCourseHomeBlock(nav) }
         item { NativeUdvashHomeBlock(nav) }
+        item { NativeExternalPlatformsHomeBlock(nav) }
         item { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(24.dp)) { Column(Modifier.padding(18.dp)) { Text("Learning summary", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(if (state.online) "Synced learning, ready when you are" else "Cached learning is still available", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.76f)); Spacer(Modifier.height(16.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { V2SummaryMetric("Courses", state.courses.size.toString(), Modifier.weight(1f)); V2SummaryMetric("Classes", cachedClasses.size.toString(), Modifier.weight(1f)); V2SummaryMetric("Offline", ready.toString(), Modifier.weight(1f)) } } } }
         item { V2Section("Quick access") }; item { Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { V2DashboardAction("Past classes", "Latest lessons, 5 per page", Icons.Default.History, 154.dp, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer) { nav.navigate("past-classes") }; V2DashboardAction("Downloads", "$ready ready offline", Icons.Default.Download, 112.dp, MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant) { nav.navigate("downloads") } }; Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) { V2DashboardAction("My courses", "${state.courses.size} enrolled", Icons.Default.School, 112.dp, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer) { nav.navigate("courses") }; V2DashboardAction("Add course", if (state.online) "Browse & buy inside the app" else "Connect to browse courses", Icons.Default.Add, 154.dp, MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer) { nav.navigate("add-course") } } } }
         if (state.online) item { TextButton(onClick = { viewModel.refreshOnline() }) { Icon(Icons.Default.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (state.syncing) "Syncing…" else "Sync learning data") } }; item { Spacer(Modifier.height(12.dp)) }

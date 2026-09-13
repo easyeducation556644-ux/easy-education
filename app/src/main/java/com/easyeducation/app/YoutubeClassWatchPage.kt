@@ -206,7 +206,7 @@ fun YoutubeClassWatchPage(
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         item(key = "player-$classId") {
-    if (course.courseFormat == "edgecourse" && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {
+    if ((course.courseFormat == "edgecourse" || course.courseFormat == "external") && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {
         NativeEdgeCourseInlinePlayer(
             sourceUrl = classItem.sourceUrl,
             edgeCourseId = course.id.removePrefix("edgecourse:"),

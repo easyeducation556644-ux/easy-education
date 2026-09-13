@@ -61,6 +61,7 @@ object NativePlaybackSourceResolver {
         requestedHeight: Int,
     ): NativeOnlinePlaybackSource {
         val source = sourceUrl.trim()
+        if (source.startsWith("udvash://", ignoreCase = true)) return resolveUdvash(source, requestedHeight)
         require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }
         return when {
             YoutubeDeviceResolver.isYoutubeUrl(source) -> resolveYoutube(source, requestedHeight)
@@ -73,6 +74,46 @@ object NativePlaybackSourceResolver {
             else -> NativeOnlinePlaybackSource.Direct(source)
         }
     }
+
+    private fun resolveUdvash(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {
+    val uri = Uri.parse(sourceUrl)
+    fun required(name: String): String = uri.getQueryParameter(name).orEmpty().ifBlank { error("Udvash playback reference is incomplete") }
+    val courseId = required("courseId")
+    val subjectId = required("subjectId")
+    val chapterId = required("chapterId")
+    val contentTypeId = required("contentTypeId")
+    val contentId = required("contentId")
+    val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
+    val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
+    val url = "$APP_ORIGIN/api/udvash?action=class" +
+        "&courseId=${Uri.encode(courseId)}&subjectId=${Uri.encode(subjectId)}" +
+        "&chapterId=${Uri.encode(chapterId)}&contentTypeId=${Uri.encode(contentTypeId)}&contentId=${Uri.encode(contentId)}"
+    val payload = bunnyHttp.newCall(
+        Request.Builder().url(url).header("Authorization", "Bearer $token").header("Accept", "application/json").build(),
+    ).execute().use { response ->
+        val raw = response.body?.string().orEmpty()
+        val json = runCatching { JSONObject(raw) }.getOrElse { error("Udvash returned an invalid playback response") }
+        if (!response.isSuccessful) error(json.optString("error").ifBlank { "Udvash playback refresh failed (${response.code})" })
+        json
+    }
+    val detail = payload.optJSONObject("detail") ?: error("Udvash class details are unavailable")
+    val youtubeUrl = detail.optString("youtubeUrl").trim()
+    if (youtubeUrl.isNotBlank()) return resolveYoutube(youtubeUrl, requestedHeight)
+    data class Choice(val height: Int, val url: String)
+    val choices = buildList {
+        val options = detail.optJSONArray("videoOptions")
+        if (options != null) for (index in 0 until options.length()) {
+            val item = options.optJSONObject(index) ?: continue
+            val videoUrl = item.optString("url").trim()
+            if (videoUrl.isNotBlank()) add(Choice(item.optInt("resolution", 0), videoUrl))
+        }
+    }
+    val selected = choices.firstOrNull { it.height == requestedHeight }
+        ?: choices.filter { it.height in 1..requestedHeight }.maxByOrNull { it.height }
+        ?: choices.maxByOrNull { it.height }
+        ?: error("Udvash did not expose a playable video")
+    return NativeOnlinePlaybackSource.Direct(selected.url, selected.url.contains(".m3u8", ignoreCase = true))
+}
 
     private fun resolveYoutube(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {
         val result = YoutubeDeviceResolver().resolve(sourceUrl)
