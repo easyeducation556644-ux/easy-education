@@ -37,30 +37,32 @@ jobs:
               raise SystemExit('inCourseRoutes anchor not found')
 
           marker = '; composable("courses") { V2Courses(nav, state) }'
-          udvash_routes = '''; composable("udvash") { NativeUdvashCatalogScreen(nav) }
-        composable("udvash/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->
-            NativeUdvashSubjectsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()))
-        }
-        composable("udvash/{courseId}/{subjectId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType })) { entry ->
-            NativeUdvashChaptersScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0)
-        }
-        composable("udvash/{courseId}/{subjectId}/{chapterId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType })) { entry ->
-            NativeUdvashContentTypesScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0)
-        }
-        composable("udvash/{courseId}/{subjectId}/{chapterId}/{contentTypeId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType })) { entry ->
-            NativeUdvashCardsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0, entry.arguments?.getInt("contentTypeId") ?: 0)
-        }
-        composable("udvash-class/{courseId}/{subjectId}/{chapterId}/{contentTypeId}/{contentId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType }, navArgument("contentId") { type = NavType.IntType })) { entry ->
-            NativeUdvashClassScreen(
-                nav = nav,
-                courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
-                subjectId = entry.arguments?.getInt("subjectId") ?: 0,
-                chapterId = entry.arguments?.getInt("chapterId") ?: 0,
-                contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,
-                contentId = entry.arguments?.getInt("contentId") ?: 0,
-                online = state.online,
-            )
-        }'''
+          udvash_routes = (
+              '; composable("udvash") { NativeUdvashCatalogScreen(nav) }\n'
+              '        composable("udvash/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->\n'
+              '            NativeUdvashSubjectsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()))\n'
+              '        }\n'
+              '        composable("udvash/{courseId}/{subjectId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType })) { entry ->\n'
+              '            NativeUdvashChaptersScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0)\n'
+              '        }\n'
+              '        composable("udvash/{courseId}/{subjectId}/{chapterId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType })) { entry ->\n'
+              '            NativeUdvashContentTypesScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0)\n'
+              '        }\n'
+              '        composable("udvash/{courseId}/{subjectId}/{chapterId}/{contentTypeId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType })) { entry ->\n'
+              '            NativeUdvashCardsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0, entry.arguments?.getInt("contentTypeId") ?: 0)\n'
+              '        }\n'
+              '        composable("udvash-class/{courseId}/{subjectId}/{chapterId}/{contentTypeId}/{contentId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType }, navArgument("contentId") { type = NavType.IntType })) { entry ->\n'
+              '            NativeUdvashClassScreen(\n'
+              '                nav = nav,\n'
+              '                courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),\n'
+              '                subjectId = entry.arguments?.getInt("subjectId") ?: 0,\n'
+              '                chapterId = entry.arguments?.getInt("chapterId") ?: 0,\n'
+              '                contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,\n'
+              '                contentId = entry.arguments?.getInt("contentId") ?: 0,\n'
+              '                online = state.online,\n'
+              '            )\n'
+              '        }'
+          )
           if 'composable("udvash")' not in s:
               if marker not in s:
                   raise SystemExit('V2NavHost courses marker not found')
