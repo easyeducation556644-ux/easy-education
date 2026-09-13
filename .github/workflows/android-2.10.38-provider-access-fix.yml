@@ -1,0 +1,310 @@
+name: Android 2.10.38 Provider access fix
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.38-provider-access-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: "2.10.38"
+      VERSION_CODE: "2103800"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Align public provider access with working clone adapters
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/api-resources/external-courses.js')
+          s = p.read_text()
+
+          old_headers = '''      headers: {
+                Accept: "application/json, text/plain, */*",
+                "User-Agent": "EasyEducation/1.0 LearningProvider",
+              },'''
+          new_headers = '''      headers: {
+                Accept: "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",
+              },'''
+          if old_headers in s:
+              s = s.replace(old_headers, new_headers, 1)
+
+          marker = '''function courseIdentity(row, provider) {'''
+          helpers = '''async function upstreamJsonFirst(urls) {
+            let lastError = null
+            for (const url of urls) {
+              try {
+                return { payload: await upstreamJson(url), url }
+              } catch (error) {
+                lastError = error
+              }
+            }
+            throw lastError || new Error("Provider request failed")
+          }
+
+          function providerCatalogUrls(provider) {
+            if (provider.id === "bpschool") return [
+              "https://bondipathshalaschool.com.bd/api/courses",
+              "https://bondipathshalaschool.com.bd/api/course/course/all-courses?page=1",
+            ]
+            return [provider.listUrl]
+          }
+
+          function providerDetailUrls(provider, courseId) {
+            if (provider.id === "bpschool") return [
+              `https://bondipathshalaschool.com.bd/api/courses/${encodeURIComponent(courseId)}`,
+              `https://bondipathshalaschool.com.bd/api/course/course/${encodeURIComponent(courseId)}/`,
+            ]
+            return [provider.detailUrl(courseId)]
+          }
+
+          '''
+          if 'function providerCatalogUrls(provider)' not in s:
+              if marker not in s:
+                  raise SystemExit('courseIdentity marker not found')
+              s = s.replace(marker, helpers + marker, 1)
+
+          old_catalog = '''async function catalog(req, res, provider) {
+            const payload = await upstreamJson(provider.listUrl)
+            const courses = normalizeCourseList(payload)
+              .map((row) => normalizeCourse(row, provider))
+              .filter((course) => course.id)
+            return res.status(200).json({ provider: { id: provider.id, name: provider.name }, courses, fetchedAtMs: Date.now() })
+          }'''
+          new_catalog = '''async function catalog(req, res, provider) {
+            const { payload, url } = await upstreamJsonFirst(providerCatalogUrls(provider))
+            const courses = normalizeCourseList(payload)
+              .map((row) => normalizeCourse(row, provider))
+              .filter((course) => course.id)
+            return res.status(200).json({
+              provider: { id: provider.id, name: provider.name },
+              courses,
+              sourceEndpoint: url,
+              fetchedAtMs: Date.now(),
+            })
+          }'''
+          if old_catalog in s:
+              s = s.replace(old_catalog, new_catalog, 1)
+          elif 'sourceEndpoint: url' not in s:
+              raise SystemExit('catalog block not found')
+
+          old_detail = '''async function courseDetail(req, res, provider) {
+            const courseId = text(req.query?.courseId)
+            if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
+            const payload = await upstreamJson(provider.detailUrl(courseId))
+            const root = detailRoot(payload)
+            const course = normalizeCourse({ ...root, id: courseIdentity(root, provider) || courseId, slug: text(root?.slug, courseId) }, provider)
+            const classes = normalizeSectionClasses(root, provider, course.id)
+            return res.status(200).json({
+              provider: { id: provider.id, name: provider.name },
+              course,
+              classes,
+              counts: {
+                classes: classes.length,
+                resources: classes.reduce((sum, item) => sum + item.resourceLinks.length, 0),
+              },
+              fetchedAtMs: Date.now(),
+            })
+          }'''
+          new_detail = '''async function courseDetail(req, res, provider) {
+            const courseId = text(req.query?.courseId)
+            if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
+            const { payload, url } = await upstreamJsonFirst(providerDetailUrls(provider, courseId))
+            const root = detailRoot(payload)
+            const course = normalizeCourse({ ...root, id: courseIdentity(root, provider) || courseId, slug: text(root?.slug, courseId) }, provider)
+            const classes = normalizeSectionClasses(root, provider, course.id)
+            return res.status(200).json({
+              provider: { id: provider.id, name: provider.name },
+              course,
+              classes,
+              counts: {
+                classes: classes.length,
+                resources: classes.reduce((sum, item) => sum + item.resourceLinks.length, 0),
+              },
+              sourceEndpoint: url,
+              fetchedAtMs: Date.now(),
+            })
+          }'''
+          if old_detail in s:
+              s = s.replace(old_detail, new_detail, 1)
+          elif 'providerDetailUrls(provider, courseId)' not in s:
+              raise SystemExit('courseDetail block not found')
+
+          p.write_text(s)
+
+      - name: Verify provider adapter code
+        shell: bash
+        run: |
+          grep -q 'ieducationbd.com/api/course/admin/course/all-course' server/api-resources/external-courses.js
+          grep -q 'medilogy.com.bd/api/course/admin/course/all-course' server/api-resources/external-courses.js
+          grep -q 'bondipathshalaschool.com.bd/api/courses' server/api-resources/external-courses.js
+          grep -q 'bondipathshalaschool.com.bd/api/course/course/all-courses?page=1' server/api-resources/external-courses.js
+          grep -q 'upstreamJsonFirst' server/api-resources/external-courses.js
+          grep -q 'sourceEndpoint' server/api-resources/external-courses.js
+
+      - name: Live-check public upstream list and first course detail
+        shell: bash
+        run: |
+          node <<'NODE'
+          const UA = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36';
+          const headers = {Accept:'application/json, text/plain, */*','User-Agent':UA};
+          const arrayOf = (p) => Array.isArray(p) ? p : p?.results || p?.result || p?.data?.results || p?.data?.result || p?.data?.courses || p?.data || p?.courses || [];
+          async function get(url){ const r=await fetch(url,{headers,redirect:'follow'}); const t=await r.text(); if(!r.ok) throw new Error(`${r.status} ${url}`); try{return JSON.parse(t)}catch{throw new Error(`non-json ${url}`)} }
+          async function standard(name, origin){
+            const listUrl=`${origin}/api/course/admin/course/all-course/`;
+            const payload=await get(listUrl); const rows=arrayOf(payload); if(!Array.isArray(rows)||!rows.length) throw new Error(`${name}: empty list`);
+            const first=rows[0]; const id=first?.id ?? first?._id ?? first?.slug; if(id==null) throw new Error(`${name}: no course id`);
+            await get(`${origin}/api/course/admin/course/${encodeURIComponent(id)}/`);
+            console.log(`${name}: OK list=${rows.length} first=${id}`);
+          }
+          async function bp(){
+            let rows=[], source='';
+            for(const url of ['https://bondipathshalaschool.com.bd/api/courses','https://bondipathshalaschool.com.bd/api/course/course/all-courses?page=1']){
+              try{ const p=await get(url); const a=arrayOf(p); if(Array.isArray(a)&&a.length){ rows=a; source=url; break; } }catch(e){ console.log('BP list fallback:',e.message) }
+            }
+            if(!rows.length) throw new Error('BP School: no public course list endpoint worked');
+            const first=rows[0]; const keys=[first?.slug,first?.id,first?._id].filter(v=>v!==undefined&&v!==null&&String(v));
+            let ok=false;
+            for(const key of keys){
+              for(const url of [`https://bondipathshalaschool.com.bd/api/courses/${encodeURIComponent(key)}`,`https://bondipathshalaschool.com.bd/api/course/course/${encodeURIComponent(key)}/`]){
+                try{ await get(url); console.log(`BP School: OK list=${rows.length} source=${source} first=${key}`); ok=true; break; }catch(e){ console.log('BP detail fallback:',e.message) }
+              }
+              if(ok) break;
+            }
+            if(!ok) throw new Error('BP School: list worked but first course detail did not');
+          }
+          await standard('iEducation','https://ieducationbd.com');
+          await standard('Medilogy','https://medilogy.com.bd');
+          await bp();
+          NODE
+
+      - name: Commit provider backend fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/api-resources/external-courses.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix public learning provider access fallbacks"
+            git push origin HEAD:main
+          fi
+
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Bump Android to 2.10.38
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('native/app/build.gradle.kts')
+          s = p.read_text()
+          if 'versionCode = 2103700' not in s or 'versionName = "2.10.37"' not in s:
+              raise SystemExit('Expected Android 2.10.37 version not found')
+          s = s.replace('versionCode = 2103700', 'versionCode = 2103800', 1)
+          s = s.replace('versionName = "2.10.37"', 'versionName = "2.10.38"', 1)
+          p.write_text(s)
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin
+        working-directory: native
+
+      - name: Commit Android 2.10.38
+        shell: bash
+        working-directory: native
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts
+          git commit -m "Bump Android to 2.10.38"
+          git push origin HEAD:android
+
+      - name: Restore signing keystore
+        shell: bash
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+        working-directory: native
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp native/app/build/outputs/apk/release/app-release.apk "$APK"
+          NOTES="Provider access hotfix. iEducation and Medilogy now use the same working server-side standard adapter path as the verified clone. BP School tries both the current /api/courses route and the verified legacy Bondi course API as fallback. Udvash cache-first/live-per-route, default Easy Education class page, Resources notes, YouTube-first playback and signed-source recovery remain enabled."
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "$NOTES"
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Publish in-app updater metadata
+        shell: bash
+        run: |
+          git pull --rebase origin main
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "iEducation, Medilogy and BP School provider access hotfix with verified server-side public API fallbacks."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION provider access metadata"
+          git push origin HEAD:main
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.38-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
