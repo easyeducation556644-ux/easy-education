@@ -1,0 +1,230 @@
+name: Integrate Udvash cache and external providers
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/udvash-external-platforms-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Patch Udvash signed-source recovery and navigation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          # Udvash virtual source: every forced refresh re-fetches CardDetails and prefers YouTube.
+          p = Path('app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt')
+          s = p.read_text()
+          old = '''        val source = sourceUrl.trim()
+                  require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }
+                  return when {
+          '''
+          new = '''        val source = sourceUrl.trim()
+                  if (source.startsWith("udvash://", ignoreCase = true)) {
+                      return resolveUdvash(source, requestedHeight)
+                  }
+                  require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }
+                  return when {
+          '''
+          if old not in s:
+              raise SystemExit('resolver source anchor not found')
+          s = s.replace(old, new, 1)
+
+          marker = '    private fun resolveYoutube(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {\n'
+          helper = '''    private fun resolveUdvash(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {
+                  val uri = Uri.parse(sourceUrl)
+                  fun required(name: String): String = uri.getQueryParameter(name).orEmpty().ifBlank {
+                      error("Udvash playback reference is incomplete")
+                  }
+                  val courseId = required("courseId")
+                  val subjectId = required("subjectId")
+                  val chapterId = required("chapterId")
+                  val contentTypeId = required("contentTypeId")
+                  val contentId = required("contentId")
+
+                  val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
+                  val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
+                  val url = "$APP_ORIGIN/api/udvash?action=class" +
+                      "&courseId=${Uri.encode(courseId)}" +
+                      "&subjectId=${Uri.encode(subjectId)}" +
+                      "&chapterId=${Uri.encode(chapterId)}" +
+                      "&contentTypeId=${Uri.encode(contentTypeId)}" +
+                      "&contentId=${Uri.encode(contentId)}"
+                  val payload = bunnyHttp.newCall(
+                      Request.Builder()
+                          .url(url)
+                          .header("Authorization", "Bearer $token")
+                          .header("Accept", "application/json")
+                          .build(),
+                  ).execute().use { response ->
+                      val raw = response.body?.string().orEmpty()
+                      val json = runCatching { JSONObject(raw) }.getOrElse { error("Udvash returned an invalid playback response") }
+                      if (!response.isSuccessful) error(json.optString("error").ifBlank { "Udvash playback refresh failed (${response.code})" })
+                      json
+                  }
+                  val detail = payload.optJSONObject("detail") ?: error("Udvash class details are unavailable")
+                  val youtubeUrl = detail.optString("youtubeUrl").trim()
+                  if (youtubeUrl.isNotBlank()) return resolveYoutube(youtubeUrl, requestedHeight)
+
+                  data class Choice(val height: Int, val url: String)
+                  val choices = buildList {
+                      val options = detail.optJSONArray("videoOptions")
+                      if (options != null) {
+                          for (index in 0 until options.length()) {
+                              val item = options.optJSONObject(index) ?: continue
+                              val videoUrl = item.optString("url").trim()
+                              if (videoUrl.isBlank()) continue
+                              add(Choice(item.optInt("resolution", 0), videoUrl))
+                          }
+                      }
+                  }
+                  val selected = choices.firstOrNull { it.height == requestedHeight }
+                      ?: choices.filter { it.height in 1..requestedHeight }.maxByOrNull { it.height }
+                      ?: choices.maxByOrNull { it.height }
+                      ?: error("Udvash did not expose a playable video")
+                  return NativeOnlinePlaybackSource.Direct(
+                      url = selected.url,
+                      hls = selected.url.contains(".m3u8", ignoreCase = true),
+                  )
+              }
+
+          '''
+          if marker not in s:
+              raise SystemExit('resolver youtube marker not found')
+          s = s.replace(marker, helper + marker, 1)
+          p.write_text(s)
+
+          # Wire new Udvash class signature + provider routes/home card.
+          p = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+          old_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")'
+          new_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("provider/") || startsWith("provider-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")'
+          if old_routes not in s:
+              raise SystemExit('inCourseRoutes anchor not found')
+          s = s.replace(old_routes, new_routes, 1)
+
+          old_call = '''            NativeUdvashClassScreen(
+                      nav = nav,
+                      courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                      subjectId = entry.arguments?.getInt("subjectId") ?: 0,
+                      chapterId = entry.arguments?.getInt("chapterId") ?: 0,
+                      contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,
+                      contentId = entry.arguments?.getInt("contentId") ?: 0,
+                      online = state.online,
+                  )
+          '''
+          new_call = '''            NativeUdvashClassScreen(
+                      nav = nav,
+                      viewModel = viewModel,
+                      appState = state,
+                      courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                      subjectId = entry.arguments?.getInt("subjectId") ?: 0,
+                      chapterId = entry.arguments?.getInt("chapterId") ?: 0,
+                      contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,
+                      contentId = entry.arguments?.getInt("contentId") ?: 0,
+                  )
+          '''
+          if old_call not in s:
+              raise SystemExit('Udvash class call anchor not found')
+          s = s.replace(old_call, new_call, 1)
+
+          marker = '        }; composable("courses") { V2Courses(nav, state) };'
+          provider_routes = '''        }
+                  composable("provider/{provider}", listOf(navArgument("provider") { type = NavType.StringType })) { entry ->
+                      NativeExternalCatalogScreen(nav, Uri.decode(entry.arguments?.getString("provider").orEmpty()))
+                  }
+                  composable("provider/{provider}/{courseId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType })) { entry ->
+                      NativeExternalCourseScreen(
+                          nav,
+                          Uri.decode(entry.arguments?.getString("provider").orEmpty()),
+                          Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                      )
+                  }
+                  composable("provider-class/{provider}/{courseId}/{classId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType }, navArgument("classId") { type = NavType.StringType })) { entry ->
+                      NativeExternalClassScreen(
+                          nav = nav,
+                          viewModel = viewModel,
+                          appState = state,
+                          providerId = Uri.decode(entry.arguments?.getString("provider").orEmpty()),
+                          courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                          classId = Uri.decode(entry.arguments?.getString("classId").orEmpty()),
+                      )
+                  }; composable("courses") { V2Courses(nav, state) };'''
+          if marker not in s:
+              raise SystemExit('provider routes insertion marker not found')
+          # marker begins with closing Udvash route brace; provider_routes includes the same closing brace.
+          s = s.replace(marker, provider_routes, 1)
+
+          home_marker = '        item { NativeUdvashHomeBlock(nav) }\n'
+          if home_marker not in s:
+              raise SystemExit('Udvash home marker not found')
+          s = s.replace(home_marker, home_marker + '        item { NativeExternalPlatformsHomeBlock(nav) }\n', 1)
+          p.write_text(s)
+
+          # Use hosted iframe fallback for external provider pages while keeping the default class page shell.
+          p = Path('app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt')
+          s = p.read_text()
+          old = '    if (course.courseFormat == "edgecourse" && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {'
+          new = '    if ((course.courseFormat == "edgecourse" || course.courseFormat == "external") && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {'
+          if old not in s:
+              raise SystemExit('watch page web fallback anchor not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # External hosted-player fallback should use the provider/player origin as its base document.
+          p = Path('app/src/main/java/com/easyeducation/app/NativeEdgeCourseInlinePlayer.kt')
+          s = p.read_text()
+          old = '                    val coursePage = "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"\n'
+          new = '''                    val coursePage = if (edgeCourseId.startsWith("external:")) {
+                          runCatching {
+                              val source = Uri.parse(sourceUrl)
+                              "${source.scheme}://${source.host}/"
+                          }.getOrDefault("https://easy-education.vercel.app/")
+                      } else {
+                          "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"
+                      }
+          '''
+          if old not in s:
+              raise SystemExit('inline web base URL anchor not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Compile Android Kotlin
+        run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Commit Android integration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt \
+                  app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt \
+                  app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt \
+                  app/src/main/java/com/easyeducation/app/NativeEdgeCourseInlinePlayer.kt
+          git commit -m "Wire cached Udvash playback and external providers"
+          git push origin HEAD:android
