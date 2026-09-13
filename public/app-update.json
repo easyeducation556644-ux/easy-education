@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103800,
-  "versionName": "2.10.38",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.38/Easy-Education-2.10.38.apk",
-  "sha256": "dbe41c96904f749b375140522c5b761a93d9a98b7ae8cfed3e0a7ea18757cdcc",
+  "versionCode": 2103900,
+  "versionName": "2.10.39",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.39/Easy-Education-2.10.39.apk",
+  "sha256": "c1e4a3324ede1179d32247de001c803a458764e776c4e4041439220864f87ea0",
   "force": false,
-  "notes": "iEducation, Medilogy and BP School provider access hotfix with verified server-side public API fallbacks."
+  "notes": "iEducation and Medilogy now use structured section/chapter navigation; BP School is hidden for now."
 }
