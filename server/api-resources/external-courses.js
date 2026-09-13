@@ -118,6 +118,34 @@ async function upstreamJson(url) {
   }
 }
 
+async function upstreamJsonFirst(urls) {
+  let lastError = null
+  for (const url of urls) {
+    try {
+      return { payload: await upstreamJson(url), url }
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError || new Error("Provider request failed")
+}
+
+function providerCatalogUrls(provider) {
+  if (provider.id === "bpschool") return [
+    "https://bondipathshalaschool.com.bd/api/courses",
+    "https://bondipathshalaschool.com.bd/api/course/course/all-courses?page=1",
+  ]
+  return [provider.listUrl]
+}
+
+function providerDetailUrls(provider, courseId) {
+  if (provider.id === "bpschool") return [
+    `https://bondipathshalaschool.com.bd/api/courses/${encodeURIComponent(courseId)}`,
+    `https://bondipathshalaschool.com.bd/api/course/course/${encodeURIComponent(courseId)}/`,
+  ]
+  return [provider.detailUrl(courseId)]
+}
+
 function courseIdentity(row, provider) {
   if (provider.id === "bpschool") return text(row?.slug, row?.id, row?._id)
   return text(row?.id, row?._id, row?.slug)
@@ -356,17 +384,22 @@ function normalizeSectionClasses(root, provider, courseId) {
 }
 
 async function catalog(req, res, provider) {
-  const payload = await upstreamJson(provider.listUrl)
+  const { payload, url } = await upstreamJsonFirst(providerCatalogUrls(provider))
   const courses = normalizeCourseList(payload)
     .map((row) => normalizeCourse(row, provider))
     .filter((course) => course.id)
-  return res.status(200).json({ provider: { id: provider.id, name: provider.name }, courses, fetchedAtMs: Date.now() })
+  return res.status(200).json({
+    provider: { id: provider.id, name: provider.name },
+    courses,
+    sourceEndpoint: url,
+    fetchedAtMs: Date.now(),
+  })
 }
 
 async function courseDetail(req, res, provider) {
   const courseId = text(req.query?.courseId)
   if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
-  const payload = await upstreamJson(provider.detailUrl(courseId))
+  const { payload, url } = await upstreamJsonFirst(providerDetailUrls(provider, courseId))
   const root = detailRoot(payload)
   const course = normalizeCourse({ ...root, id: courseIdentity(root, provider) || courseId, slug: text(root?.slug, courseId) }, provider)
   const classes = normalizeSectionClasses(root, provider, course.id)
@@ -378,6 +411,7 @@ async function courseDetail(req, res, provider) {
       classes: classes.length,
       resources: classes.reduce((sum, item) => sum + item.resourceLinks.length, 0),
     },
+    sourceEndpoint: url,
     fetchedAtMs: Date.now(),
   })
 }
