@@ -1,0 +1,155 @@
+name: Android 2.10.39 External hierarchy
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.39-external-hierarchy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: "2.10.39"
+      VERSION_CODE: "2103900"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Live-check iEducation and Medilogy public APIs
+        shell: bash
+        run: |
+          node <<'NODE'
+          const headers = {
+            Accept: 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/152 Mobile Safari/537.36'
+          };
+          const arrayOf = (p) => Array.isArray(p) ? p : p?.results || p?.result || p?.data?.results || p?.data?.result || p?.data?.courses || p?.data || p?.courses || [];
+          async function get(url) {
+            const r = await fetch(url, { headers, redirect: 'follow' });
+            const t = await r.text();
+            if (!r.ok) throw new Error(`${r.status} ${url}`);
+            try { return JSON.parse(t); } catch { throw new Error(`non-json ${url}`); }
+          }
+          async function verify(name, origin) {
+            const list = await get(`${origin}/api/course/admin/course/all-course/`);
+            const rows = arrayOf(list);
+            if (!Array.isArray(rows) || !rows.length) throw new Error(`${name}: empty list`);
+            const first = rows[0];
+            const id = first?.id ?? first?._id ?? first?.slug;
+            if (id == null) throw new Error(`${name}: no first course id`);
+            const detail = await get(`${origin}/api/course/admin/course/${encodeURIComponent(id)}/`);
+            const root = detail?.course || detail?.data?.course || detail?.data || detail;
+            const sections = root?.sections || root?.chapters || root?.modules || root?.course_sections || root?.courseSections || [];
+            console.log(`${name}: list=${rows.length} first=${id} topSections=${Array.isArray(sections) ? sections.length : 0}`);
+          }
+          await verify('iEducation', 'https://ieducationbd.com');
+          await verify('Medilogy', 'https://medilogy.com.bd');
+          NODE
+
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Verify Android source
+        shell: bash
+        run: |
+          grep -q 'versionCode = 2103900' native/app/build.gradle.kts
+          grep -q 'versionName = "2.10.39"' native/app/build.gradle.kts
+          grep -q 'NativeExternalProvider("ieducation", "iEducation")' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'NativeExternalProvider("medilogy", "Medilogy")' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          if grep -q 'NativeExternalProvider("bpschool"' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt; then
+            echo 'BP School is still exposed in Android provider options' >&2
+            exit 1
+          fi
+          grep -q 'data class NativeExternalSection' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'Lectures / Chapters' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'Sections first' native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin
+        working-directory: native
+
+      - name: Restore signing keystore
+        shell: bash
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+        working-directory: native
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp native/app/build/outputs/apk/release/app-release.apk "$APK"
+          NOTES="iEducation and Medilogy course hierarchy now preserves sections/subjects, lecture/chapter cards, content/classes and resources instead of flattening every class onto the course screen. BP School has been removed from the Android learning-platform options for now. Udvash behavior remains unchanged."
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "$NOTES"
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Publish in-app updater metadata
+        shell: bash
+        run: |
+          git pull --rebase origin main
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "iEducation and Medilogy now use structured section/chapter navigation; BP School is hidden for now."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION hierarchy metadata"
+          git push origin HEAD:main
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.39-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
