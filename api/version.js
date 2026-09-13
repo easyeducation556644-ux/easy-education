@@ -3,6 +3,7 @@ import syncEventHandler from './_sync-event.js'
 import learningPushHandler from '../server/api-resources/learning-push.js'
 import cpsLivePushHandler from '../server/api-resources/cps-live-push.js'
 import edgeCourseHandler from '../server/api-resources/edgecourse.js'
+import udvashHandler from '../server/api-resources/udvash.js'
 import rumbleEmbedHandler from '../server/api-resources/rumble-embed.js'
 import cpsHandler from '../server/cps-readonly-v2.js'
 import cpsAcademicHandler from '../server/api-resources/cps-academic-v3.js'
@@ -16,7 +17,7 @@ import uploadImageHandler from '../server/api-resources/upload-image.js'
 import unpiratorPlaybackHandler from '../server/api-resources/unpirator-playback.js'
 import channelRouterHandler from '../server/bot/channel-router.js'
 
-const APP_VERSION = 'v9.7'
+const APP_VERSION = 'v9.8'
 
 export default async function versionHandler(req, res) {
   const resource = String(req.query?.resource || '').trim()
@@ -27,6 +28,7 @@ export default async function versionHandler(req, res) {
   if (resource === 'learning-push') return learningPushHandler(req, res)
   if (resource === 'cps-live-push') return cpsLivePushHandler(req, res)
   if (resource === 'edgecourse') return edgeCourseHandler(req, res)
+  if (resource === 'udvash') return udvashHandler(req, res)
   if (resource === 'rumble-embed') return rumbleEmbedHandler(req, res)
   if (resource === 'cps') {
     const action = String(req.query?.action || '').trim()
