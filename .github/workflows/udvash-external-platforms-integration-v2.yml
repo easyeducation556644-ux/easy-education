@@ -1,0 +1,177 @@
+name: Integrate Udvash and external providers v2
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/udvash-external-platforms-integration-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Patch Android integration
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt')
+          s = p.read_text()
+          anchor = '        val source = sourceUrl.trim()\n        require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }\n'
+          replacement = '        val source = sourceUrl.trim()\n        if (source.startsWith("udvash://", ignoreCase = true)) return resolveUdvash(source, requestedHeight)\n        require(source.startsWith("http", ignoreCase = true)) { "Video source is unavailable" }\n'
+          if anchor not in s:
+              raise SystemExit('resolver anchor not found')
+          s = s.replace(anchor, replacement, 1)
+          marker = '    private fun resolveYoutube(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {\n'
+          helper = '''    private fun resolveUdvash(sourceUrl: String, requestedHeight: Int): NativeOnlinePlaybackSource {
+              val uri = Uri.parse(sourceUrl)
+              fun required(name: String): String = uri.getQueryParameter(name).orEmpty().ifBlank { error("Udvash playback reference is incomplete") }
+              val courseId = required("courseId")
+              val subjectId = required("subjectId")
+              val chapterId = required("chapterId")
+              val contentTypeId = required("contentTypeId")
+              val contentId = required("contentId")
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in again")
+              val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not verify your session")
+              val url = "$APP_ORIGIN/api/udvash?action=class" +
+                  "&courseId=${Uri.encode(courseId)}&subjectId=${Uri.encode(subjectId)}" +
+                  "&chapterId=${Uri.encode(chapterId)}&contentTypeId=${Uri.encode(contentTypeId)}&contentId=${Uri.encode(contentId)}"
+              val payload = bunnyHttp.newCall(
+                  Request.Builder().url(url).header("Authorization", "Bearer $token").header("Accept", "application/json").build(),
+              ).execute().use { response ->
+                  val raw = response.body?.string().orEmpty()
+                  val json = runCatching { JSONObject(raw) }.getOrElse { error("Udvash returned an invalid playback response") }
+                  if (!response.isSuccessful) error(json.optString("error").ifBlank { "Udvash playback refresh failed (${response.code})" })
+                  json
+              }
+              val detail = payload.optJSONObject("detail") ?: error("Udvash class details are unavailable")
+              val youtubeUrl = detail.optString("youtubeUrl").trim()
+              if (youtubeUrl.isNotBlank()) return resolveYoutube(youtubeUrl, requestedHeight)
+              data class Choice(val height: Int, val url: String)
+              val choices = buildList {
+                  val options = detail.optJSONArray("videoOptions")
+                  if (options != null) for (index in 0 until options.length()) {
+                      val item = options.optJSONObject(index) ?: continue
+                      val videoUrl = item.optString("url").trim()
+                      if (videoUrl.isNotBlank()) add(Choice(item.optInt("resolution", 0), videoUrl))
+                  }
+              }
+              val selected = choices.firstOrNull { it.height == requestedHeight }
+                  ?: choices.filter { it.height in 1..requestedHeight }.maxByOrNull { it.height }
+                  ?: choices.maxByOrNull { it.height }
+                  ?: error("Udvash did not expose a playable video")
+              return NativeOnlinePlaybackSource.Direct(selected.url, selected.url.contains(".m3u8", ignoreCase = true))
+          }
+
+          '''
+          if marker not in s:
+              raise SystemExit('youtube resolver marker not found')
+          s = s.replace(marker, helper + marker, 1)
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+          old_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")'
+          new_routes = old_routes.replace('startsWith("udvash-class/") || ', 'startsWith("udvash-class/") || startsWith("provider/") || startsWith("provider-class/") || ')
+          if old_routes not in s:
+              raise SystemExit('course route predicate not found')
+          s = s.replace(old_routes, new_routes, 1)
+
+          start = s.find('            NativeUdvashClassScreen(\n')
+          if start < 0:
+              raise SystemExit('Udvash class call start not found')
+          end = s.find('            )\n', start)
+          if end < 0:
+              raise SystemExit('Udvash class call end not found')
+          end += len('            )\n')
+          block = s[start:end]
+          if 'viewModel = viewModel' not in block:
+              block = block.replace('                nav = nav,\n', '                nav = nav,\n                viewModel = viewModel,\n                appState = state,\n', 1)
+          block = block.replace('                online = state.online,\n', '')
+          s = s[:start] + block + s[end:]
+
+          marker = '        }; composable("courses") { V2Courses(nav, state) };'
+          routes = '''        }
+              composable("provider/{provider}", listOf(navArgument("provider") { type = NavType.StringType })) { entry ->
+                  NativeExternalCatalogScreen(nav, Uri.decode(entry.arguments?.getString("provider").orEmpty()))
+              }
+              composable("provider/{provider}/{courseId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType })) { entry ->
+                  NativeExternalCourseScreen(nav, Uri.decode(entry.arguments?.getString("provider").orEmpty()), Uri.decode(entry.arguments?.getString("courseId").orEmpty()))
+              }
+              composable("provider-class/{provider}/{courseId}/{classId}", listOf(navArgument("provider") { type = NavType.StringType }, navArgument("courseId") { type = NavType.StringType }, navArgument("classId") { type = NavType.StringType })) { entry ->
+                  NativeExternalClassScreen(
+                      nav = nav,
+                      viewModel = viewModel,
+                      appState = state,
+                      providerId = Uri.decode(entry.arguments?.getString("provider").orEmpty()),
+                      courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                      classId = Uri.decode(entry.arguments?.getString("classId").orEmpty()),
+                  )
+              }; composable("courses") { V2Courses(nav, state) };'''
+          if marker not in s:
+              raise SystemExit('provider insertion marker not found')
+          s = s.replace(marker, routes, 1)
+          home = '        item { NativeUdvashHomeBlock(nav) }\n'
+          if home not in s:
+              raise SystemExit('home insertion marker not found')
+          s = s.replace(home, home + '        item { NativeExternalPlatformsHomeBlock(nav) }\n', 1)
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt')
+          s = p.read_text()
+          old = '    if (course.courseFormat == "edgecourse" && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {'
+          new = '    if ((course.courseFormat == "edgecourse" || course.courseFormat == "external") && NativeEdgeCourseWebSupport.requiresWebView(classItem.sourceUrl)) {'
+          if old not in s:
+              raise SystemExit('watch fallback marker not found')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('app/src/main/java/com/easyeducation/app/NativeEdgeCourseInlinePlayer.kt')
+          s = p.read_text()
+          old = '                    val coursePage = "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"\n'
+          new = '''                    val coursePage = if (edgeCourseId.startsWith("external:")) {
+                          runCatching {
+                              val source = Uri.parse(sourceUrl)
+                              "${source.scheme}://${source.host}/"
+                          }.getOrDefault("https://easy-education.vercel.app/")
+                      } else {
+                          "https://edgecoursebd.com/courses/${Uri.encode(edgeCourseId)}"
+                      }
+          '''
+          if old not in s:
+              raise SystemExit('web base marker not found')
+          p.write_text(s.replace(old, new, 1))
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Commit Android changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/easyeducation/app/NativePlaybackSourceResolver.kt \
+                  app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt \
+                  app/src/main/java/com/easyeducation/app/YoutubeClassWatchPage.kt \
+                  app/src/main/java/com/easyeducation/app/NativeEdgeCourseInlinePlayer.kt
+          git commit -m "Wire cached Udvash playback and external providers"
+          git push origin HEAD:android
