@@ -209,7 +209,7 @@ fun EasyEducationNativeAppV2(
                         val startRoute = nativeStartRoute(initialPath)
                         val backStack by nav.currentBackStackEntryAsState()
                         val currentRoute = backStack?.destination?.route.orEmpty()
-                        val isWatchRoute = currentRoute.startsWith("class/")
+                        val isWatchRoute = currentRoute.startsWith("class/") || currentRoute.startsWith("udvash-class/") || currentRoute.startsWith("provider-class/")
                         LaunchedEffect(state.error) { state.error?.let { raw -> snackbar.showSnackbar(friendlyUiError(raw, state.online)); viewModel.clearError() } }
                         Scaffold(
                             snackbarHost = { SnackbarHost(snackbar) },
