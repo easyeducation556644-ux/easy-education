@@ -1,0 +1,100 @@
+name: Wire and compile native Udvash integration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/udvash-android-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Wire Udvash routes and home block
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+
+          old_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")'
+          new_routes = 'private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")'
+          if old_routes in s:
+              s = s.replace(old_routes, new_routes, 1)
+          elif 'this == "udvash"' not in s:
+              raise SystemExit('inCourseRoutes anchor not found')
+
+          marker = '; composable("courses") { V2Courses(nav, state) }'
+          udvash_routes = '''; composable("udvash") { NativeUdvashCatalogScreen(nav) }
+        composable("udvash/{courseId}", listOf(navArgument("courseId") { type = NavType.StringType })) { entry ->
+            NativeUdvashSubjectsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()))
+        }
+        composable("udvash/{courseId}/{subjectId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType })) { entry ->
+            NativeUdvashChaptersScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0)
+        }
+        composable("udvash/{courseId}/{subjectId}/{chapterId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType })) { entry ->
+            NativeUdvashContentTypesScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0)
+        }
+        composable("udvash/{courseId}/{subjectId}/{chapterId}/{contentTypeId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType })) { entry ->
+            NativeUdvashCardsScreen(nav, Uri.decode(entry.arguments?.getString("courseId").orEmpty()), entry.arguments?.getInt("subjectId") ?: 0, entry.arguments?.getInt("chapterId") ?: 0, entry.arguments?.getInt("contentTypeId") ?: 0)
+        }
+        composable("udvash-class/{courseId}/{subjectId}/{chapterId}/{contentTypeId}/{contentId}", listOf(navArgument("courseId") { type = NavType.StringType }, navArgument("subjectId") { type = NavType.IntType }, navArgument("chapterId") { type = NavType.IntType }, navArgument("contentTypeId") { type = NavType.IntType }, navArgument("contentId") { type = NavType.IntType })) { entry ->
+            NativeUdvashClassScreen(
+                nav = nav,
+                courseId = Uri.decode(entry.arguments?.getString("courseId").orEmpty()),
+                subjectId = entry.arguments?.getInt("subjectId") ?: 0,
+                chapterId = entry.arguments?.getInt("chapterId") ?: 0,
+                contentTypeId = entry.arguments?.getInt("contentTypeId") ?: 0,
+                contentId = entry.arguments?.getInt("contentId") ?: 0,
+                online = state.online,
+            )
+        }'''
+          if 'composable("udvash")' not in s:
+              if marker not in s:
+                  raise SystemExit('V2NavHost courses marker not found')
+              s = s.replace(marker, udvash_routes + marker, 1)
+
+          home_marker = '        item { NativeEdgeCourseHomeBlock(nav) }\n'
+          if 'NativeUdvashHomeBlock(nav)' not in s:
+              if home_marker not in s:
+                  raise SystemExit('V2Home EdgeCourse marker not found')
+              s = s.replace(home_marker, home_marker + '        item { NativeUdvashHomeBlock(nav) }\n', 1)
+
+          p.write_text(s)
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile Android Kotlin
+        run: ./gradlew :app:compileDebugKotlin --stacktrace
+
+      - name: Commit Android integration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          if git diff --cached --quiet; then
+            echo "No route wiring changes to commit"
+          else
+            git commit -m "Wire native Udvash navigation"
+            git push origin HEAD:android
+          fi
