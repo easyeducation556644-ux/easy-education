@@ -1,0 +1,563 @@
+name: Android 2.10.40 Platforms live classes Bondi
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.40-platforms-live-bondi.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      VERSION: "2.10.40"
+      VERSION_CODE: "2104000"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Add Udvash live-class backend
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/api-resources/udvash.js')
+          s = p.read_text()
+          if 'async function liveClasses(req, res, authenticated)' not in s:
+              marker = 'async function adminGrantAccess(req, res, authenticated) {'
+              if marker not in s:
+                  raise SystemExit('Udvash insertion marker not found')
+              block = r'''
+          async function eligibleLiveSources(authenticated) {
+            const accountSnapshot = await authenticated.db.collection(ACCOUNTS).get()
+            const allAccounts = accountSnapshot.docs
+              .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+              .filter((account) => text(account.status).toLowerCase() !== "inactive")
+              .sort((a, b) => Number(b.lastCheckedAtMs || 0) - Number(a.lastCheckedAtMs || 0))
+            if (isFullAdminProfile(authenticated.userProfile)) return allAccounts
+            const entitlementSnapshot = await authenticated.db.collection(ENTITLEMENTS)
+              .where("userId", "==", authenticated.decodedToken.uid)
+              .get()
+            const courseIds = entitlementSnapshot.docs
+              .map((doc) => doc.data() || {})
+              .filter((data) => entitlementActive(data))
+              .map((data) => String(data.masterCourseId || data.courseId || ""))
+              .filter(Boolean)
+            if (!courseIds.length) return []
+            const courseSnapshots = await authenticated.db.getAll(
+              ...courseIds.map((courseId) => authenticated.db.collection(COURSES).doc(courseId)),
+            )
+            const allowedAccountIds = new Set()
+            courseSnapshots.forEach((snap) => {
+              if (!snap.exists) return
+              asArray((snap.data() || {}).sourceAccountIds).forEach((id) => id && allowedAccountIds.add(String(id)))
+            })
+            return allAccounts.filter((account) => allowedAccountIds.has(account.id))
+          }
+
+          function normalizeLiveRoutine(row, sourceAccountId) {
+            return {
+              sourceAccountId,
+              lectureId: intValue(row?.lectureId),
+              isInteractiveClass: Boolean(row?.isInteractiveClass),
+              lectureType: intValue(row?.lectureType),
+              subjectName: text(row?.subjectName),
+              lectureName: text(row?.lectureName) || "Udvash Live Class",
+              syllabusHtml: text(row?.syllabus),
+              hasVideo: Boolean(row?.hasVideo),
+              hasNotes: Boolean(row?.hasNotes),
+              programId: intValue(row?.programId),
+              sessionId: intValue(row?.sessionId),
+              studentProgramId: Number(row?.studentProgramId || 0),
+              routineId: intValue(row?.routineId),
+              isLive: Boolean(row?.isLive),
+              courseId: intValue(row?.courseId),
+              motherCourseId: intValue(row?.motherCourseId),
+              batchId: intValue(row?.batchId),
+              routineDate: text(row?.routineDate),
+              startDateTime: text(row?.routineStartDateTime),
+              endDateTime: text(row?.routineEndDateTime),
+              actualLectureEndTime: text(row?.actualLectureEndTime),
+              programSessionName: text(row?.programSessionName),
+              courseName: text(row?.courseName),
+              isServiceBlocked: Boolean(row?.isServiceBlocked),
+            }
+          }
+
+          async function liveClasses(req, res, authenticated) {
+            const accounts = await eligibleLiveSources(authenticated)
+            if (!accounts.length) {
+              return res.status(200).json({ totalLiveClass: 0, totalUpcomingClass: 0, joinButtonBeforeMinutes: 10, classes: [], fetchedAtMs: Date.now() })
+            }
+            const results = await mapLimit(accounts, 3, async (account) => {
+              try {
+                const payload = await accountRequest(account.id, authenticated.db, "/Routine/Class/LiveClasses?courseId=0&subjectId=0&lectureType=0&pageNumber=0")
+                const data = payload?.data || {}
+                return {
+                  joinButtonBeforeMinutes: intValue(data.studentVisibleClassJoinButtonBeforeInMin, 10),
+                  classes: asArray(data.classRoutineList).map((row) => normalizeLiveRoutine(row, account.id)),
+                }
+              } catch (error) {
+                console.warn("[udvash-live]", account.id, error?.message || error)
+                return { joinButtonBeforeMinutes: 10, classes: [] }
+              }
+            })
+            const dedupe = new Map()
+            results.flatMap((result) => result.classes).forEach((row) => {
+              const key = `${row.sourceAccountId}:${row.routineId || row.lectureId}`
+              if (!dedupe.has(key)) dedupe.set(key, row)
+            })
+            const classes = [...dedupe.values()].sort((a, b) => {
+              if (a.isLive !== b.isLive) return a.isLive ? -1 : 1
+              return String(a.startDateTime).localeCompare(String(b.startDateTime))
+            })
+            return res.status(200).json({
+              totalLiveClass: classes.filter((row) => row.isLive).length,
+              totalUpcomingClass: classes.filter((row) => !row.isLive).length,
+              joinButtonBeforeMinutes: Math.max(0, ...results.map((result) => result.joinButtonBeforeMinutes || 10)),
+              classes,
+              fetchedAtMs: Date.now(),
+            })
+          }
+
+          async function joinLiveClass(req, res, authenticated) {
+            const sourceAccountId = validId(req.query?.sourceAccountId)
+            const courseId = intValue(req.query?.courseId)
+            const routineId = intValue(req.query?.routineId)
+            const studentProgramId = Number(req.query?.studentProgramId || 0)
+            if (!sourceAccountId || !courseId || !routineId || !studentProgramId) {
+              return res.status(400).json({ error: "sourceAccountId, courseId, routineId and studentProgramId are required" })
+            }
+            const eligible = await eligibleLiveSources(authenticated)
+            if (!eligible.some((account) => account.id === sourceAccountId)) {
+              return res.status(403).json({ error: "This Udvash live account is not available for this user" })
+            }
+            const query = new URLSearchParams({
+              courseId: String(courseId), routineId: String(routineId), studentProgramId: String(studentProgramId), env: "production",
+            })
+            const payload = await accountRequest(sourceAccountId, authenticated.db, `/Routine/Class/JoinInteractiveClass?${query.toString()}`)
+            const data = payload?.data || {}
+            return res.status(200).json({
+              contentUrl: text(data.contentUrl), qnaUrl: text(data.qnaUrl), registrationNo: text(data.registrationNo),
+              executionTimeMs: Number(data.executionTimeMs || 0), fetchedAtMs: Date.now(),
+            })
+          }
+
+          '''
+              s = s.replace(marker, block + marker, 1)
+          route_marker = '    if (req.method === "GET" && action === "catalog") return catalog(res, authenticated)'
+          if 'action === "live-classes"' not in s:
+              if route_marker not in s:
+                  raise SystemExit('Udvash handler marker not found')
+              s = s.replace(route_marker, '    if (req.method === "GET" && action === "live-classes") return liveClasses(req, res, authenticated)\n    if (req.method === "GET" && action === "join-live") return joinLiveClass(req, res, authenticated)\n\n' + route_marker, 1)
+          p.write_text(s)
+
+      - name: Add Bondi Pathshala authenticated adapter
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/api-resources/external-courses.js')
+          s = p.read_text()
+          if 'bondipathshala:' not in s:
+              marker = '  bpschool: {'
+              provider = '''  bondipathshala: {
+                id: "bondipathshala",
+                name: "Bondi Pathshala",
+                origin: "https://admin.bondipathshala.education",
+                listUrl: "https://admin.bondipathshala.education/api/course",
+                topicUrl: (id) => `https://admin.bondipathshala.education/api/topic?id=${encodeURIComponent(id)}&type=course`,
+              },
+          '''
+              if marker not in s: raise SystemExit('Provider insertion marker not found')
+              s = s.replace(marker, provider + marker, 1)
+          s = s.replace('async function upstreamJson(url) {', 'async function upstreamJson(url, extraHeaders = {}) {', 1)
+          if '...extraHeaders' not in s:
+              marker = '        "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",\n      },'
+              if marker not in s: raise SystemExit('Header marker not found')
+              s = s.replace(marker, '        "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36",\n        ...extraHeaders,\n      },', 1)
+          if 'error.upstreamStatus = response.status' not in s:
+              marker = '      error.statusCode = 502\n      throw error'
+              if marker not in s: raise SystemExit('Upstream error marker not found')
+              s = s.replace(marker, '      error.statusCode = 502\n      error.upstreamStatus = response.status\n      throw error', 1)
+          if 'payload?.data?.Courses' not in s:
+              s = s.replace('    payload?.data?.courses,\n    payload?.courses,', '    payload?.data?.courses,\n    payload?.data?.Courses,\n    payload?.courses,\n    payload?.Courses,', 1)
+          old_identity = '''function courseIdentity(row, provider) {
+            if (provider.id === "bpschool") return text(row?.slug, row?.id, row?._id)
+            return text(row?.id, row?._id, row?.slug)
+          }'''
+          if old_identity in s:
+              s = s.replace(old_identity, '''function courseIdentity(row, provider) {
+            if (provider.id === "bondipathshala") return text(row?.CourseId, row?.courseId, row?.id, row?._id, row?.slug)
+            if (provider.id === "bpschool") return text(row?.slug, row?.id, row?._id)
+            return text(row?.id, row?._id, row?.slug)
+          }''', 1)
+          s = s.replace('title: text(row?.name, row?.title, row?.course_name, row?.courseTitle)', 'title: text(row?.name, row?.title, row?.CourseName, row?.CourseTitle, row?.course_name, row?.courseTitle)', 1)
+          s = s.replace('description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.about))', 'description: stripHtml(text(row?.short_description, row?.shortDescription, row?.description, row?.Description, row?.about))', 1)
+          s = s.replace('thumbnailUrl: absoluteUrl(text(row?.thumbnail, row?.course_image, row?.image, row?.cover_image, row?.thumb, row?.image_url), provider.origin),', 'thumbnailUrl: absoluteUrl(text(row?.thumbnail, row?.course_image, row?.image, row?.Image, row?.CourseImage, row?.cover_image, row?.thumb, row?.image_url), provider.origin),', 1)
+          if 'function bondiAuthToken()' not in s:
+              marker = 'async function catalog(req, res, provider) {'
+              if marker not in s: raise SystemExit('Catalog marker not found')
+              helper = r'''
+          function bondiAuthToken() {
+            const token = text(process.env.BONDIPATHSHALA_AUTH_TOKEN)
+            if (!token) {
+              const error = new Error("Bondi Pathshala token is not configured")
+              error.statusCode = 503
+              throw error
+            }
+            return token.replace(/^Bearer\s+/i, "")
+          }
+
+          async function bondiJson(url) {
+            const token = bondiAuthToken()
+            try {
+              return await upstreamJson(url, { Authorization: `Bearer ${token}` })
+            } catch (error) {
+              if (![401, 403].includes(Number(error?.upstreamStatus || 0))) throw error
+              return upstreamJson(url, { Authorization: token })
+            }
+          }
+
+          function bondiVideoUrl(video) {
+            const raw = text(video?.VideoLink, video?.videoLink, video?.url)
+            if (!raw) return ""
+            if (/^https?:\/\//i.test(raw)) return raw
+            const type = text(video?.VideoType, video?.videoType).toLowerCase()
+            if (type.includes("youtube") || type === "yt") return `https://www.youtube.com/watch?v=${encodeURIComponent(raw)}`
+            if (type.includes("bunny")) {
+              const parts = raw.split("/").map((part) => part.trim()).filter(Boolean)
+              if (parts.length >= 2) return `https://iframe.mediadelivery.net/embed/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`
+            }
+            return absoluteUrl(raw, "https://admin.bondipathshala.education")
+          }
+
+          function normalizeBondiStructure(topicPayload, provider, courseId) {
+            const topics = Array.isArray(topicPayload) ? topicPayload : normalizeCourseList(topicPayload)
+            const sectionsById = new Map()
+            const flatClasses = []
+            topics.forEach((topic, topicIndex) => {
+              const subjectId = text(topic?.SubjectId, topic?.subjectId, topic?.SubjectName, topic?.subjectName) || `subject-${topicIndex + 1}`
+              const subjectName = text(topic?.SubjectName, topic?.subjectName) || "Subject"
+              if (!sectionsById.has(subjectId)) {
+                sectionsById.set(subjectId, { id: `${courseId}:subject:${subjectId}`, rawId: subjectId, title: subjectName, description: "", order: sectionsById.size + 1, lectures: [] })
+              }
+              const section = sectionsById.get(subjectId)
+              const topicId = text(topic?.TopicId, topic?.topicId) || `topic-${topicIndex + 1}`
+              const topicTitle = text(topic?.TopicTitle, topic?.topicTitle) || `Chapter ${section.lectures.length + 1}`
+              const lectureId = `${section.id}:chapter:${topicId}`
+              const videos = firstArray(topic?.Videos, topic?.videos)
+              const items = videos.map((video, videoIndex) => {
+                const videoId = text(video?.VideoId, video?.videoId) || `video-${videoIndex + 1}`
+                const sourceUrl = bondiVideoUrl(video)
+                const title = text(video?.VideoTitle, video?.videoTitle) || topicTitle
+                const duration = numberOr(video?.DurationInMinute ?? video?.durationInMinute, 0)
+                const item = {
+                  id: `${lectureId}:item:${videoId}`, rawId: videoId, title,
+                  topic: duration > 0 ? `${duration} minutes` : text(topic?.TopicDescription, topic?.topicDescription),
+                  type: text(video?.VideoType, video?.videoType) || "Video", linkType: text(video?.VideoType, video?.videoType),
+                  sourceUrl, playable: Boolean(sourceUrl), teacherName: provider.name, imageUrl: "", order: videoIndex + 1, resourceLinks: [],
+                }
+                if (sourceUrl) flatClasses.push({
+                  id: item.id, rawId: videoId, title, topic: item.topic, sectionId: section.id, lectureId,
+                  sectionTitle: subjectName, chapterTitle: topicTitle, sourceUrl, teacherName: provider.name,
+                  imageUrl: "", order: topicIndex * 1000 + videoIndex + 1, resourceLinks: [],
+                })
+                return item
+              })
+              section.lectures.push({ id: lectureId, rawId: topicId, title: topicTitle, description: stripHtml(text(topic?.TopicDescription, topic?.topicDescription)).slice(0, 500), order: section.lectures.length + 1, items })
+            })
+            return { sections: [...sectionsById.values()], classes: flatClasses }
+          }
+
+          async function bondiCatalog(req, res, provider) {
+            const payload = await bondiJson(provider.listUrl)
+            const courses = normalizeCourseList(payload).map((row) => normalizeCourse(row, provider)).filter((course) => course.id)
+            return res.status(200).json({ provider: { id: provider.id, name: provider.name }, courses, sourceEndpoint: provider.listUrl, fetchedAtMs: Date.now() })
+          }
+
+          async function bondiCourseDetail(req, res, provider) {
+            const courseId = text(req.query?.courseId)
+            if (!courseId || courseId.length > 220) return res.status(400).json({ error: "A valid courseId is required" })
+            const [catalogPayload, topicPayload] = await Promise.all([bondiJson(provider.listUrl), bondiJson(provider.topicUrl(courseId))])
+            const sourceRow = normalizeCourseList(catalogPayload).find((row) => courseIdentity(row, provider) === courseId) || { CourseId: courseId }
+            const course = normalizeCourse(sourceRow, provider)
+            const structure = normalizeBondiStructure(topicPayload, provider, courseId)
+            const lectureCount = structure.sections.reduce((sum, section) => sum + section.lectures.length, 0)
+            const itemCount = structure.sections.reduce((sum, section) => sum + section.lectures.reduce((inner, lecture) => inner + lecture.items.length, 0), 0)
+            return res.status(200).json({
+              provider: { id: provider.id, name: provider.name }, course, sections: structure.sections, classes: structure.classes,
+              counts: { sections: structure.sections.length, lectures: lectureCount, items: itemCount, classes: structure.classes.length, resources: 0 },
+              sourceEndpoint: provider.topicUrl(courseId), fetchedAtMs: Date.now(),
+            })
+          }
+
+          '''
+              s = s.replace(marker, helper + marker, 1)
+          marker = 'async function catalog(req, res, provider) {\n  const { payload, url } = await upstreamJsonFirst(providerCatalogUrls(provider))'
+          if 'if (provider.id === "bondipathshala") return bondiCatalog' not in s:
+              if marker not in s: raise SystemExit('Catalog function marker not found')
+              s = s.replace(marker, 'async function catalog(req, res, provider) {\n  if (provider.id === "bondipathshala") return bondiCatalog(req, res, provider)\n  const { payload, url } = await upstreamJsonFirst(providerCatalogUrls(provider))', 1)
+          marker = 'async function courseDetail(req, res, provider) {\n  const courseId = text(req.query?.courseId)'
+          if 'if (provider.id === "bondipathshala") return bondiCourseDetail' not in s:
+              if marker not in s: raise SystemExit('Detail function marker not found')
+              s = s.replace(marker, 'async function courseDetail(req, res, provider) {\n  if (provider.id === "bondipathshala") return bondiCourseDetail(req, res, provider)\n  const courseId = text(req.query?.courseId)', 1)
+          p.write_text(s)
+
+      - name: Verify backend adapters
+        shell: bash
+        run: |
+          grep -q 'BONDIPATHSHALA_AUTH_TOKEN' server/api-resources/external-courses.js
+          grep -q 'Routine/Class/LiveClasses' server/api-resources/udvash.js
+          grep -q 'Routine/Class/JoinInteractiveClass' server/api-resources/udvash.js
+
+      - name: Commit backend platform changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/api-resources/udvash.js server/api-resources/external-courses.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Add Udvash live classes and Bondi Pathshala adapter"
+            git push origin HEAD:main
+          fi
+
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Wire Android live models and Bondi provider
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt')
+          s = p.read_text()
+          if 'data class NativeUdvashLiveClass(' not in s:
+              marker = 'data class NativeUdvashClassDetail('
+              models = '''data class NativeUdvashLiveClass(
+              val sourceAccountId: String,
+              val lectureId: Int,
+              val isInteractiveClass: Boolean,
+              val lectureType: Int,
+              val subjectName: String,
+              val lectureName: String,
+              val syllabusHtml: String,
+              val courseId: Int,
+              val routineId: Int,
+              val studentProgramId: Long,
+              val isLive: Boolean,
+              val startDateTime: String,
+              val endDateTime: String,
+              val programSessionName: String,
+              val courseName: String,
+              val isServiceBlocked: Boolean,
+          )
+
+          data class NativeUdvashLiveSnapshot(
+              val totalLiveClass: Int,
+              val totalUpcomingClass: Int,
+              val joinButtonBeforeMinutes: Int,
+              val classes: List<NativeUdvashLiveClass>,
+          )
+
+          data class NativeUdvashJoinResult(
+              val contentUrl: String,
+              val qnaUrl: String,
+              val registrationNo: String,
+          )
+
+          '''
+              if marker not in s: raise SystemExit('Udvash model marker not found')
+              s = s.replace(marker, models + marker, 1)
+          marker = '    fun classDetail(\n'
+          if 'fun liveClasses(cachedOnly: Boolean = false)' not in s:
+              methods = '''    fun liveClasses(cachedOnly: Boolean = false): NativeUdvashLiveSnapshot =
+                  parseLiveClasses(payload("live-classes", "$APP_ORIGIN/api/udvash?action=live-classes", cachedOnly))
+
+              fun joinLiveClass(sourceAccountId: String, courseId: Int, routineId: Int, studentProgramId: Long): NativeUdvashJoinResult {
+                  val target = buildString {
+                      append("$APP_ORIGIN/api/udvash?action=join-live")
+                      append("&sourceAccountId=").append(URLEncoder.encode(sourceAccountId, Charsets.UTF_8.name()))
+                      append("&courseId=").append(courseId)
+                      append("&routineId=").append(routineId)
+                      append("&studentProgramId=").append(studentProgramId)
+                  }
+                  return parseJoinResult(request(target))
+              }
+
+          '''
+              if marker not in s: raise SystemExit('Udvash method marker not found')
+              s = s.replace(marker, methods + marker, 1)
+          marker = '    fun cachedCatalog(): List<NativeUdvashCourse> = runCatching { catalog(true) }.getOrDefault(emptyList())'
+          if 'fun cachedLiveClasses()' not in s:
+              if marker not in s: raise SystemExit('Udvash cache marker not found')
+              s = s.replace(marker, '    fun cachedLiveClasses(): NativeUdvashLiveSnapshot? = runCatching { liveClasses(true) }.getOrNull()\n' + marker, 1)
+          marker = '    private fun parseClassDetail(root: JSONObject): NativeUdvashClassDetail {'
+          if 'private fun parseLiveClasses(root: JSONObject)' not in s:
+              parser = '''    private fun parseLiveClasses(root: JSONObject): NativeUdvashLiveSnapshot = NativeUdvashLiveSnapshot(
+                  totalLiveClass = root.optInt("totalLiveClass", 0),
+                  totalUpcomingClass = root.optInt("totalUpcomingClass", 0),
+                  joinButtonBeforeMinutes = root.optInt("joinButtonBeforeMinutes", 10),
+                  classes = root.array("classes").mapObjects { json ->
+                      NativeUdvashLiveClass(
+                          sourceAccountId = json.optString("sourceAccountId"), lectureId = json.optInt("lectureId"),
+                          isInteractiveClass = json.optBoolean("isInteractiveClass", false), lectureType = json.optInt("lectureType"),
+                          subjectName = json.optString("subjectName"), lectureName = json.optString("lectureName").ifBlank { "Udvash Live Class" },
+                          syllabusHtml = json.optString("syllabusHtml"), courseId = json.optInt("courseId"), routineId = json.optInt("routineId"),
+                          studentProgramId = json.optLong("studentProgramId"), isLive = json.optBoolean("isLive", false),
+                          startDateTime = json.optString("startDateTime"), endDateTime = json.optString("endDateTime"),
+                          programSessionName = json.optString("programSessionName"), courseName = json.optString("courseName"),
+                          isServiceBlocked = json.optBoolean("isServiceBlocked", false),
+                      )
+                  },
+              )
+
+              private fun parseJoinResult(root: JSONObject): NativeUdvashJoinResult = NativeUdvashJoinResult(
+                  contentUrl = root.optString("contentUrl"), qnaUrl = root.optString("qnaUrl"), registrationNo = root.optString("registrationNo"),
+              )
+
+          '''
+              if marker not in s: raise SystemExit('Udvash parse marker not found')
+              s = s.replace(marker, parser + marker, 1)
+          p.write_text(s)
+
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt')
+          s = p.read_text()
+          if 'NativeExternalProvider("bondipathshala", "Bondi Pathshala")' not in s:
+              marker = '            NativeExternalProvider("medilogy", "Medilogy"),'
+              if marker not in s: raise SystemExit('External provider marker not found')
+              s = s.replace(marker, marker + '\n            NativeExternalProvider("bondipathshala", "Bondi Pathshala"),', 1)
+          p.write_text(s)
+
+      - name: Consolidate home UI and add live routes
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('native/app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+          old = '''        item { NativeCpsHomeBlock(nav, state) }
+                  item { NativeEdgeCourseHomeBlock(nav) }
+                  item { NativeUdvashHomeBlock(nav) }
+                  item { NativeExternalPlatformsHomeBlock(nav) }'''
+          new = '''        item { NativePlatformsHomeCard(nav, state) }
+                  item { NativeLiveClassesHomeCard(nav, state) }'''
+          if old in s: s = s.replace(old, new, 1)
+          elif 'NativePlatformsHomeCard(nav, state)' not in s: raise SystemExit('Home block marker not found')
+          marker = '        composable("home") { V2Home(nav, viewModel, state) }; composable("cps")'
+          replacement = '''        composable("home") { V2Home(nav, viewModel, state) }
+                  composable("manual-courses") { NativeManualCoursesScreen(nav, state) }
+                  composable("live-classes") { NativeLivePlatformsScreen(nav, state) }
+                  composable("live-classes/udvash") { NativeUdvashLiveClassesScreen(nav) }
+                  composable("live-classes/cps") { NativeCpsGlobalLiveScreen(nav, state) }
+                  composable("cps")'''
+          if marker in s: s = s.replace(marker, replacement, 1)
+          elif 'composable("live-classes/udvash")' not in s: raise SystemExit('Nav marker not found')
+          if 'startsWith("manual-courses")' not in s:
+              s = s.replace('startsWith("provider-class/") || startsWith("course/")', 'startsWith("provider-class/") || startsWith("manual-courses") || startsWith("course/")', 1)
+          p.write_text(s)
+
+      - name: Bump Android to 2.10.40
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('native/app/build.gradle.kts')
+          s = p.read_text().replace('versionCode = 2103900', 'versionCode = 2104000', 1).replace('versionName = "2.10.39"', 'versionName = "2.10.40"', 1)
+          if 'versionCode = 2104000' not in s or 'versionName = "2.10.40"' not in s: raise SystemExit('Could not bump version')
+          p.write_text(s)
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Kotlin
+        run: gradle :app:compileDebugKotlin
+        working-directory: native
+
+      - name: Commit Android 2.10.40
+        shell: bash
+        working-directory: native
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "Release Android 2.10.40 learning platform hub"
+            git push origin HEAD:android
+          fi
+
+      - name: Restore signing keystore
+        shell: bash
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        run: gradle :app:assembleRelease
+        working-directory: native
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs native/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp native/app/build/outputs/apk/release/app-release.apk "$APK"
+          NOTES="Consolidated Platforms card with Easy Education manual courses first; Live Classes hub with running/upcoming counts; Udvash live routines, HTML syllabus and join flow; iEducation/Medilogy structured navigation; Bondi Pathshala subject/chapter/video adapter with server-only token configuration."
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "$NOTES"
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Publish in-app updater metadata
+        shell: bash
+        run: |
+          git pull --rebase origin main
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "Platforms hub, live-class dashboard, Udvash live join flow and Bondi Pathshala structured courses."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION platform hub metadata"
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.40-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
