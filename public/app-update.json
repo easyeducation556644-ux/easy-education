@@ -1,8 +1,8 @@
 {
-  "versionCode": 2103600,
-  "versionName": "2.10.36",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.36/Easy-Education-2.10.36.apk",
-  "sha256": "c0909578832b89b53c89f6ef16a91a05c007482751a2037b11584513d9e62b08",
+  "versionCode": 2103700,
+  "versionName": "2.10.37",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.37/Easy-Education-2.10.37.apk",
+  "sha256": "8bba580df17bc41e7198b73103f50e94cdf54e76f3d1ef27975cf143d5770fd6",
   "force": false,
-  "notes": "Cache-first Udvash refresh, standard class page/resources, signed-source recovery, plus iEducation, Medilogy and BP School."
+  "notes": "True cache-first/live-per-route Udvash refresh plus iEducation, Medilogy and BP School."
 }
