@@ -1,0 +1,55 @@
+name: Fix 2.10.41 release compile workflow
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/fix-2.10.41-release-compile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Remove invalid Compose weight import injection
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('.github/workflows/android-2.10.41-live-auth-platform-search.yml')
+          s = p.read_text()
+          bad = "        s = s.replace('import androidx.compose.foundation.layout.width\\n', 'import androidx.compose.foundation.layout.width\\nimport androidx.compose.foundation.layout.weight\\n', 1)"
+          fixed = "        s = s.replace('import androidx.compose.foundation.layout.weight\\n', '')"
+          if bad in s:
+              s = s.replace(bad, fixed, 1)
+          elif fixed not in s:
+              raise SystemExit('weight injection line not found')
+
+          bad_uri = "        s = s.replace('package com.easyeducation.app\\n', 'package com.easyeducation.app\\n\\nimport android.net.Uri', 1)"
+          fixed_uri = "        s = s.replace('package com.easyeducation.app\\n', 'package com.easyeducation.app\\n\\nimport android.net.Uri\\n', 1)"
+          if bad_uri in s:
+              s = s.replace(bad_uri, fixed_uri, 1)
+          p.write_text(s)
+
+      - name: Commit workflow repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/android-2.10.41-live-auth-platform-search.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix 2.10.41 Compose compile step"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch repaired release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run android-2.10.41-live-auth-platform-search.yml --ref main
