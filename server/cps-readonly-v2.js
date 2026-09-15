@@ -395,11 +395,27 @@ function dhakaDateKey(value) {
   return `${read("year")}-${read("month")}-${read("day")}`
 }
 
-function isTodayOrRunning(live, now = new Date()) {
-  const status = firstText(live?.status).toLowerCase()
-  if (["live", "running", "ongoing", "started", "live now"].includes(status)) return true
-  const start = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
-  return Boolean(start) && dhakaDateKey(start) === dhakaDateKey(now)
+function liveStatus(live) {
+  return firstText(live?.status, live?.liveStatus).toLowerCase()
+}
+
+function isRunningLive(live) {
+  return ["live", "running", "ongoing", "started", "live now"].includes(liveStatus(live))
+}
+
+function liveStartMs(live) {
+  const value = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function isUpcomingLive(live, nowMs = Date.now()) {
+  if (isRunningLive(live)) return false
+  const status = liveStatus(live)
+  if (["ended", "finished", "completed", "cancelled", "canceled", "archive", "archived", "recorded"].includes(status)) return false
+  const startMs = liveStartMs(live)
+  if (startMs) return startMs >= nowMs - 5 * 60_000
+  return ["upcoming", "scheduled", "pending", "waiting"].includes(status)
 }
 
 async function coursePayload(authenticated, rawCourseId, source, access = null) {
@@ -464,25 +480,29 @@ async function handleBrowse(authenticated, res, source) {
     .map((course) => mapCourse(String(course.id), course, accessFor(String(course.id))))
     .sort((a, b) => a.title.localeCompare(b.title))
 
-  const liveHighlights = allLive
-    .filter((live) => {
-      const rawCourseId = liveCourseId(live)
-      return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && isTodayOrRunning(live)
-    })
-    .sort((a, b) => {
-      const aRunning = isTodayOrRunning({ ...a, startTime: "" }) ? 0 : 1
-      const bRunning = isTodayOrRunning({ ...b, startTime: "" }) ? 0 : 1
-      if (aRunning !== bRunning) return aRunning - bRunning
-      return (Date.parse(firstText(a.startTime, a.startAt, a.scheduledAt, a.dateTime, a.date)) || Number.MAX_SAFE_INTEGER) - (Date.parse(firstText(b.startTime, b.startAt, b.scheduledAt, b.dateTime, b.date)) || Number.MAX_SAFE_INTEGER)
-    })
-    .slice(0, 12)
-    .map((live) => {
-      const rawCourseId = liveCourseId(live)
-      const course = sourceById.get(rawCourseId)
-      return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
-    })
+  const eligibleLive = allLive
+  .filter((live) => {
+    const rawCourseId = liveCourseId(live)
+    return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && (isRunningLive(live) || isUpcomingLive(live))
+  })
+  .sort((a, b) => {
+    const aRunning = isRunningLive(a) ? 0 : 1
+    const bRunning = isRunningLive(b) ? 0 : 1
+    if (aRunning !== bRunning) return aRunning - bRunning
+    return (liveStartMs(a) || Number.MAX_SAFE_INTEGER) - (liveStartMs(b) || Number.MAX_SAFE_INTEGER)
+  })
 
-  res.status(200).json({ courses, liveHighlights, serverTimeMs: Date.now(), sourceMode: "firestore-runQuery" })
+const liveHighlights = eligibleLive.slice(0, 100).map((live) => {
+  const rawCourseId = liveCourseId(live)
+  const course = sourceById.get(rawCourseId)
+  return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
+})
+const liveCounts = {
+  running: eligibleLive.filter(isRunningLive).length,
+  upcoming: eligibleLive.filter(isUpcomingLive).length,
+}
+
+res.status(200).json({ courses, liveHighlights, liveCounts, serverTimeMs: Date.now(), sourceMode: "firestore-runQuery" })
 }
 
 async function handleMine(authenticated, res, source) {
