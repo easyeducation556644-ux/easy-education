@@ -799,8 +799,11 @@ async function eligibleLiveSources(authenticated) {
     asArray((snap.data() || {}).sourceAccountIds).forEach((id) => id && allowedAccountIds.add(String(id)))
   })
 
-  const entitledIds = new Set(courseIds)
+  // Older syncs can have a valid course structure while the canonical course document
+  // has a stale/missing sourceAccountIds list. Recover those account ids from the
+  // structure documents instead of returning a false 0/0 live-class result.
   const structures = await authenticated.db.collection(STRUCTURES).get()
+  const entitledIds = new Set(courseIds)
   structures.docs.forEach((doc) => {
     const data = doc.data() || {}
     const masterCourseId = String(data.masterCourseId || data.courseId || "")
