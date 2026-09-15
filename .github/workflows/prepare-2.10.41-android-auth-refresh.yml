@@ -1,0 +1,109 @@
+name: Prepare 2.10.41 Android auth refresh
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/prepare-2.10.41-android-auth-refresh.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Patch auth retry repositories
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def patch_get(path, sign_in, invalid, failed):
+              p = Path(path); s = p.read_text()
+              if 'fun execute(forceRefresh: Boolean): Pair<Int, String>' in s:
+                  return
+              pat = re.compile(r'    private fun request\(url: String\): JSONObject \{.*?\n    \}\n\n    private fun JSONObject\.array', re.S)
+              block = f'''    private fun request(url: String): JSONObject {{
+                  val user = FirebaseAuth.getInstance().currentUser ?: error("{sign_in}")
+                  fun execute(forceRefresh: Boolean): Pair<Int, String> {{
+                      val token = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+                      val request = Request.Builder().url(url)
+                          .header("Authorization", "Bearer $token")
+                          .header("Accept", "application/json")
+                          .get().build()
+                      return http.newCall(request).execute().use {{ response -> response.code to response.body?.string().orEmpty() }}
+                  }}
+                  var (code, raw) = execute(false)
+                  if (code == 401) {{
+                      val retried = execute(true)
+                      code = retried.first
+                      raw = retried.second
+                  }}
+                  val json = runCatching {{ JSONObject(raw) }}.getOrElse {{ error("{invalid}") }}
+                  if (code !in 200..299) error(json.optString("error").ifBlank {{ "{failed} ($code)" }})
+                  return json
+              }}
+
+              private fun JSONObject.array'''
+              s, n = pat.subn(block, s, count=1)
+              if n != 1: raise SystemExit(f'Could not patch {path}')
+              p.write_text(s)
+
+          patch_get('app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt', 'Please sign in to open Udvash', 'Udvash returned an invalid response', 'Udvash request failed')
+          patch_get('app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt', 'Please sign in', 'Provider returned an invalid response', 'Provider request failed')
+
+          p = Path('app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt'); s = p.read_text()
+          if 'fun execute(forceRefresh: Boolean): Pair<Int, String>' not in s:
+              pat = re.compile(r'    private fun request\(url: String, body: JSONObject\? = null\): JSONObject \{.*?\n    \}\n\n    private fun', re.S)
+              block = '''    private fun request(url: String, body: JSONObject? = null): JSONObject {
+                  val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")
+                  fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                      val token = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+                      val builder = Request.Builder().url(url)
+                          .header("Authorization", "Bearer $token")
+                          .header("Accept", "application/json")
+                      if (body == null) builder.get()
+                      else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                      return http.newCall(builder.build()).execute().use { response -> response.code to response.body?.string().orEmpty() }
+                  }
+                  var (code, raw) = execute(false)
+                  if (code == 401) {
+                      val retried = execute(true)
+                      code = retried.first
+                      raw = retried.second
+                  }
+                  val json = runCatching { JSONObject(raw) }.getOrElse { error("EdgeCourse returned an invalid response") }
+                  if (code !in 200..299) error(json.optString("error").ifBlank { "EdgeCourse request failed ($code)" })
+                  return json
+              }
+
+              private fun'''
+              s, n = pat.subn(block, s, count=1)
+              if n != 1: raise SystemExit('Could not patch EdgeCourse request')
+              p.write_text(s)
+
+      - name: Verify and push Android auth patch
+        run: |
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "Retry stale Firebase sessions for learning providers"
+            git push origin HEAD:android
+          fi
+
+      - name: Run 2.10.41 release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run android-2.10.41-live-auth-platform-search.yml --ref main
