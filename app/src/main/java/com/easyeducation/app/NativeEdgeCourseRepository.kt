@@ -141,24 +141,24 @@ class NativeEdgeCourseRepository(context: Context) {
 
     private fun request(url: String, body: JSONObject? = null): JSONObject {
         val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")
-        val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")
-        val builder = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $idToken")
-            .header("Accept", "application/json")
-        if (body == null) builder.get()
-        else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-        val request = builder.build()
-        http.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            val json = runCatching { JSONObject(body) }.getOrElse {
-                error("EdgeCourse returned an invalid response")
-            }
-            if (!response.isSuccessful) {
-                error(json.optString("error").ifBlank { "EdgeCourse request failed (${response.code})" })
-            }
-            return json
+        fun execute(forceRefresh: Boolean): Pair<Int, String> {
+            val token = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+            val builder = Request.Builder().url(url)
+                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/json")
+            if (body == null) builder.get()
+            else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            return http.newCall(builder.build()).execute().use { response -> response.code to response.body?.string().orEmpty() }
         }
+        var (code, raw) = execute(false)
+        if (code == 401) {
+            val retried = execute(true)
+            code = retried.first
+            raw = retried.second
+        }
+        val json = runCatching { JSONObject(raw) }.getOrElse { error("EdgeCourse returned an invalid response") }
+        if (code !in 200..299) error(json.optString("error").ifBlank { "EdgeCourse request failed ($code)" })
+        return json
     }
 
     private fun parseCourse(json: JSONObject) = NativeEdgeCourse(
