@@ -1,0 +1,199 @@
+name: Android 2.10.41 final retry
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.41-final-retry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      VERSION: "2.10.41"
+      VERSION_CODE: "2104100"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Checkout Android
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Apply verified Android 2.10.41 UI and CPS patches
+        shell: python
+        run: |
+          from pathlib import Path
+          import os, re
+
+          workflow = Path('.github/workflows/android-2.10.41-live-auth-platform-search.yml').read_text().splitlines()
+
+          def step_script(name):
+              start = None
+              for i, line in enumerate(workflow):
+                  if line.strip() == f'- name: {name}':
+                      start = i
+                      break
+              if start is None:
+                  raise SystemExit(f'step not found: {name}')
+              run_index = None
+              for i in range(start + 1, len(workflow)):
+                  stripped = workflow[i].strip()
+                  if stripped.startswith('- name:'):
+                      break
+                  if stripped == 'run: |':
+                      run_index = i
+                      break
+              if run_index is None:
+                  raise SystemExit(f'run block not found: {name}')
+              lines = []
+              for i in range(run_index + 1, len(workflow)):
+                  line = workflow[i]
+                  if line.startswith('      - name:') or line.startswith('      - uses:'):
+                      break
+                  if line.startswith('          '):
+                      lines.append(line[10:])
+                  elif not line.strip():
+                      lines.append('')
+                  else:
+                      break
+              return '\n'.join(lines) + '\n'
+
+          wanted = [
+              'Make CPS session expiry self healing',
+              'Make Platforms a single home destination and refresh live data',
+              'Add search bars to platform catalogs',
+              'Add Platforms route',
+              'Bump Android version',
+          ]
+
+          old = os.getcwd()
+          os.chdir('native')
+          try:
+              for name in wanted:
+                  script = step_script(name)
+                  exec(compile(script, f'<{name}>', 'exec'), {'__name__': '__main__'})
+              cps_hub = Path('app/src/main/java/com/easyeducation/app/NativeCpsHub.kt')
+              text = cps_hub.read_text().replace('import androidx.compose.foundation.layout.weight\n', '')
+              cps_hub.write_text(text)
+          finally:
+              os.chdir(old)
+
+      - name: Verify requested behavior in source
+        working-directory: native
+        run: |
+          grep -q 'nav.navigate("platforms")' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'fun NativePlatformsScreen' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'composable("platforms")' app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeUdvashScreens.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt
+          grep -q 'sourceIdToken(appContext, forceRefresh' app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt
+          ! grep -q '^import androidx.compose.foundation.layout.weight$' app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Android Kotlin
+        working-directory: native
+        run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Commit Android 2.10.41
+        working-directory: native
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/easyeducation/app
+          if ! git diff --cached --quiet; then
+            git commit -m "Release Android 2.10.41 live auth and platform fixes"
+            git push origin HEAD:android
+          fi
+
+      - name: Restore signing keystore
+        working-directory: native
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        working-directory: native
+        run: gradle :app:assembleRelease
+
+      - name: Verify APK signature
+        working-directory: native
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        working-directory: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "Automatic stale-session refresh for platform requests, corrected Udvash/CPS live and upcoming discovery, a single Platforms home card opening a dedicated platform screen, and course search inside platform catalogs."
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Checkout main for updater
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: web
+          fetch-depth: 0
+
+      - name: Publish updater metadata
+        working-directory: web
+        run: |
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "Live class counts, automatic session refresh, dedicated Platforms screen and per-platform search."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION live auth fixes metadata"
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.41-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
