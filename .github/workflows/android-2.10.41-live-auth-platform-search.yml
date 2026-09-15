@@ -1,0 +1,979 @@
+name: Android 2.10.41 Live auth platform search fixes
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/android-2.10.41-live-auth-platform-search.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      VERSION: "2.10.41"
+      VERSION_CODE: "2104100"
+      EE_KEYSTORE_PATH: /tmp/easy-education-release.jks
+      EE_KEYSTORE_PASSWORD: ${{ secrets.EE_KEYSTORE_PASSWORD }}
+      EE_KEY_ALIAS: ${{ secrets.EE_KEY_ALIAS }}
+      EE_KEY_PASSWORD: ${{ secrets.EE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fix CPS future live classes
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/cps-readonly-v2.js')
+          s = p.read_text()
+          old = '''function isTodayOrRunning(live, now = new Date()) {
+            const status = firstText(live?.status).toLowerCase()
+            if (["live", "running", "ongoing", "started", "live now"].includes(status)) return true
+            const start = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
+            return Boolean(start) && dhakaDateKey(start) === dhakaDateKey(now)
+          }'''
+          new = '''function liveStatus(live) {
+            return firstText(live?.status, live?.liveStatus).toLowerCase()
+          }
+
+          function isRunningLive(live) {
+            return ["live", "running", "ongoing", "started", "live now"].includes(liveStatus(live))
+          }
+
+          function liveStartMs(live) {
+            const value = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
+            const parsed = Date.parse(value)
+            return Number.isFinite(parsed) ? parsed : 0
+          }
+
+          function isUpcomingLive(live, nowMs = Date.now()) {
+            if (isRunningLive(live)) return false
+            const status = liveStatus(live)
+            if (["ended", "finished", "completed", "cancelled", "canceled", "archive", "archived", "recorded"].includes(status)) return false
+            const startMs = liveStartMs(live)
+            if (startMs) return startMs >= nowMs - 5 * 60_000
+            return ["upcoming", "scheduled", "pending", "waiting"].includes(status)
+          }'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'function isUpcomingLive(' not in s:
+              raise SystemExit('CPS live helper marker not found')
+
+          old = '''  const liveHighlights = allLive
+            .filter((live) => {
+              const rawCourseId = liveCourseId(live)
+              return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && isTodayOrRunning(live)
+            })
+            .sort((a, b) => {
+              const aRunning = isTodayOrRunning({ ...a, startTime: "" }) ? 0 : 1
+              const bRunning = isTodayOrRunning({ ...b, startTime: "" }) ? 0 : 1
+              if (aRunning !== bRunning) return aRunning - bRunning
+              return (Date.parse(firstText(a.startTime, a.startAt, a.scheduledAt, a.dateTime, a.date)) || Number.MAX_SAFE_INTEGER) - (Date.parse(firstText(b.startTime, b.startAt, b.scheduledAt, b.dateTime, b.date)) || Number.MAX_SAFE_INTEGER)
+            })
+            .slice(0, 12)
+            .map((live) => {
+              const rawCourseId = liveCourseId(live)
+              const course = sourceById.get(rawCourseId)
+              return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
+            })
+
+          res.status(200).json({ courses, liveHighlights, serverTimeMs: Date.now(), sourceMode: "firestore-runQuery" })'''
+          new = '''  const eligibleLive = allLive
+            .filter((live) => {
+              const rawCourseId = liveCourseId(live)
+              return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && (isRunningLive(live) || isUpcomingLive(live))
+            })
+            .sort((a, b) => {
+              const aRunning = isRunningLive(a) ? 0 : 1
+              const bRunning = isRunningLive(b) ? 0 : 1
+              if (aRunning !== bRunning) return aRunning - bRunning
+              return (liveStartMs(a) || Number.MAX_SAFE_INTEGER) - (liveStartMs(b) || Number.MAX_SAFE_INTEGER)
+            })
+
+          const liveHighlights = eligibleLive.slice(0, 100).map((live) => {
+            const rawCourseId = liveCourseId(live)
+            const course = sourceById.get(rawCourseId)
+            return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
+          })
+          const liveCounts = {
+            running: eligibleLive.filter(isRunningLive).length,
+            upcoming: eligibleLive.filter(isUpcomingLive).length,
+          }
+
+          res.status(200).json({ courses, liveHighlights, liveCounts, serverTimeMs: Date.now(), sourceMode: "firestore-runQuery" })'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'const liveCounts = {' not in s:
+              raise SystemExit('CPS browse live block not found')
+          p.write_text(s)
+
+      - name: Harden Udvash live source discovery
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('server/api-resources/udvash.js')
+          s = p.read_text()
+          pattern = re.compile(r'async function eligibleLiveSources\(authenticated\) \{.*?\n\}\n\nfunction normalizeLiveRoutine', re.S)
+          match = pattern.search(s)
+          if not match:
+              raise SystemExit('Udvash eligibleLiveSources block not found')
+          replacement = '''async function eligibleLiveSources(authenticated) {
+            const accountSnapshot = await authenticated.db.collection(ACCOUNTS).get()
+            const allAccounts = accountSnapshot.docs
+              .map((doc) => ({ id: doc.id, ...(doc.data() || {}) }))
+              .filter((account) => text(account.status).toLowerCase() !== "inactive")
+              .sort((a, b) => Number(b.lastCheckedAtMs || 0) - Number(a.lastCheckedAtMs || 0))
+            if (isFullAdminProfile(authenticated.userProfile)) return allAccounts
+
+            const entitlementSnapshot = await authenticated.db.collection(ENTITLEMENTS)
+              .where("userId", "==", authenticated.decodedToken.uid)
+              .get()
+            const courseIds = entitlementSnapshot.docs
+              .map((doc) => doc.data() || {})
+              .filter((data) => entitlementActive(data))
+              .map((data) => String(data.masterCourseId || data.courseId || ""))
+              .filter(Boolean)
+            if (!courseIds.length) return []
+
+            const allowedAccountIds = new Set()
+            const courseSnapshots = await authenticated.db.getAll(
+              ...courseIds.map((courseId) => authenticated.db.collection(COURSES).doc(courseId)),
+            )
+            courseSnapshots.forEach((snap) => {
+              if (!snap.exists) return
+              asArray((snap.data() || {}).sourceAccountIds).forEach((id) => id && allowedAccountIds.add(String(id)))
+            })
+
+            // Older syncs can have a valid course structure while the canonical course document
+            // has a stale/missing sourceAccountIds list. Recover those account ids from the
+            // structure documents instead of returning a false 0/0 live-class result.
+            const structures = await authenticated.db.collection(STRUCTURES).get()
+            const entitledIds = new Set(courseIds)
+            structures.docs.forEach((doc) => {
+              const data = doc.data() || {}
+              const masterCourseId = String(data.masterCourseId || data.courseId || "")
+              const accountId = String(data.accountId || "")
+              if (accountId && entitledIds.has(masterCourseId)) allowedAccountIds.add(accountId)
+            })
+            return allAccounts.filter((account) => allowedAccountIds.has(account.id))
+          }
+
+          function normalizeLiveRoutine'''
+          s = s[:match.start()] + replacement + s[match.end():]
+
+          old = '''    } catch (error) {
+              console.warn("[udvash-live]", account.id, error?.message || error)
+              return { joinButtonBeforeMinutes: 10, classes: [] }
+            }
+          })
+          const dedupe = new Map()'''
+          new = '''    } catch (error) {
+              console.warn("[udvash-live]", account.id, error?.message || error)
+              return { joinButtonBeforeMinutes: 10, classes: [], error: error?.message || "Udvash live request failed" }
+            }
+          })
+          const successfulResults = results.filter((result) => !result.error)
+          if (!successfulResults.length && results.length) {
+            const error = new Error(results[0]?.error || "Udvash live classes are temporarily unavailable")
+            error.statusCode = 502
+            throw error
+          }
+          const dedupe = new Map()'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'const successfulResults = results.filter' not in s:
+              raise SystemExit('Udvash live error handling marker not found')
+          p.write_text(s)
+
+      - name: Verify backend fixes
+        shell: bash
+        run: |
+          grep -q 'function isUpcomingLive' server/cps-readonly-v2.js
+          grep -q 'liveCounts' server/cps-readonly-v2.js
+          grep -q 'collection(STRUCTURES).get()' server/api-resources/udvash.js
+          grep -q 'successfulResults' server/api-resources/udvash.js
+          node --check server/cps-readonly-v2.js
+          node --check server/api-resources/udvash.js
+
+      - name: Commit backend fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/cps-readonly-v2.js server/api-resources/udvash.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix CPS and Udvash live class discovery"
+            git push origin HEAD:main
+          fi
+
+      - name: Checkout Android branch
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          path: native
+          fetch-depth: 0
+
+      - name: Add automatic Firebase session refresh retries
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path); s = p.read_text()
+              if old in s:
+                  s = s.replace(old, new, 1); p.write_text(s); return
+              if new.strip() in s:
+                  return
+              raise SystemExit(f'{label} marker not found')
+
+          # Udvash: provider access token is already re-authenticated server-side from encrypted
+          # credentials. This handles expiry of the Easy Education Firebase token in the app too.
+          path = 'app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt'
+          p = Path(path); s = p.read_text()
+          old = '''    private fun request(url: String): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open Udvash")
+              val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")
+              val request = Request.Builder()
+                  .url(url)
+                  .header("Authorization", "Bearer $idToken")
+                  .header("Accept", "application/json")
+                  .get()
+                  .build()
+              http.newCall(request).execute().use { response ->
+                  val raw = response.body?.string().orEmpty()
+                  val json = runCatching { JSONObject(raw) }.getOrElse { error("Udvash returned an invalid response") }
+                  if (!response.isSuccessful) {
+                      error(json.optString("error").ifBlank { "Udvash request failed (${response.code})" })
+                  }
+                  return json
+              }
+          }'''
+          new = '''    private fun request(url: String): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open Udvash")
+              fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                  val idToken = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+                  val request = Request.Builder().url(url)
+                      .header("Authorization", "Bearer $idToken")
+                      .header("Accept", "application/json").get().build()
+                  return http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
+              }
+              var (code, raw) = execute(false)
+              if (code == 401) {
+                  val retried = execute(true)
+                  code = retried.first
+                  raw = retried.second
+              }
+              val json = runCatching { JSONObject(raw) }.getOrElse { error("Udvash returned an invalid response") }
+              if (code !in 200..299) error(json.optString("error").ifBlank { "Udvash request failed ($code)" })
+              return json
+          }'''
+          if old in s: s = s.replace(old, new, 1)
+          elif 'fun execute(forceRefresh: Boolean): Pair<Int, String>' not in s: raise SystemExit('Udvash request marker not found')
+          p.write_text(s)
+
+          # Generic external providers, including Bondi Pathshala.
+          path = 'app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt'
+          p = Path(path); s = p.read_text()
+          old = '''    private fun request(url: String): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in")
+              val token = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")
+              val request = Request.Builder()
+                  .url(url)
+                  .header("Authorization", "Bearer $token")
+                  .header("Accept", "application/json")
+                  .get()
+                  .build()
+              http.newCall(request).execute().use { response ->
+                  val raw = response.body?.string().orEmpty()
+                  val json = runCatching { JSONObject(raw) }.getOrElse { error("Provider returned an invalid response") }
+                  if (!response.isSuccessful) error(json.optString("error").ifBlank { "Provider request failed (${response.code})" })
+                  return json
+              }
+          }'''
+          new = '''    private fun request(url: String): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in")
+              fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                  val token = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+                  val request = Request.Builder().url(url)
+                      .header("Authorization", "Bearer $token")
+                      .header("Accept", "application/json").get().build()
+                  return http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
+              }
+              var (code, raw) = execute(false)
+              if (code == 401) {
+                  val retried = execute(true)
+                  code = retried.first
+                  raw = retried.second
+              }
+              val json = runCatching { JSONObject(raw) }.getOrElse { error("Provider returned an invalid response") }
+              if (code !in 200..299) error(json.optString("error").ifBlank { "Provider request failed ($code)" })
+              return json
+          }'''
+          if old in s: s = s.replace(old, new, 1)
+          elif 'fun execute(forceRefresh: Boolean): Pair<Int, String>' not in s: raise SystemExit('External request marker not found')
+          p.write_text(s)
+
+          # EdgeCourse has both GET and POST requests, so rebuild the request on retry.
+          path = 'app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt'
+          p = Path(path); s = p.read_text()
+          old = '''    private fun request(url: String, body: JSONObject? = null): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")
+              val idToken = Tasks.await(user.getIdToken(false)).token ?: error("Could not refresh your login")
+              val builder = Request.Builder()
+                  .url(url)
+                  .header("Authorization", "Bearer $idToken")
+                  .header("Accept", "application/json")
+              if (body == null) builder.get()
+              else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+              val request = builder.build()
+              http.newCall(request).execute().use { response ->
+                  val body = response.body?.string().orEmpty()
+                  val json = runCatching { JSONObject(body) }.getOrElse {
+                      error("EdgeCourse returned an invalid response")
+                  }
+                  if (!response.isSuccessful) {
+                      error(json.optString("error").ifBlank { "EdgeCourse request failed (${response.code})" })
+                  }
+                  return json
+              }
+          }'''
+          new = '''    private fun request(url: String, body: JSONObject? = null): JSONObject {
+              val user = FirebaseAuth.getInstance().currentUser ?: error("Please sign in to open EdgeCourse")
+              fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                  val idToken = Tasks.await(user.getIdToken(forceRefresh)).token ?: error("Could not refresh your login")
+                  val builder = Request.Builder().url(url)
+                      .header("Authorization", "Bearer $idToken")
+                      .header("Accept", "application/json")
+                  if (body == null) builder.get()
+                  else builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                  return http.newCall(builder.build()).execute().use { response -> response.code to response.body?.string().orEmpty() }
+              }
+              var (code, raw) = execute(false)
+              if (code == 401) {
+                  val retried = execute(true)
+                  code = retried.first
+                  raw = retried.second
+              }
+              val json = runCatching { JSONObject(raw) }.getOrElse { error("EdgeCourse returned an invalid response") }
+              if (code !in 200..299) error(json.optString("error").ifBlank { "EdgeCourse request failed ($code)" })
+              return json
+          }'''
+          if old in s: s = s.replace(old, new, 1)
+          elif 'fun execute(forceRefresh: Boolean): Pair<Int, String>' not in s: raise SystemExit('Edge request marker not found')
+          p.write_text(s)
+
+      - name: Make CPS session expiry self healing
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt')
+          s = p.read_text()
+          pattern = re.compile(r'    private suspend fun get\(action: String, params: Map<String, String> = emptyMap\(\)\): JSONObject \{.*?\n    \}\n\n    private fun rawCourseId', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('CPS get() block not found')
+          block = '''    private suspend fun get(action: String, params: Map<String, String> = emptyMap()): JSONObject {
+              val user = auth.currentUser ?: error("Sign in to open CPS courses")
+              val query = buildList {
+                  add("action=${encode(action)}")
+                  params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
+              }.joinToString("&")
+
+              suspend fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                  val easyEducationToken = user.getIdToken(forceRefresh).await().token?.takeIf { it.isNotBlank() }
+                      ?: error("Could not verify your Easy Education session")
+                  val cpsToken = runCatching {
+                      CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = forceRefresh || action == "exam")
+                  }.getOrNull()
+                  val request = Request.Builder().url("$CPS_API_ORIGIN/api/cps?$query")
+                      .header("Authorization", "Bearer $easyEducationToken")
+                      .header("Accept", "application/json")
+                      .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
+                      .apply { if (!cpsToken.isNullOrBlank()) header("X-CPS-Firebase-Token", cpsToken) }
+                      .get().build()
+                  return withContext(Dispatchers.IO) {
+                      http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
+                  }
+              }
+
+              var (code, body) = execute(false)
+              if (code == 401) {
+                  val retried = execute(true)
+                  code = retried.first
+                  body = retried.second
+              }
+              if (code !in 200..299) {
+                  val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+                      ?: when (code) {
+                          401 -> "Your session could not be refreshed. Please sign in again."
+                          403 -> "This CPS item is locked or needs CPS verification."
+                          else -> "CPS is temporarily unavailable. Please retry."
+                      }
+                  error(message)
+              }
+              return JSONObject(body)
+          }
+
+          private fun rawCourseId'''
+          s = s[:m.start()] + block + s[m.end():]
+          p.write_text(s)
+
+          # The alternate CPS catalog client also retries a stale Easy Education token once.
+          p = Path('app/src/main/java/com/easyeducation/app/NativeCpsCatalogUi.kt')
+          s = p.read_text()
+          pattern = re.compile(r'    private suspend fun request\(action: String, params: Map<String, String> = emptyMap\(\)\): JSONObject \{.*?\n    \}\n\n    private fun parseCatalog', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('CPS catalog request block not found')
+          block = '''    private suspend fun request(action: String, params: Map<String, String> = emptyMap()): JSONObject {
+              val user = auth.currentUser ?: error("Sign in to browse CPS")
+              val query = buildList {
+                  add("action=${encode(action)}")
+                  params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
+              }.joinToString("&")
+              suspend fun execute(forceRefresh: Boolean): Pair<Int, String> {
+                  val token = user.getIdToken(forceRefresh).await().token?.takeIf { it.isNotBlank() }
+                      ?: error("Could not verify your account")
+                  val request = Request.Builder().url("$CPS_CATALOG_ORIGIN/api/cps?$query")
+                      .header("Authorization", "Bearer $token")
+                      .header("Accept", "application/json")
+                      .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
+                      .get().build()
+                  return withContext(Dispatchers.IO) {
+                      http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
+                  }
+              }
+              var (code, body) = execute(false)
+              if (code == 401) {
+                  val retried = execute(true)
+                  code = retried.first
+                  body = retried.second
+              }
+              if (code !in 200..299) {
+                  val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+                      ?: "CPS request failed ($code)"
+                  error(message)
+              }
+              return JSONObject(body)
+          }
+
+          private fun parseCatalog'''
+          s = s[:m.start()] + block + s[m.end():]
+          p.write_text(s)
+
+      - name: Make Platforms a single home destination and refresh live data
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('app/src/main/java/com/easyeducation/app/NativeLearningHub.kt')
+          s = p.read_text()
+          if 'import androidx.compose.material3.OutlinedTextField' not in s:
+              s = s.replace('import androidx.compose.material3.MaterialTheme\n', 'import androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.OutlinedTextField\n', 1)
+          if 'import androidx.compose.runtime.saveable.rememberSaveable' not in s:
+              s = s.replace('import androidx.compose.runtime.rememberCoroutineScope\n', 'import androidx.compose.runtime.rememberCoroutineScope\nimport androidx.compose.runtime.saveable.rememberSaveable\n', 1)
+
+          pattern = re.compile(r'@Composable\nfun NativePlatformsHomeCard\(nav: NavHostController, state: NativeUiState\) \{.*?\n\}\n\n@Composable\nfun NativeManualCoursesScreen', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('Platforms home block not found')
+          replacement = '''@Composable
+          fun NativePlatformsHomeCard(nav: NavHostController, state: NativeUiState) {
+              val manualCount = manualEasyEducationCourses(state).size
+              Card(
+                  modifier = Modifier.fillMaxWidth().clickable { nav.navigate("platforms") },
+                  shape = HubCardShape,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                  border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+              ) {
+                  Row(Modifier.fillMaxWidth().padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                      Surface(shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                          Icon(Icons.Default.School, null, Modifier.padding(11.dp).size(25.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                      }
+                      Spacer(Modifier.width(12.dp))
+                      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                          Text("Platforms", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                          Text("7 learning platforms • $manualCount Easy Education courses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                          Text("Tap to choose a platform", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                      }
+                      Icon(Icons.Default.ArrowForward, "Open platforms")
+                  }
+              }
+          }
+
+          @Composable
+          fun NativePlatformsScreen(nav: NavHostController, state: NativeUiState) {
+              val manualCount = manualEasyEducationCourses(state).size
+              val platforms = listOf(
+                  HubPlatform("Easy Education manual uploaded courses", "$manualCount available in My Courses", "manual-courses"),
+                  HubPlatform("CPS", "Courses, live classes, exams and resources", "cps"),
+                  HubPlatform("EdgeCourse", "Course catalog and class resources", "edgecourse"),
+                  HubPlatform("Udvash", "Structured courses from your Udvash access", "udvash"),
+                  HubPlatform("iEducation", "Live course catalog", "provider/ieducation"),
+                  HubPlatform("Medilogy", "Live course catalog", "provider/medilogy"),
+                  HubPlatform("Bondi Pathshala", "Subjects, chapters and classes", "provider/bondipathshala"),
+              )
+              LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                  item { HubHeader(nav, "Platforms", "Choose where you want to learn") }
+                  items(platforms, key = { it.route }) { platform ->
+                      Card(
+                          modifier = Modifier.fillMaxWidth().clickable { nav.navigate(platform.route) },
+                          shape = HubRowShape,
+                          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                      ) {
+                          Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                              Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                                  Icon(Icons.Default.School, null, Modifier.padding(9.dp).size(22.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                              }
+                              Spacer(Modifier.width(12.dp))
+                              Column(Modifier.weight(1f)) {
+                                  Text(platform.title, fontWeight = FontWeight.ExtraBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                  Text(platform.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                              }
+                              Icon(Icons.Default.ArrowForward, null)
+                          }
+                      }
+                  }
+                  item { Spacer(Modifier.height(18.dp)) }
+              }
+          }
+
+          @Composable
+          fun NativeManualCoursesScreen'''
+          s = s[:m.start()] + replacement + s[m.end():]
+
+          old = '''fun NativeManualCoursesScreen(nav: NavHostController, state: NativeUiState) {
+              val courses = manualEasyEducationCourses(state)
+              LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                  item { HubHeader(nav, "Easy Education", "Manual uploaded courses") }
+                  if (courses.isEmpty()) {'''
+          new = '''fun NativeManualCoursesScreen(nav: NavHostController, state: NativeUiState) {
+              val courses = manualEasyEducationCourses(state)
+              var query by rememberSaveable { mutableStateOf("") }
+              val filtered = courses.filter { course ->
+                  query.isBlank() || course.title.contains(query, ignoreCase = true) || course.description.contains(query, ignoreCase = true)
+              }
+              LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                  item { HubHeader(nav, "Easy Education", "Manual uploaded courses") }
+                  item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }
+                  if (filtered.isEmpty()) {'''
+          if old not in s: raise SystemExit('Manual course search marker not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('            items(courses, key = { it.id }) { course ->', '            items(filtered, key = { it.id }) { course ->', 1)
+
+          # Replace live home card so CPS is fetched directly instead of depending on possibly stale ViewModel state.
+          pattern = re.compile(r'@Composable\nfun NativeLiveClassesHomeCard\(nav: NavHostController, state: NativeUiState\) \{.*?\n\}\n\n@Composable\nprivate fun HubCountPill', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('Live home card block not found')
+          block = '''@Composable
+          fun NativeLiveClassesHomeCard(nav: NavHostController, state: NativeUiState) {
+              val context = LocalContext.current
+              val udvashRepository = remember { NativeUdvashRepository(context) }
+              val cpsRepository = remember { NativeCpsRepository(context) }
+              var liveState by remember { mutableStateOf(UdvashLiveUiState()) }
+              var cpsCatalog by remember { mutableStateOf(cpsRepository.cachedCatalog()) }
+
+              LaunchedEffect(state.online) {
+                  liveState = UdvashLiveUiState(data = withContext(Dispatchers.IO) { udvashRepository.cachedLiveClasses() }, refreshing = state.online)
+                  cpsCatalog = withContext(Dispatchers.IO) { cpsRepository.cachedCatalog() }
+                  if (state.online) {
+                      runCatching { withContext(Dispatchers.IO) { udvashRepository.liveClasses() } }
+                          .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
+                          .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+                      runCatching { withContext(Dispatchers.IO) { cpsRepository.browse() } }.onSuccess { cpsCatalog = it }
+                  }
+              }
+
+              val cpsLive = cpsCatalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }
+              val running = cpsLive.count { it.status.isRunningStatus() } + (liveState.data?.totalLiveClass ?: 0)
+              val upcoming = cpsLive.count { !it.status.isRunningStatus() } + (liveState.data?.totalUpcomingClass ?: 0)
+              Card(
+                  modifier = Modifier.fillMaxWidth().clickable { nav.navigate("live-classes") },
+                  shape = HubCardShape,
+                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+              ) {
+                  Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                      Surface(shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = .10f)) {
+                          Icon(Icons.Default.VideoLibrary, null, Modifier.padding(10.dp).size(25.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                      }
+                      Spacer(Modifier.width(12.dp))
+                      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                          Text("Live classes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                              HubCountPill("$running running", running > 0)
+                              HubCountPill("$upcoming upcoming", false)
+                          }
+                          Text("Open to choose a platform", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = .74f))
+                      }
+                      if (liveState.refreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                      else Icon(Icons.Default.ArrowForward, "Open live classes")
+                  }
+              }
+          }
+
+          @Composable
+          private fun HubCountPill'''
+          s = s[:m.start()] + block + s[m.end():]
+
+          pattern = re.compile(r'@Composable\nfun NativeLivePlatformsScreen\(nav: NavHostController, state: NativeUiState\) \{.*?\n\}\n\n@Composable\nprivate fun LivePlatformCard', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('Live platforms block not found')
+          block = '''@Composable
+          fun NativeLivePlatformsScreen(nav: NavHostController, state: NativeUiState) {
+              val context = LocalContext.current
+              val udvashRepository = remember { NativeUdvashRepository(context) }
+              val cpsRepository = remember { NativeCpsRepository(context) }
+              var reload by remember { mutableIntStateOf(0) }
+              var liveState by remember { mutableStateOf(UdvashLiveUiState()) }
+              var cpsCatalog by remember { mutableStateOf(cpsRepository.cachedCatalog()) }
+              var cpsRefreshing by remember { mutableStateOf(false) }
+
+              LaunchedEffect(reload, state.online) {
+                  liveState = UdvashLiveUiState(data = withContext(Dispatchers.IO) { udvashRepository.cachedLiveClasses() }, refreshing = state.online)
+                  cpsCatalog = withContext(Dispatchers.IO) { cpsRepository.cachedCatalog() }
+                  if (state.online) {
+                      cpsRefreshing = true
+                      runCatching { withContext(Dispatchers.IO) { udvashRepository.liveClasses() } }
+                          .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
+                          .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+                      runCatching { withContext(Dispatchers.IO) { cpsRepository.browse() } }.onSuccess { cpsCatalog = it }
+                      cpsRefreshing = false
+                  }
+              }
+
+              val cpsLive = cpsCatalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }
+              LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                  item { HubHeader(nav, "Live classes", "Choose a platform") }
+                  item {
+                      LivePlatformCard("Udvash", liveState.data?.totalLiveClass ?: 0, liveState.data?.totalUpcomingClass ?: 0, liveState.refreshing) {
+                          nav.navigate("live-classes/udvash")
+                      }
+                  }
+                  item {
+                      LivePlatformCard("CPS", cpsLive.count { it.status.isRunningStatus() }, cpsLive.count { !it.status.isRunningStatus() }, cpsRefreshing) {
+                          nav.navigate("live-classes/cps")
+                      }
+                  }
+                  if (liveState.error.isNotBlank()) item {
+                      TextButton(onClick = { reload += 1 }) { Icon(Icons.Default.Refresh, null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Retry live data") }
+                  }
+                  item { Text("Easy Education manual courses are not listed here because Easy Education does not host live classes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                  item { Spacer(Modifier.height(18.dp)) }
+              }
+          }
+
+          @Composable
+          private fun LivePlatformCard'''
+          s = s[:m.start()] + block + s[m.end():]
+
+          pattern = re.compile(r'@Composable\nfun NativeCpsGlobalLiveScreen\(nav: NavHostController, state: NativeUiState\) \{.*?\n\}\n\n@Composable\nfun NativeUdvashLiveClassesScreen', re.S)
+          m = pattern.search(s)
+          if not m: raise SystemExit('CPS global live block not found')
+          block = '''@Composable
+          fun NativeCpsGlobalLiveScreen(nav: NavHostController, state: NativeUiState) {
+              val context = LocalContext.current
+              val repository = remember { NativeCpsRepository(context) }
+              var catalog by remember { mutableStateOf(repository.cachedCatalog()) }
+              var refreshing by remember { mutableStateOf(false) }
+              var error by remember { mutableStateOf("") }
+              LaunchedEffect(state.online) {
+                  catalog = withContext(Dispatchers.IO) { repository.cachedCatalog() }
+                  if (state.online) {
+                      refreshing = true
+                      runCatching { withContext(Dispatchers.IO) { repository.browse() } }
+                          .onSuccess { catalog = it; error = "" }
+                          .onFailure { error = it.message.orEmpty() }
+                      refreshing = false
+                  }
+              }
+              val classes = catalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }.sortedWith(compareByDescending<NativeCpsLiveClass> { it.status.isRunningStatus() }.thenBy { it.startTime })
+              val running = classes.count { it.status.isRunningStatus() }
+              val upcoming = classes.count { !it.status.isRunningStatus() }
+              LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                  item { HubHeader(nav, "CPS live classes", "$running running • $upcoming upcoming") }
+                  if (refreshing) item { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
+                  if (classes.isEmpty()) item { HubMessage(if (error.isNotBlank()) error else "No CPS live or upcoming class is available right now.") }
+                  else items(classes, key = { it.id }) { live ->
+                      Card(
+                          modifier = Modifier.fillMaxWidth().clickable(enabled = live.url.isNotBlank() && live.hasAccess) { NativeCpsLivePlayerActivity.openLive(context, live.title, live.url, live.id) },
+                          shape = HubRowShape,
+                          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                      ) {
+                          Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  HubCountPill(if (live.status.isRunningStatus()) "RUNNING" else "UPCOMING", live.status.isRunningStatus())
+                                  Spacer(Modifier.width(8.dp)); Text(live.platform.ifBlank { "CPS" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                              }
+                              Text(live.title, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
+                              if (live.courseTitle.isNotBlank()) Text(live.courseTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                              if (live.startTime.isNotBlank()) Text(live.startTime, style = MaterialTheme.typography.bodySmall)
+                              if (live.url.isNotBlank() && live.hasAccess) Text("Tap to join", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                          }
+                      }
+                  }
+                  item { Spacer(Modifier.height(18.dp)) }
+              }
+          }
+
+          @Composable
+          fun NativeUdvashLiveClassesScreen'''
+          s = s[:m.start()] + block + s[m.end():]
+          p.write_text(s)
+
+      - name: Add search bars to platform catalogs
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+
+          # Udvash catalog search.
+          p = Path('app/src/main/java/com/easyeducation/app/NativeUdvashScreens.kt'); s = p.read_text()
+          if 'import androidx.compose.material3.OutlinedTextField' not in s:
+              s = s.replace('import androidx.compose.material3.MaterialTheme\n', 'import androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.OutlinedTextField\n', 1)
+          if 'import androidx.compose.runtime.saveable.rememberSaveable' not in s:
+              s = s.replace('import androidx.compose.runtime.remember\n', 'import androidx.compose.runtime.remember\nimport androidx.compose.runtime.saveable.rememberSaveable\n', 1)
+          marker = '    var state by remember { mutableStateOf(UdvashLoadState<List<NativeUdvashCourse>>()) }\n'
+          if marker in s and 'var query by rememberSaveable { mutableStateOf("") }' not in s:
+              s = s.replace(marker, marker + '    var query by rememberSaveable { mutableStateOf("") }\n', 1)
+          marker = '    UdvashPageScaffold(nav, "Udvash") {\n'
+          if marker in s and 'label = { Text("Search courses") }' not in s[s.find(marker):s.find(marker)+500]:
+              s = s.replace(marker, marker + '        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }\n', 1)
+          old = '            else -> items(state.data.orEmpty(), key = { it.id }) { course ->\n'
+          new = '            else -> {\n                val filtered = state.data.orEmpty().filter { query.isBlank() || it.title.contains(query, ignoreCase = true) }\n                if (filtered.isEmpty()) item { UdvashEmpty("No matching course", "Try another search term.") }\n                else items(filtered, key = { it.id }) { course ->\n'
+          if old in s:
+              s = s.replace(old, new, 1)
+              # close the added else block just before refresh footer
+              footer = '        UdvashRefreshFooter(state.refreshing, state.data != null, state.error) { reload += 1 }\n'
+              idx = s.find(footer, s.find(new))
+              if idx < 0: raise SystemExit('Udvash footer marker not found')
+              s = s[:idx] + '            }\n' + s[idx:]
+          p.write_text(s)
+
+          # External catalogs (iEducation, Medilogy, Bondi Pathshala).
+          p = Path('app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt'); s = p.read_text()
+          if 'import androidx.compose.material3.OutlinedTextField' not in s:
+              s = s.replace('import androidx.compose.material3.MaterialTheme\n', 'import androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.OutlinedTextField\n', 1)
+          marker = '    var state by remember(providerId) { mutableStateOf(ExternalLoadState<List<NativeExternalCourse>>()) }\n'
+          if marker in s and 'var query by rememberSaveable(providerId)' not in s:
+              s = s.replace(marker, marker + '    var query by rememberSaveable(providerId) { mutableStateOf("") }\n', 1)
+          marker = '        item { ExternalHeader(nav = nav, title = title, subtitle = "Live course catalog") }\n'
+          if marker in s:
+              s = s.replace(marker, marker + '        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }\n', 1)
+          old = '            else -> items(state.data.orEmpty(), key = { it.id }) { course ->\n'
+          new = '            else -> {\n                val filtered = state.data.orEmpty().filter { course -> query.isBlank() || course.title.contains(query, ignoreCase = true) || course.description.contains(query, ignoreCase = true) || course.batch.contains(query, ignoreCase = true) }\n                if (filtered.isEmpty()) item { ExternalMessage("No course matched your search.") }\n                else items(filtered, key = { it.id }) { course ->\n'
+          if old in s:
+              s = s.replace(old, new, 1)
+              footer = '        ExternalRefreshFooter(state.refreshing, state.data != null, state.error) { reload += 1 }\n'
+              idx = s.find(footer, s.find(new))
+              if idx < 0: raise SystemExit('External footer marker not found')
+              s = s[:idx] + '            }\n' + s[idx:]
+          p.write_text(s)
+
+          # CPS keeps its rich existing V2 catalog. Put search above it and show a filtered result
+          # list only while a query is active.
+          p = Path('app/src/main/java/com/easyeducation/app/NativeCpsHub.kt'); s = p.read_text()
+          imports = {
+              'import androidx.compose.foundation.layout.fillMaxSize\n': 'import androidx.compose.foundation.layout.fillMaxSize\n',
+          }
+          if 'import androidx.compose.foundation.layout.fillMaxSize' not in s:
+              s = s.replace('import androidx.compose.foundation.layout.fillMaxWidth\n', 'import androidx.compose.foundation.layout.fillMaxSize\nimport androidx.compose.foundation.layout.fillMaxWidth\n', 1)
+          if 'import androidx.compose.foundation.layout.weight' not in s:
+              s = s.replace('import androidx.compose.foundation.layout.width\n', 'import androidx.compose.foundation.layout.width\nimport androidx.compose.foundation.layout.weight\n', 1)
+          if 'import androidx.compose.foundation.lazy.LazyColumn' not in s:
+              s = s.replace('import androidx.compose.foundation.shape.CircleShape\n', 'import androidx.compose.foundation.lazy.LazyColumn\nimport androidx.compose.foundation.lazy.items\nimport androidx.compose.foundation.shape.CircleShape\n', 1)
+          if 'import androidx.compose.material3.OutlinedTextField' not in s:
+              s = s.replace('import androidx.compose.material3.MaterialTheme\n', 'import androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.OutlinedTextField\n', 1)
+          if 'import androidx.compose.runtime.getValue' not in s:
+              s = s.replace('import androidx.compose.runtime.Composable\n', 'import androidx.compose.runtime.Composable\nimport androidx.compose.runtime.getValue\nimport androidx.compose.runtime.mutableStateOf\nimport androidx.compose.runtime.saveable.rememberSaveable\nimport androidx.compose.runtime.setValue\n', 1)
+          if 'import android.net.Uri' not in s:
+              s = s.replace('package com.easyeducation.app\n', 'package com.easyeducation.app\n\nimport android.net.Uri', 1)
+          old = '''@Composable
+          fun NativeCpsCatalogScreen(nav: NavHostController, state: NativeUiState) {
+              NativeCpsCatalogScreenV2(nav, state)
+          }'''
+          new = '''@Composable
+          fun NativeCpsCatalogScreen(nav: NavHostController, state: NativeUiState) {
+              var query by rememberSaveable { mutableStateOf("") }
+              val filtered = state.cpsCourses.filter { entry ->
+                  query.isBlank() || entry.course.title.contains(query, ignoreCase = true) || entry.course.description.contains(query, ignoreCase = true)
+              }
+              Column(Modifier.fillMaxSize()) {
+                  OutlinedTextField(
+                      value = query,
+                      onValueChange = { query = it },
+                      modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                      singleLine = true,
+                      label = { Text("Search courses") },
+                  )
+                  if (query.isBlank()) {
+                      androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().weight(1f)) { NativeCpsCatalogScreenV2(nav, state) }
+                  } else {
+                      LazyColumn(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                          if (filtered.isEmpty()) item { Text("No CPS course matched your search.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                          items(filtered, key = { it.course.id }) { entry ->
+                              Card(
+                                  modifier = Modifier.fillMaxWidth().clickable { nav.navigate("course/${entry.course.id}") },
+                                  shape = RoundedCornerShape(17.dp),
+                                  border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                  colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                              ) {
+                                  Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                                      Column(Modifier.weight(1f)) {
+                                          Text(entry.course.title, fontWeight = FontWeight.ExtraBold)
+                                          if (entry.course.description.isNotBlank()) Text(entry.course.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                          Text(if (entry.hasAccess) "Access active" else "Preview", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                      }
+                                      Icon(Icons.Default.ArrowForward, null)
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }'''
+          if old in s: s = s.replace(old, new, 1)
+          elif 'label = { Text("Search courses") }' not in s: raise SystemExit('CPS catalog wrapper marker not found')
+          p.write_text(s)
+
+      - name: Add Platforms route
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt')
+          s = p.read_text()
+          marker = '        composable("home") { V2Home(nav, viewModel, state) }\n'
+          if 'composable("platforms")' not in s:
+              if marker not in s: raise SystemExit('Home route marker not found')
+              s = s.replace(marker, marker + '        composable("platforms") { NativePlatformsScreen(nav, state) }\n', 1)
+          if 'this == "platforms"' not in s:
+              s = s.replace('this == "cps" ||', 'this == "platforms" || this == "cps" ||', 1)
+          p.write_text(s)
+
+      - name: Bump Android version
+        shell: python
+        working-directory: native
+        run: |
+          from pathlib import Path
+          p = Path('app/build.gradle.kts')
+          s = p.read_text()
+          s = s.replace('versionCode = 2104000', 'versionCode = 2104100', 1)
+          s = s.replace('versionName = "2.10.40"', 'versionName = "2.10.41"', 1)
+          if 'versionCode = 2104100' not in s or 'versionName = "2.10.41"' not in s:
+              raise SystemExit('Version bump failed')
+          p.write_text(s)
+
+      - name: Verify requested Android behavior
+        shell: bash
+        working-directory: native
+        run: |
+          grep -q 'nav.navigate("platforms")' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'fun NativePlatformsScreen' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'composable("platforms")' app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeLearningHub.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeUdvashScreens.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt
+          grep -q 'Search courses' app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt
+          grep -q 'getIdToken(forceRefresh)' app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Compile Kotlin
+        working-directory: native
+        run: gradle :app:compileDebugKotlin --stacktrace
+
+      - name: Commit Android fixes
+        working-directory: native
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/easyeducation/app/NativeLearningHub.kt app/src/main/java/com/easyeducation/app/NativeAppUiV2.kt app/src/main/java/com/easyeducation/app/NativeUdvashRepository.kt app/src/main/java/com/easyeducation/app/NativeCpsRepository.kt app/src/main/java/com/easyeducation/app/NativeCpsCatalogUi.kt app/src/main/java/com/easyeducation/app/NativeExternalCoursesRepository.kt app/src/main/java/com/easyeducation/app/NativeEdgeCourseRepository.kt app/src/main/java/com/easyeducation/app/NativeUdvashScreens.kt app/src/main/java/com/easyeducation/app/NativeExternalCoursesScreens.kt app/src/main/java/com/easyeducation/app/NativeCpsHub.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "Release Android 2.10.41 live auth and platform fixes"
+            git push origin HEAD:android
+          fi
+
+      - name: Restore signing keystore
+        working-directory: native
+        env:
+          EE_KEYSTORE_BASE64: ${{ secrets.EE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$EE_KEYSTORE_BASE64"
+          printf '%s' "$EE_KEYSTORE_BASE64" | base64 --decode > "$EE_KEYSTORE_PATH"
+          test -s "$EE_KEYSTORE_PATH"
+
+      - name: Build signed release APK
+        working-directory: native
+        run: gradle :app:assembleRelease
+
+      - name: Verify APK signature
+        working-directory: native
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish GitHub release
+        working-directory: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-$VERSION"
+          ASSET="Easy-Education-$VERSION.apk"
+          APK="$RUNNER_TEMP/$ASSET"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "$TAG" "$APK" --target android --title "Easy Education $VERSION" --notes "Fixes Udvash/CPS live running and upcoming discovery, refreshes expired Easy Education sessions once automatically, makes Platforms a single home card opening a dedicated platform screen, and adds course search to each platform catalog."
+          echo "APK_SHA256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Checkout main for updater
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: web
+          fetch-depth: 0
+
+      - name: Publish updater metadata
+        working-directory: web
+        run: |
+          cat > public/app-update.json <<EOF
+          {
+            "versionCode": $VERSION_CODE,
+            "versionName": "$VERSION",
+            "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-$VERSION/Easy-Education-$VERSION.apk",
+            "sha256": "$APK_SHA256",
+            "force": false,
+            "notes": "Live class counts, automatic session refresh, dedicated Platforms screen and per-platform search."
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app-update.json
+          git commit -m "Publish Android $VERSION live auth fixes metadata"
+          git push origin HEAD:main
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easy-education-2.10.41-release-apk
+          path: native/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
