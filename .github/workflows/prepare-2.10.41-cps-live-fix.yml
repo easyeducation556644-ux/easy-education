@@ -1,0 +1,104 @@
+name: Prepare 2.10.41 CPS live fix
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/prepare-2.10.41-cps-live-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch CPS live discovery robustly
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('server/cps-readonly-v2.js')
+          s = p.read_text()
+
+          helper = re.compile(r'function isTodayOrRunning\(live, now = new Date\(\)\) \{.*?\n\}', re.S)
+          replacement = '''function liveStatus(live) {
+            return firstText(live?.status, live?.liveStatus).toLowerCase()
+          }
+
+          function isRunningLive(live) {
+            return ["live", "running", "ongoing", "started", "live now"].includes(liveStatus(live))
+          }
+
+          function liveStartMs(live) {
+            const value = firstText(live?.startTime, live?.startAt, live?.scheduledAt, live?.dateTime, live?.date)
+            const parsed = Date.parse(value)
+            return Number.isFinite(parsed) ? parsed : 0
+          }
+
+          function isUpcomingLive(live, nowMs = Date.now()) {
+            if (isRunningLive(live)) return false
+            const status = liveStatus(live)
+            if (["ended", "finished", "completed", "cancelled", "canceled", "archive", "archived", "recorded"].includes(status)) return false
+            const startMs = liveStartMs(live)
+            if (startMs) return startMs >= nowMs - 5 * 60_000
+            return ["upcoming", "scheduled", "pending", "waiting"].includes(status)
+          }'''
+          if 'function isUpcomingLive(' not in s:
+              s, count = helper.subn(replacement, s, count=1)
+              if count != 1: raise SystemExit('Could not patch CPS live helper')
+
+          block = re.compile(r'  const liveHighlights = allLive\n.*?  res\.status\(200\)\.json\(\{ courses, liveHighlights, serverTimeMs: Date\.now\(\), sourceMode: "firestore-runQuery" \}\)', re.S)
+          replacement = '''  const eligibleLive = allLive
+            .filter((live) => {
+              const rawCourseId = liveCourseId(live)
+              return rawCourseId && sourceById.has(rawCourseId) && Boolean(accessFor(rawCourseId)) && (isRunningLive(live) || isUpcomingLive(live))
+            })
+            .sort((a, b) => {
+              const aRunning = isRunningLive(a) ? 0 : 1
+              const bRunning = isRunningLive(b) ? 0 : 1
+              if (aRunning !== bRunning) return aRunning - bRunning
+              return (liveStartMs(a) || Number.MAX_SAFE_INTEGER) - (liveStartMs(b) || Number.MAX_SAFE_INTEGER)
+            })
+
+          const liveHighlights = eligibleLive.slice(0, 100).map((live) => {
+            const rawCourseId = liveCourseId(live)
+            const course = sourceById.get(rawCourseId)
+            return mapLive(live, { access: accessFor(rawCourseId), courseTitle: firstText(course?.title, course?.name) })
+          })
+          const liveCounts = {
+            running: eligibleLive.filter(isRunningLive).length,
+            upcoming: eligibleLive.filter(isUpcomingLive).length,
+          }
+
+          res.status(200).json({ courses, liveHighlights, liveCounts, serverTimeMs: Date.now(), sourceMode: "firestore-runQuery" })'''
+          if 'const liveCounts = {' not in s:
+              s, count = block.subn(replacement, s, count=1)
+              if count != 1: raise SystemExit('Could not patch CPS browse live block')
+
+          p.write_text(s)
+
+      - name: Verify and push CPS patch
+        run: |
+          node --check server/cps-readonly-v2.js
+          grep -q 'function isUpcomingLive' server/cps-readonly-v2.js
+          grep -q 'const liveCounts' server/cps-readonly-v2.js
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/cps-readonly-v2.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Include future CPS live classes"
+            git push origin HEAD:main
+          fi
+
+      - name: Run 2.10.41 release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run android-2.10.41-live-auth-platform-search.yml --ref main
