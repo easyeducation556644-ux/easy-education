@@ -779,6 +779,7 @@ async function eligibleLiveSources(authenticated) {
     .filter((account) => text(account.status).toLowerCase() !== "inactive")
     .sort((a, b) => Number(b.lastCheckedAtMs || 0) - Number(a.lastCheckedAtMs || 0))
   if (isFullAdminProfile(authenticated.userProfile)) return allAccounts
+
   const entitlementSnapshot = await authenticated.db.collection(ENTITLEMENTS)
     .where("userId", "==", authenticated.decodedToken.uid)
     .get()
@@ -788,13 +789,23 @@ async function eligibleLiveSources(authenticated) {
     .map((data) => String(data.masterCourseId || data.courseId || ""))
     .filter(Boolean)
   if (!courseIds.length) return []
+
+  const allowedAccountIds = new Set()
   const courseSnapshots = await authenticated.db.getAll(
     ...courseIds.map((courseId) => authenticated.db.collection(COURSES).doc(courseId)),
   )
-  const allowedAccountIds = new Set()
   courseSnapshots.forEach((snap) => {
     if (!snap.exists) return
     asArray((snap.data() || {}).sourceAccountIds).forEach((id) => id && allowedAccountIds.add(String(id)))
+  })
+
+  const entitledIds = new Set(courseIds)
+  const structures = await authenticated.db.collection(STRUCTURES).get()
+  structures.docs.forEach((doc) => {
+    const data = doc.data() || {}
+    const masterCourseId = String(data.masterCourseId || data.courseId || "")
+    const accountId = String(data.accountId || "")
+    if (accountId && entitledIds.has(masterCourseId)) allowedAccountIds.add(accountId)
   })
   return allAccounts.filter((account) => allowedAccountIds.has(account.id))
 }
@@ -843,9 +854,15 @@ async function liveClasses(req, res, authenticated) {
       }
     } catch (error) {
       console.warn("[udvash-live]", account.id, error?.message || error)
-      return { joinButtonBeforeMinutes: 10, classes: [] }
+      return { joinButtonBeforeMinutes: 10, classes: [], error: error?.message || "Udvash live request failed" }
     }
   })
+  const successfulResults = results.filter((result) => !result.error)
+  if (!successfulResults.length && results.length) {
+    const error = new Error(results[0]?.error || "Udvash live classes are temporarily unavailable")
+    error.statusCode = 502
+    throw error
+  }
   const dedupe = new Map()
   results.flatMap((result) => result.classes).forEach((row) => {
     const key = `${row.sourceAccountId}:${row.routineId || row.lectureId}`
