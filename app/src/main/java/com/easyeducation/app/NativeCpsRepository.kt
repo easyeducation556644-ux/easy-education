@@ -271,39 +271,48 @@ class NativeCpsRepository(context: Context) {
     }
 
     private suspend fun get(action: String, params: Map<String, String> = emptyMap()): JSONObject {
-        val user = auth.currentUser ?: error("Sign in to open CPS courses")
-        val easyEducationToken = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() } ?: error("Could not verify your Easy Education session")
-        val cpsToken = runCatching { CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = action == "exam") }.getOrNull()
-        val query = buildList {
-            add("action=${encode(action)}")
-            params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
-        }.joinToString("&")
-        val request = Request.Builder()
-            .url("$CPS_API_ORIGIN/api/cps?$query")
+    val user = auth.currentUser ?: error("Sign in to open CPS courses")
+    val query = buildList {
+        add("action=${encode(action)}")
+        params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
+    }.joinToString("&")
+
+    suspend fun execute(forceRefresh: Boolean): Pair<Int, String> {
+        val easyEducationToken = user.getIdToken(forceRefresh).await().token?.takeIf { it.isNotBlank() }
+            ?: error("Could not verify your Easy Education session")
+        val cpsToken = runCatching {
+            CpsFirebaseSession.sourceIdToken(appContext, forceRefresh = forceRefresh || action == "exam")
+        }.getOrNull()
+        val request = Request.Builder().url("$CPS_API_ORIGIN/api/cps?$query")
             .header("Authorization", "Bearer $easyEducationToken")
             .header("Accept", "application/json")
             .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
             .apply { if (!cpsToken.isNullOrBlank()) header("X-CPS-Firebase-Token", cpsToken) }
-            .get()
-            .build()
+            .get().build()
         return withContext(Dispatchers.IO) {
-            http.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
-                        ?: when (response.code) {
-                            401 -> "Your session expired. Sign in again and retry."
-                            403 -> "This CPS item is locked or needs CPS verification."
-                            else -> "CPS is temporarily unavailable. Please retry."
-                        }
-                    error(message)
-                }
-                JSONObject(body)
-            }
+            http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
         }
     }
 
-    private fun rawCourseId(courseId: String): String = courseId.removePrefix(CPS_PREFIX).trim()
+    var (code, body) = execute(false)
+    if (code == 401) {
+        val retried = execute(true)
+        code = retried.first
+        body = retried.second
+    }
+    if (code !in 200..299) {
+        val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: when (code) {
+                401 -> "Your session could not be refreshed. Please sign in again."
+                403 -> "This CPS item is locked or needs CPS verification."
+                else -> "CPS is temporarily unavailable. Please retry."
+            }
+        error(message)
+    }
+    return JSONObject(body)
+}
+
+private fun rawCourseId(courseId: String): String = courseId.removePrefix(CPS_PREFIX).trim()
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private fun examSummary(item: JSONObject) = NativeCpsExamSummary(

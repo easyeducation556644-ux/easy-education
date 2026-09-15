@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,6 +105,7 @@ fun NativeUdvashCatalogScreen(nav: NavHostController) {
     val repository = remember { NativeUdvashRepository(context) }
     var reload by remember { mutableIntStateOf(0) }
     var state by remember { mutableStateOf(UdvashLoadState<List<NativeUdvashCourse>>()) }
+    var query by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(reload) {
         val cached = withContext(Dispatchers.IO) { repository.cachedCatalog() }
@@ -113,13 +116,17 @@ fun NativeUdvashCatalogScreen(nav: NavHostController) {
     }
 
     UdvashPageScaffold(nav, "Udvash") {
+        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }
         when {
             state.data == null && state.refreshing -> item { UdvashLoading() }
             state.data == null && state.error.isNotBlank() -> item { UdvashError(state.error) { reload += 1 } }
             state.data.orEmpty().isEmpty() -> item {
                 UdvashEmpty("No Udvash course access", "Your Easy Education account does not have an active Udvash entitlement yet.")
             }
-            else -> items(state.data.orEmpty(), key = { it.id }) { course ->
+            else -> {
+                val filtered = state.data.orEmpty().filter { query.isBlank() || it.title.contains(query, ignoreCase = true) }
+                if (filtered.isEmpty()) item { UdvashEmpty("No matching course", "Try another search term.") }
+                else items(filtered, key = { it.id }) { course ->
                 Card(
                     Modifier.fillMaxWidth().clickable { nav.navigate("udvash/${Uri.encode(course.id)}") },
                     shape = RoundedCornerShape(20.dp),
@@ -140,6 +147,7 @@ fun NativeUdvashCatalogScreen(nav: NavHostController) {
                 }
             }
         }
+            }
         UdvashRefreshFooter(state.refreshing, state.data != null, state.error) { reload += 1 }
     }
 }

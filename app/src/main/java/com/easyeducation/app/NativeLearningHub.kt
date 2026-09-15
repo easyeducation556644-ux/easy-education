@@ -34,6 +34,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,6 +45,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +87,30 @@ private fun manualEasyEducationCourses(state: NativeUiState): List<NativeCourse>
 @Composable
 fun NativePlatformsHomeCard(nav: NavHostController, state: NativeUiState) {
     val manualCount = manualEasyEducationCourses(state).size
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { nav.navigate("platforms") },
+        shape = HubCardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                Icon(Icons.Default.School, null, Modifier.padding(11.dp).size(25.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("Platforms", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                Text("7 learning platforms • $manualCount Easy Education courses", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Tap to choose a platform", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Icon(Icons.Default.ArrowForward, "Open platforms")
+        }
+    }
+}
+
+@Composable
+fun NativePlatformsScreen(nav: NavHostController, state: NativeUiState) {
+    val manualCount = manualEasyEducationCourses(state).size
     val platforms = listOf(
         HubPlatform("Easy Education manual uploaded courses", "$manualCount available in My Courses", "manual-courses"),
         HubPlatform("CPS", "Courses, live classes, exams and resources", "cps"),
@@ -94,51 +120,46 @@ fun NativePlatformsHomeCard(nav: NavHostController, state: NativeUiState) {
         HubPlatform("Medilogy", "Live course catalog", "provider/medilogy"),
         HubPlatform("Bondi Pathshala", "Subjects, chapters and classes", "provider/bondipathshala"),
     )
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = HubCardShape,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                    Icon(Icons.Default.School, null, Modifier.padding(10.dp).size(24.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Platforms", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-                    Text("Everything is grouped here — no more separate home cards", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            platforms.forEachIndexed { index, platform ->
-                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f))
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { nav.navigate(platform.route) }.padding(vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { HubHeader(nav, "Platforms", "Choose where you want to learn") }
+        items(platforms, key = { it.route }) { platform ->
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { nav.navigate(platform.route) },
+                shape = HubRowShape,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                        Icon(Icons.Default.School, null, Modifier.padding(9.dp).size(22.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(platform.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(platform.title, fontWeight = FontWeight.ExtraBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(platform.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Icon(Icons.Default.ArrowForward, "Open ${platform.title}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Default.ArrowForward, null)
                 }
             }
         }
+        item { Spacer(Modifier.height(18.dp)) }
     }
 }
 
 @Composable
 fun NativeManualCoursesScreen(nav: NavHostController, state: NativeUiState) {
     val courses = manualEasyEducationCourses(state)
+    var query by rememberSaveable { mutableStateOf("") }
+    val filtered = courses.filter { course ->
+        query.isBlank() || course.title.contains(query, ignoreCase = true) || course.description.contains(query, ignoreCase = true)
+    }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { HubHeader(nav, "Easy Education", "Manual uploaded courses") }
-        if (courses.isEmpty()) {
+        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }
+        if (filtered.isEmpty()) {
             item { HubMessage("No Easy Education manual course is available for this account yet.") }
         } else {
-            items(courses, key = { it.id }) { course ->
+            items(filtered, key = { it.id }) { course ->
                 Card(
                     modifier = Modifier.fillMaxWidth().clickable { nav.navigate("course/${course.id}") },
                     shape = HubRowShape,
@@ -170,19 +191,25 @@ private fun String.isRunningStatus(): Boolean = lowercase() in setOf("live", "ru
 @Composable
 fun NativeLiveClassesHomeCard(nav: NavHostController, state: NativeUiState) {
     val context = LocalContext.current
-    val repository = remember { NativeUdvashRepository(context) }
+    val udvashRepository = remember { NativeUdvashRepository(context) }
+    val cpsRepository = remember { NativeCpsRepository(context) }
     var liveState by remember { mutableStateOf(UdvashLiveUiState()) }
+    var cpsCatalog by remember { mutableStateOf(cpsRepository.cachedCatalog()) }
 
-    LaunchedEffect(Unit) {
-        val cached = withContext(Dispatchers.IO) { repository.cachedLiveClasses() }
-        liveState = UdvashLiveUiState(data = cached, refreshing = true)
-        runCatching { withContext(Dispatchers.IO) { repository.liveClasses() } }
-            .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
-            .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+    LaunchedEffect(state.online) {
+        liveState = UdvashLiveUiState(data = withContext(Dispatchers.IO) { udvashRepository.cachedLiveClasses() }, refreshing = state.online)
+        cpsCatalog = withContext(Dispatchers.IO) { cpsRepository.cachedCatalog() }
+        if (state.online) {
+            runCatching { withContext(Dispatchers.IO) { udvashRepository.liveClasses() } }
+                .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
+                .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+            runCatching { withContext(Dispatchers.IO) { cpsRepository.browse() } }.onSuccess { cpsCatalog = it }
+        }
     }
 
-    val running = cpsRunningCount(state) + (liveState.data?.totalLiveClass ?: 0)
-    val upcoming = cpsUpcomingCount(state) + (liveState.data?.totalUpcomingClass ?: 0)
+    val cpsLive = cpsCatalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }
+    val running = cpsLive.count { it.status.isRunningStatus() } + (liveState.data?.totalLiveClass ?: 0)
+    val upcoming = cpsLive.count { !it.status.isRunningStatus() } + (liveState.data?.totalUpcomingClass ?: 0)
     Card(
         modifier = Modifier.fillMaxWidth().clickable { nav.navigate("live-classes") },
         shape = HubCardShape,
@@ -226,52 +253,43 @@ private fun HubCountPill(label: String, active: Boolean) {
 @Composable
 fun NativeLivePlatformsScreen(nav: NavHostController, state: NativeUiState) {
     val context = LocalContext.current
-    val repository = remember { NativeUdvashRepository(context) }
+    val udvashRepository = remember { NativeUdvashRepository(context) }
+    val cpsRepository = remember { NativeCpsRepository(context) }
     var reload by remember { mutableIntStateOf(0) }
     var liveState by remember { mutableStateOf(UdvashLiveUiState()) }
+    var cpsCatalog by remember { mutableStateOf(cpsRepository.cachedCatalog()) }
+    var cpsRefreshing by remember { mutableStateOf(false) }
 
-    LaunchedEffect(reload) {
-        val cached = withContext(Dispatchers.IO) { repository.cachedLiveClasses() }
-        liveState = UdvashLiveUiState(data = cached, refreshing = true)
-        runCatching { withContext(Dispatchers.IO) { repository.liveClasses() } }
-            .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
-            .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+    LaunchedEffect(reload, state.online) {
+        liveState = UdvashLiveUiState(data = withContext(Dispatchers.IO) { udvashRepository.cachedLiveClasses() }, refreshing = state.online)
+        cpsCatalog = withContext(Dispatchers.IO) { cpsRepository.cachedCatalog() }
+        if (state.online) {
+            cpsRefreshing = true
+            runCatching { withContext(Dispatchers.IO) { udvashRepository.liveClasses() } }
+                .onSuccess { liveState = UdvashLiveUiState(data = it, refreshing = false) }
+                .onFailure { error -> liveState = liveState.copy(refreshing = false, error = error.message.orEmpty()) }
+            runCatching { withContext(Dispatchers.IO) { cpsRepository.browse() } }.onSuccess { cpsCatalog = it }
+            cpsRefreshing = false
+        }
     }
 
+    val cpsLive = cpsCatalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { HubHeader(nav, "Live classes", "Choose a platform") }
         item {
-            LivePlatformCard(
-                title = "Udvash",
-                running = liveState.data?.totalLiveClass ?: 0,
-                upcoming = liveState.data?.totalUpcomingClass ?: 0,
-                refreshing = liveState.refreshing,
-                onClick = { nav.navigate("live-classes/udvash") },
-            )
-        }
-        item {
-            LivePlatformCard(
-                title = "CPS",
-                running = cpsRunningCount(state),
-                upcoming = cpsUpcomingCount(state),
-                refreshing = false,
-                onClick = { nav.navigate("live-classes/cps") },
-            )
-        }
-        if (liveState.error.isNotBlank()) item {
-            TextButton(onClick = { reload += 1 }) {
-                Icon(Icons.Default.Refresh, null, Modifier.size(17.dp))
-                Spacer(Modifier.width(7.dp))
-                Text("Refresh Udvash live data")
+            LivePlatformCard("Udvash", liveState.data?.totalLiveClass ?: 0, liveState.data?.totalUpcomingClass ?: 0, liveState.refreshing) {
+                nav.navigate("live-classes/udvash")
             }
         }
         item {
-            Text(
-                "Easy Education manual courses are intentionally not listed here because Easy Education does not host live classes.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            LivePlatformCard("CPS", cpsLive.count { it.status.isRunningStatus() }, cpsLive.count { !it.status.isRunningStatus() }, cpsRefreshing) {
+                nav.navigate("live-classes/cps")
+            }
         }
+        if (liveState.error.isNotBlank()) item {
+            TextButton(onClick = { reload += 1 }) { Icon(Icons.Default.Refresh, null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Retry live data") }
+        }
+        item { Text("Easy Education manual courses are not listed here because Easy Education does not host live classes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { Spacer(Modifier.height(18.dp)) }
     }
 }
@@ -305,15 +323,30 @@ private fun LivePlatformCard(title: String, running: Int, upcoming: Int, refresh
 @Composable
 fun NativeCpsGlobalLiveScreen(nav: NavHostController, state: NativeUiState) {
     val context = LocalContext.current
-    val classes = state.cpsLiveHighlights.sortedBy { it.startTime }
+    val repository = remember { NativeCpsRepository(context) }
+    var catalog by remember { mutableStateOf(repository.cachedCatalog()) }
+    var refreshing by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    LaunchedEffect(state.online) {
+        catalog = withContext(Dispatchers.IO) { repository.cachedCatalog() }
+        if (state.online) {
+            refreshing = true
+            runCatching { withContext(Dispatchers.IO) { repository.browse() } }
+                .onSuccess { catalog = it; error = "" }
+                .onFailure { error = it.message.orEmpty() }
+            refreshing = false
+        }
+    }
+    val classes = catalog.liveHighlights.ifEmpty { state.cpsLiveHighlights }.sortedWith(compareByDescending<NativeCpsLiveClass> { it.status.isRunningStatus() }.thenBy { it.startTime })
+    val running = classes.count { it.status.isRunningStatus() }
+    val upcoming = classes.count { !it.status.isRunningStatus() }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
-        item { HubHeader(nav, "CPS live classes", "${cpsRunningCount(state)} running • ${cpsUpcomingCount(state)} upcoming") }
-        if (classes.isEmpty()) item { HubMessage("No CPS live or upcoming class is available right now.") }
+        item { HubHeader(nav, "CPS live classes", "$running running • $upcoming upcoming") }
+        if (refreshing) item { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
+        if (classes.isEmpty()) item { HubMessage(if (error.isNotBlank()) error else "No CPS live or upcoming class is available right now.") }
         else items(classes, key = { it.id }) { live ->
             Card(
-                modifier = Modifier.fillMaxWidth().clickable(enabled = live.url.isNotBlank() && live.hasAccess) {
-                    NativeCpsLivePlayerActivity.openLive(context, live.title, live.url, live.id)
-                },
+                modifier = Modifier.fillMaxWidth().clickable(enabled = live.url.isNotBlank() && live.hasAccess) { NativeCpsLivePlayerActivity.openLive(context, live.title, live.url, live.id) },
                 shape = HubRowShape,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -321,8 +354,7 @@ fun NativeCpsGlobalLiveScreen(nav: NavHostController, state: NativeUiState) {
                 Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         HubCountPill(if (live.status.isRunningStatus()) "RUNNING" else "UPCOMING", live.status.isRunningStatus())
-                        Spacer(Modifier.width(8.dp))
-                        Text(live.platform.ifBlank { "CPS" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(8.dp)); Text(live.platform.ifBlank { "CPS" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Text(live.title, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleMedium)
                     if (live.courseTitle.isNotBlank()) Text(live.courseTitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

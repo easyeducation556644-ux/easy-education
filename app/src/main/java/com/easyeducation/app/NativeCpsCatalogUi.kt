@@ -159,35 +159,38 @@ private class NativeCpsCatalogClient(context: Context) {
     }
 
     private suspend fun request(action: String, params: Map<String, String> = emptyMap()): JSONObject {
-        val user = auth.currentUser ?: error("Sign in to browse CPS")
-        val token = user.getIdToken(false).await().token?.takeIf { it.isNotBlank() }
+    val user = auth.currentUser ?: error("Sign in to browse CPS")
+    val query = buildList {
+        add("action=${encode(action)}")
+        params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
+    }.joinToString("&")
+    suspend fun execute(forceRefresh: Boolean): Pair<Int, String> {
+        val token = user.getIdToken(forceRefresh).await().token?.takeIf { it.isNotBlank() }
             ?: error("Could not verify your account")
-        val query = buildList {
-            add("action=${encode(action)}")
-            params.forEach { (key, value) -> add("${encode(key)}=${encode(value)}") }
-        }.joinToString("&")
-        val request = Request.Builder()
-            .url("$CPS_CATALOG_ORIGIN/api/cps?$query")
+        val request = Request.Builder().url("$CPS_CATALOG_ORIGIN/api/cps?$query")
             .header("Authorization", "Bearer $token")
             .header("Accept", "application/json")
             .header("User-Agent", "EasyEducationAndroid/${BuildConfig.VERSION_NAME}")
-            .get()
-            .build()
+            .get().build()
         return withContext(Dispatchers.IO) {
-            http.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    val message = runCatching { JSONObject(body).optString("error") }.getOrNull()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "CPS request failed (${response.code})"
-                    error(message)
-                }
-                JSONObject(body)
-            }
+            http.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
         }
     }
+    var (code, body) = execute(false)
+    if (code == 401) {
+        val retried = execute(true)
+        code = retried.first
+        body = retried.second
+    }
+    if (code !in 200..299) {
+        val message = runCatching { JSONObject(body).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: "CPS request failed ($code)"
+        error(message)
+    }
+    return JSONObject(body)
+}
 
-    private fun parseCatalog(payload: JSONObject): CpsCatalogSnapshot {
+private fun parseCatalog(payload: JSONObject): CpsCatalogSnapshot {
         val courses = payload.optJSONArray("courses").objects().map(::parseCourse)
         val live = payload.optJSONObject("featuredLive")?.let(::parseFeaturedLive)
         return CpsCatalogSnapshot(courses, live)

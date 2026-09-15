@@ -250,7 +250,7 @@ private fun NavHostController.navigateHome(currentRoute: String) {
     if (popBackStack("home", inclusive = false)) return
     navigate("home") { popUpTo(graph.startDestinationId) { inclusive = true; saveState = false }; launchSingleTop = true; restoreState = false }
 }
-private fun String.inCourseRoutes(): Boolean = this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("provider/") || startsWith("provider-class/") || startsWith("manual-courses") || startsWith("live-classes") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
+private fun String.inCourseRoutes(): Boolean = this == "platforms" || this == "cps" || this == "edgecourse" || startsWith("edgecourse/") || this == "udvash" || startsWith("udvash/") || startsWith("udvash-class/") || startsWith("provider/") || startsWith("provider-class/") || startsWith("manual-courses") || startsWith("live-classes") || startsWith("course/") || startsWith("subject/") || startsWith("chapter/") || startsWith("class/") || startsWith("archive/") || startsWith("archive-chapter/") || startsWith("past-classes") || startsWith("cps-exam/")
 private fun nativeStartRoute(initialPath: String?): String {
     val path = initialPath?.trim().orEmpty(); if (path.isBlank()) return "home"
     val segments = runCatching { Uri.parse(path).pathSegments }.getOrDefault(emptyList())
@@ -278,6 +278,7 @@ private fun V2LoginScreen(online: Boolean, busy: Boolean, onGoogleSignIn: () -> 
 private fun V2NavHost(nav: NavHostController, viewModel: NativeAppViewModel, state: NativeUiState, startRoute: String, themeMode: String, onThemeMode: (String) -> Unit, activeDevices: List<NativeActiveDevice>) {
     NavHost(navController = nav, startDestination = startRoute, modifier = Modifier.fillMaxSize(), enterTransition = { if (targetState.destination.route == CLASS_ROUTE) EnterTransition.None else fadeIn(tween(APP_MOTION_STANDARD_MS)) + slideInHorizontally(tween(APP_MOTION_EMPHASIZED_MS)) { it / 16 } }, exitTransition = { if (targetState.destination.route == CLASS_ROUTE) ExitTransition.None else fadeOut(tween(APP_MOTION_QUICK_MS)) + slideOutHorizontally(tween(APP_MOTION_STANDARD_MS)) { -it / 30 } }, popEnterTransition = { if (initialState.destination.route == CLASS_ROUTE) EnterTransition.None else fadeIn(tween(APP_MOTION_STANDARD_MS)) + slideInHorizontally(tween(APP_MOTION_EMPHASIZED_MS)) { -it / 16 } }, popExitTransition = { if (initialState.destination.route == CLASS_ROUTE) ExitTransition.None else fadeOut(tween(APP_MOTION_QUICK_MS)) + slideOutHorizontally(tween(APP_MOTION_STANDARD_MS)) { it / 30 } }) {
         composable("home") { V2Home(nav, viewModel, state) }
+        composable("platforms") { NativePlatformsScreen(nav, state) }
         composable("manual-courses") { NativeManualCoursesScreen(nav, state) }
         composable("live-classes") { NativeLivePlatformsScreen(nav, state) }
         composable("live-classes/udvash") { NativeUdvashLiveClassesScreen(nav) }

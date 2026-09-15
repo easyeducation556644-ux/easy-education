@@ -32,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -102,6 +103,7 @@ fun NativeExternalCatalogScreen(nav: NavHostController, providerId: String) {
     val title = NativeExternalCoursesRepository.providerTitle(providerId)
     var reload by remember { mutableIntStateOf(0) }
     var state by remember(providerId) { mutableStateOf(ExternalLoadState<List<NativeExternalCourse>>()) }
+    var query by rememberSaveable(providerId) { mutableStateOf("") }
 
     LaunchedEffect(providerId, reload) {
         val cached = withContext(Dispatchers.IO) { repository.cachedCatalog(providerId) }
@@ -113,11 +115,15 @@ fun NativeExternalCatalogScreen(nav: NavHostController, providerId: String) {
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { ExternalHeader(nav = nav, title = title, subtitle = "Live course catalog") }
+        item { OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Search courses") }) }
         when {
             state.data == null && state.refreshing -> item { ExternalLoading() }
             state.data == null && state.error.isNotBlank() -> item { ExternalError(state.error) { reload += 1 } }
             state.data.orEmpty().isEmpty() -> item { ExternalMessage("No courses are available right now.") }
-            else -> items(state.data.orEmpty(), key = { it.id }) { course ->
+            else -> {
+                val filtered = state.data.orEmpty().filter { course -> query.isBlank() || course.title.contains(query, ignoreCase = true) || course.description.contains(query, ignoreCase = true) || course.batch.contains(query, ignoreCase = true) }
+                if (filtered.isEmpty()) item { ExternalMessage("No course matched your search.") }
+                else items(filtered, key = { it.id }) { course ->
                 Card(
                     modifier = Modifier.fillMaxWidth().clickable {
                         nav.navigate("provider/${providerId}/${Uri.encode(course.id)}")
@@ -146,6 +152,7 @@ fun NativeExternalCatalogScreen(nav: NavHostController, providerId: String) {
                 }
             }
         }
+            }
         ExternalRefreshFooter(state.refreshing, state.data != null, state.error) { reload += 1 }
         item { Spacer(Modifier.height(18.dp)) }
     }
