@@ -1,8 +1,8 @@
 {
-  "versionCode": 2104000,
-  "versionName": "2.10.40",
-  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.40/Easy-Education-2.10.40.apk",
-  "sha256": "cfbb273671d63e59b9fc6c3a8a3898ca0d64c9d4685ee1eb3c29810de93b2a42",
+  "versionCode": 2104100,
+  "versionName": "2.10.41",
+  "apkUrl": "https://github.com/easyeducation556644-ux/easy-education/releases/download/android-2.10.41/Easy-Education-2.10.41.apk",
+  "sha256": "e4c5aeb79010f550684510d9cb518ab78f6b81072a46507513002aba38161028",
   "force": false,
-  "notes": "Platforms hub, live-class dashboard, Udvash live join flow and Bondi Pathshala structured courses."
+  "notes": "Live class counts, automatic session refresh, dedicated Platforms screen and per-platform search."
 }
