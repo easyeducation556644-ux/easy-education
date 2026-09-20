@@ -165,6 +165,8 @@ export default async function unpiratorPlaybackHandler(req, res) {
       return sendError(res, 503, "Protected playback is not configured", "UNPIRATOR_NOT_CONFIGURED")
     }
 
+    if (!viewer.email) return sendError(res, 401, "Authenticated viewer email is required", "VIEWER_EMAIL_REQUIRED")
+
     const title = String(body.title || "").trim().slice(0, 240)
     const deviceId = String(body.deviceId || "").trim().slice(0, 160)
     if (!deviceId) return sendError(res, 400, "Device ID is required", "DEVICE_ID_REQUIRED")
@@ -188,9 +190,10 @@ export default async function unpiratorPlaybackHandler(req, res) {
             url: sourceUrl,
             ...(title ? { title } : {}),
           },
-          externalUserId: viewer.uid,
-          displayLabel: viewer.email || viewer.uid,
+          email: String(viewer.email || "").trim().toLowerCase(),
           deviceId,
+          viewerIp: String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim().slice(0, 64),
+          viewerUserAgent: String(req.headers?.["user-agent"] || "").slice(0, 512),
           client: normalizeClient(body.client),
         }),
       })
