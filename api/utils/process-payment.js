@@ -160,11 +160,14 @@ export async function processPaymentAndEnrollUser(paymentData) {
       status: 'approved',
       submittedAt: FieldValue.serverTimestamp(),
       approvedAt: FieldValue.serverTimestamp(),
-      paymentGateway: 'ZiniPay',
+      paymentGateway: paymentData.paymentGateway || 'ZiniPay',
       currency: currency || 'BDT'
     };
 
-    const paymentDocRef = await db.collection('payments').add(paymentRecord);
+    const isEkmivo = paymentData.paymentGateway === 'Ekmivo';
+    if (isEkmivo) paymentRecord.status = 'processing';
+    const paymentDocRef = isEkmivo ? db.collection('payments').doc('ekmivo_' + transactionId) : db.collection('payments').doc();
+    await paymentDocRef.set(paymentRecord, {merge:true});
     const paymentId = paymentDocRef.id;
 
     const coursesToEnrollMap = new Map();
@@ -245,7 +248,7 @@ export async function processPaymentAndEnrollUser(paymentData) {
               // Fallback: Try to fetch from Firestore if bundle info not provided
               try {
                 const courseDoc = await db.collection('courses').doc(course.id).get();
-                if (courseDoc.exists()) {
+                if (courseDoc.exists) {
                   const courseData = courseDoc.data();
                   
                   if (courseData.courseFormat === 'bundle' && courseData.bundledCourses && courseData.bundledCourses.length > 0) {
@@ -356,6 +359,7 @@ export async function processPaymentAndEnrollUser(paymentData) {
         batch.set(userCourseRef, userCourseData, { merge: true });
       }
       
+      if (isEkmivo) batch.update(paymentDocRef, {status: 'approved'});
       await batch.commit();
       const totalEnrolled = coursesToEnrollMap.size;
       console.log(`✅ Successfully enrolled user ${userId} in ${totalEnrolled} course(s) (including bundle courses)`);

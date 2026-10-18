@@ -307,24 +307,32 @@ export default function Checkout() {
         return
       }
 
+      const paymentBody = {
+        fullname: userProfile?.name || currentUser.displayName || "User",
+        email: userProfile?.email || currentUser.email,
+        amount: finalTotal.toFixed(2), metadata
+      }
+      const fingerprint = JSON.stringify(paymentBody)
+      let attempt
+      try { attempt = JSON.parse(sessionStorage.getItem('ekmivo-payment-attempt') || 'null') } catch { /* Start a fresh attempt. */ }
+      if (!attempt || attempt.fingerprint !== fingerprint || attempt.userId !== currentUser.uid) {
+        attempt = {fingerprint, userId: currentUser.uid, key: crypto.randomUUID()}
+        sessionStorage.setItem('ekmivo-payment-attempt', JSON.stringify(attempt))
+      }
       const response = await fetch('/api/create-payment', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await currentUser.getIdToken()}`,
+          'Idempotency-Key': attempt.key,
         },
-        body: JSON.stringify({
-          fullname: userProfile?.name || currentUser.displayName || "User",
-          email: userProfile?.email || currentUser.email,
-          amount: finalTotal.toFixed(2),
-          metadata: metadata
-        })
+        body: JSON.stringify(paymentBody)
       })
 
       const data = await response.json()
 
       if (data.success && data.payment_url) {
-        clearCart()
-        sessionStorage.removeItem("appliedCoupon")
+        sessionStorage.setItem('ekmivo-pending-order', data.order_id)
         window.location.href = data.payment_url
       } else {
         // Handle error - ensure it's always a string
@@ -461,9 +469,9 @@ export default function Checkout() {
                 </h2>
 
                 <div className="mb-6 p-4 bg-primary/10 border border-primary/20 rounded-lg">
-                  <h3 className="font-semibold text-sm lg:text-base mb-2">Secure Payment with RupantorPay</h3>
+                  <h3 className="font-semibold text-sm lg:text-base mb-2">Secure Payment with Ekmivo</h3>
                   <p className="text-xs sm:text-sm text-muted-foreground">
-                    You will be redirected to RupantorPay's secure payment page where you can pay using:
+                    You will be redirected to Ekmivo's secure payment page where you can pay using:
                   </p>
                   <ul className="mt-2 space-y-1 text-xs sm:text-sm text-muted-foreground">
                     <li>• bKash, Nagad, Rocket</li>
@@ -534,7 +542,7 @@ export default function Checkout() {
                   </button>
 
                   <p className="text-xs text-center text-muted-foreground">
-                    By proceeding, you agree to our terms and conditions. Your payment is secured by RupantorPay.
+                    By proceeding, you agree to our terms and conditions. Your payment is secured by Ekmivo.
                   </p>
                 </div>
               </div>
