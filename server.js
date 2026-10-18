@@ -2,18 +2,18 @@ import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import createPaymentHandler from './api/create-payment.js';
-import verifyPaymentHandler from './api/verify-payment.js';
+import createPaymentHandler from './server/api-resources/create-payment.js';
+import verifyPaymentHandler from './server/api-resources/verify-payment.js';
 import paymentWebhookHandler from './api/payment-webhook.js';
-import uploadImageHandler from './api/upload-image.js';
+import uploadImageHandler from './server/api-resources/upload-image.js';
 import processEnrollmentHandler from './api/process-enrollment.js';
 import dynamicManifestHandler from './api/dynamic-manifest.js';
 import versionHandler from './api/version.js';
 import securityEventsHandler from './api/security-events.js';
 import offlineVideoHandler from './api/offline-video.js';
-import firestoreReadUsageHandler from './api/_firestore-read-usage.js';
+import firestoreReadUsageHandler from './server/api-resources/firestore-read-usage.js';
 import syncEventHandler from './api/_sync-event.js';
-import learningPushHandler from './api/_learning-push.js';
+import learningPushHandler from './server/api-resources/learning-push.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,6 +23,8 @@ const PORT = process.env.PORT || 5000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 app.use(cors());
+// Preserve exact signed bytes before the general JSON parser.
+app.post('/api/payment-webhook', express.raw({type:'application/json',limit:'64kb'}), paymentWebhookHandler);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -69,9 +71,7 @@ app.post('/api/verify-payment', (req, res) => {
   verifyPaymentHandler(req, res);
 });
 
-app.post('/api/payment-webhook', (req, res) => {
-  paymentWebhookHandler(req, res);
-});
+
 
 app.post('/api/process-enrollment', (req, res) => {
   processEnrollmentHandler(req, res);

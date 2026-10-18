@@ -3,77 +3,40 @@
 import { useEffect, useState } from "react"
 import { useNavigate, useLocation } from "react-router-dom"
 import { motion } from "framer-motion"
-import { CheckCircle, Home, ArrowRight, BookOpen, Loader2 } from "lucide-react"
+import { CheckCircle, AlertCircle, ArrowRight, BookOpen, Loader2 } from "lucide-react"
+import {useCart} from "../contexts/CartContext"
 import { useAuth } from "../contexts/AuthContext"
 
 export default function CheckoutComplete() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const { currentUser } = useAuth()
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [purchasedCourses, setPurchasedCourses] = useState([])
-  
-  useEffect(() => {
-    if (!currentUser) {
-      console.log("[CheckoutComplete] No user found, redirecting to login")
-      navigate("/login", { replace: true })
-      return
-    }
-    
-    // Get courses from location state (if coming from checkout)
-    if (location.state?.courses) {
-      setPurchasedCourses(location.state.courses)
-    }
-    
-    // Get transaction_id from URL params (if coming from RupantorPay redirect)
-    const urlParams = new URLSearchParams(location.search)
-    const transactionId = urlParams.get('transaction_id') || urlParams.get('transactionId')
-    
-    // If we have a transaction_id but no courses in state, process enrollment
-    if (transactionId && !location.state?.courses) {
-      processEnrollment(transactionId)
-    }
-    
-    console.log("[CheckoutComplete] Loaded with state:", location.state)
-    console.log("[CheckoutComplete] Transaction ID from URL:", transactionId)
-  }, [currentUser, navigate, location])
-  
-  const processEnrollment = async (transactionId) => {
-    setIsProcessing(true)
-    
-    try {
-      console.log("[CheckoutComplete] Processing enrollment for transaction:", transactionId)
-      
-      const response = await fetch('/api/process-enrollment', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          transaction_id: transactionId,
-          userId: currentUser.uid
-        })
-      })
-      
-      const data = await response.json()
-      console.log("[CheckoutComplete] Enrollment response:", data)
-      
-      if (data.success) {
-        if (data.payment?.metadata?.courses) {
-          setPurchasedCourses(data.payment.metadata.courses)
-        }
-        console.log("[CheckoutComplete] Enrollment processed successfully")
-      } else {
-        console.error("[CheckoutComplete] Enrollment failed:", data.error)
-      }
-    } catch (error) {
-      console.error("[CheckoutComplete] Error processing enrollment:", error)
-    } finally {
-      setIsProcessing(false)
-    }
+ const {currentUser}=useAuth(),{clearCart}=useCart(),location=useLocation(),navigate=useNavigate();
+ const [isProcessing,setIsProcessing]=useState(true),[confirmed,setConfirmed]=useState(false),[message,setMessage]=useState(''),[courses,setCourses]=useState([]),[retry,setRetry]=useState(0);
+ const orderId=new URLSearchParams(location.search).get('order_id');
+ const free=location.state?.isFreeEnrollment===true;
+ useEffect(()=>{
+  if(free){setConfirmed(true);setIsProcessing(false);setCourses(location.state?.courses||[]);return;}
+  if(!currentUser){setIsProcessing(false);setMessage('Sign in to confirm this payment, then return to this page.');return;}
+  let cancelled=false;
+  async function confirm(){
+   setIsProcessing(true);setMessage('');
+   try{
+    if(!orderId)throw Error('No order reference was returned. Open Payment history or contact support.');
+    const response=await fetch('/api/process-enrollment',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${await currentUser.getIdToken()}`},body:JSON.stringify({order_id:orderId,userId:currentUser.uid})});
+    const data=await response.json();if(!response.ok||!data.success||!data.verified)throw Error(data.error||'Payment is not confirmed yet.');
+    if(cancelled)return;setCourses(data.payment?.metadata?.courses||[]);setConfirmed(true);setIsProcessing(false);
+    // Only clear the matching cart after server-side verification and enrollment.
+    try { const attempt=JSON.parse(sessionStorage.getItem('ekmivo-payment-attempt')||'null');
+    if(sessionStorage.getItem('ekmivo-pending-order')===orderId&&attempt?.userId===currentUser.uid){
+     const submitted=JSON.parse(attempt.fingerprint).metadata.courses;
+     const current=JSON.parse(localStorage.getItem('cart')||'[]');
+     if(JSON.stringify(current.map(c=>[c.id,c.purchaseOption?.id||null,Number(c.price)]).sort())===JSON.stringify(submitted.map(c=>[c.id,c.purchaseOption?.id||null,Number(c.price)]).sort()))clearCart();
+     sessionStorage.removeItem('ekmivo-payment-attempt');sessionStorage.removeItem('ekmivo-pending-order');sessionStorage.removeItem('appliedCoupon');
+    }} catch { /* Enrollment is confirmed even if browser storage is unavailable. */ }
+   }catch(error){if(!cancelled){setMessage(error.message);setIsProcessing(false);}}
   }
-  
-  
+  void confirm();return()=>{cancelled=true;};
+  // Cart clearing must not start another verification loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[currentUser,orderId,retry,free]);
   if (isProcessing) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-background flex items-center justify-center px-4">
@@ -96,7 +59,7 @@ export default function CheckoutComplete() {
             transition={{ delay: 0.2, type: "spring" }}
             className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-primary/20 to-accent/20 rounded-full flex items-center justify-center mx-auto mb-6 relative"
           >
-            <CheckCircle className="w-8 h-8 sm:w-12 sm:h-12 text-primary" />
+            {confirmed?<CheckCircle className="w-8 h-8 sm:w-12 sm:h-12 text-primary" />:<AlertCircle className="w-8 h-8 sm:w-12 sm:h-12 text-muted-foreground" />}
             <motion.div
               animate={{ rotate: 360 }}
               transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
@@ -110,7 +73,7 @@ export default function CheckoutComplete() {
             transition={{ delay: 0.3 }}
             className="text-2xl sm:text-3xl font-bold mb-2 bg-gradient-to-r from-green-600 to-green-500 bg-clip-text text-transparent"
           >
-            Payment Successful!
+            {confirmed?"Payment Successful!":"Payment not confirmed"}
           </motion.h1>
 
           <motion.p
@@ -119,11 +82,11 @@ export default function CheckoutComplete() {
             transition={{ delay: 0.4 }}
             className="text-muted-foreground mb-6 text-sm sm:text-base"
           >
-            Your course enrollment has been completed successfully. You can now access your course from your dashboard.
+            {confirmed?"Your course enrollment has been completed successfully. You can now access your course from your dashboard.":message}
           </motion.p>
 
           {/* Purchased Courses Section */}
-          {purchasedCourses.length > 0 && (
+          {courses.length > 0 && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -135,7 +98,7 @@ export default function CheckoutComplete() {
                 Courses Purchased
               </h3>
               <div className="space-y-2">
-                {purchasedCourses.map((course, index) => (
+                {courses.map((course, index) => (
                   <div key={index} className="flex items-start gap-2 text-xs sm:text-sm">
                     <span className="text-primary font-bold flex-shrink-0">•</span>
                     <span className="text-muted-foreground line-clamp-2">{course.title || "Course"}</span>
@@ -146,6 +109,7 @@ export default function CheckoutComplete() {
           )}
 
 
+          {!confirmed&&<button className="w-full py-3 bg-primary text-primary-foreground rounded-lg mb-4" onClick={()=>currentUser?setRetry(n=>n+1):navigate('/login')}>{currentUser?'Check again':'Sign in'}</button>}
           {/* Action Buttons */}
           <motion.div
             initial={{ opacity: 0, y: 10 }}

@@ -12,8 +12,7 @@ import {
 } from './utils/firebase-admin.js';
 import { publishEnrollmentSync } from './_sync-event.js';
 
-const RUPANTORPAY_API_KEY = process.env.RUPANTORPAY_API_KEY;
-const VERIFY_API_URL = 'https://payment.rupantorpay.com/api/payment/verify-payment';
+import {confirmForUser,validateFreeOrder} from '../server/payments/ekmivo-orders.js';
 
 async function syncEnrollmentCache(userId, transactionId, result) {
   if (!result?.success) return;
@@ -84,8 +83,11 @@ export default async function handler(req, res) {
 
   if (skipPaymentVerification && finalAmount === 0) {
     try {
+      let freeCart = null;
       if (isManualAdminGrant({ couponCode, paymentMethod })) {
         await authorizeManualAdminGrant(req, requestCourses || []);
+      } else {
+        freeCart = await validateFreeOrder(req);
       }
 
       console.log('Processing free enrollment for userId:', userId);
@@ -98,9 +100,9 @@ export default async function handler(req, res) {
         invoiceId: transaction_id,
         trxId: transaction_id,
         paymentMethod: paymentMethod || 'Free Coupon',
-        courses: requestCourses || [],
-        subtotal: parseFloat(subtotal || 0),
-        discount: parseFloat(discount || 0),
+        courses: freeCart?.courses || requestCourses || [],
+        subtotal: freeCart?.subtotal ?? parseFloat(subtotal || 0),
+        discount: freeCart?.discount ?? parseFloat(discount || 0),
         couponCode: couponCode || '',
         finalAmount: 0,
         currency: 'BDT',
@@ -139,107 +141,9 @@ export default async function handler(req, res) {
     }
   }
 
-  if (!transaction_id) {
-    return res.status(400).json({ success: false, error: 'Missing transaction_id in request body.' });
-  }
-
-  if (!RUPANTORPAY_API_KEY) {
-    console.error('RUPANTORPAY_API_KEY is missing!');
-    return res.status(500).json({ success: false, error: 'Server configuration error' });
-  }
-
   try {
-    console.log('Processing enrollment for transaction_id:', transaction_id, 'userId:', userId);
-    const verifyResponse = await fetch(VERIFY_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-KEY': RUPANTORPAY_API_KEY,
-      },
-      body: JSON.stringify({ transaction_id }),
-    });
-
-    const paymentData = await verifyResponse.json();
-    console.log('RupantorPay verification response:', JSON.stringify(paymentData, null, 2));
-
-    if (paymentData.status !== 'COMPLETED') {
-      return res.status(400).json({
-        success: false,
-        verified: false,
-        error: paymentData.message || 'Payment verification failed or not completed',
-      });
-    }
-
-    let metadata = {};
-    if (paymentData.metadata) {
-      if (typeof paymentData.metadata === 'string') {
-        try {
-          metadata = JSON.parse(paymentData.metadata);
-        } catch (error) {
-          console.error('Failed to parse payment metadata:', error);
-        }
-      } else if (typeof paymentData.metadata === 'object') {
-        metadata = paymentData.metadata;
-      }
-    }
-
-    const courses = metadata.courses || [];
-    const metadataUserId = metadata.userId;
-    const metadataMobileNumber = metadata.mobileNumber || '';
-
-    if (!metadataUserId) {
-      return res.status(400).json({
-        success: false,
-        error: 'No userId found in payment metadata. Please ensure metadata was sent during payment creation.',
-      });
-    }
-
-    if (metadataUserId !== userId) {
-      return res.status(403).json({ success: false, error: 'User ID mismatch - this payment belongs to a different user' });
-    }
-
-    const result = await processPaymentAndEnrollUser({
-      userId: metadataUserId,
-      userName: paymentData.fullname || metadata.fullname || 'N/A',
-      userEmail: paymentData.email || metadata.email,
-      mobileNumber: metadataMobileNumber,
-      transactionId: paymentData.transaction_id,
-      invoiceId: paymentData.transaction_id,
-      trxId: paymentData.trx_id || paymentData.transaction_id,
-      paymentMethod: paymentData.payment_method || 'N/A',
-      courses,
-      subtotal: parseFloat(metadata.subtotal || paymentData.amount),
-      discount: parseFloat(metadata.discount || 0),
-      couponCode: metadata.couponCode || '',
-      finalAmount: parseFloat(paymentData.amount),
-      currency: paymentData.currency || 'BDT',
-    });
-
-    if (result.success) {
-      await syncEnrollmentCache(metadataUserId, paymentData.transaction_id, result);
-      return res.status(200).json({
-        success: true,
-        verified: true,
-        message: result.message,
-        alreadyProcessed: result.alreadyProcessed,
-        coursesEnrolled: courses.length,
-        enrollmentDetails: result.enrollmentDetails,
-        payment: {
-          transaction_id: paymentData.transaction_id,
-          amount: paymentData.amount,
-          metadata,
-        },
-      });
-    }
-
-    console.error('Enrollment failed:', result.error, result.details);
-    return res.status(500).json({
-      success: false,
-      error: result.error || 'Enrollment failed',
-      details: result.details,
-    });
+    return res.status(200).json(await confirmForUser(req));
   } catch (error) {
-    console.error('Error processing enrollment:', error);
-    return res.status(500).json({ success: false, error: 'Failed to process enrollment. Please try again.' });
+    return res.status(error.statusCode || 500).json({success:false,verified:false,error:error.statusCode ? error.message : 'Payment verification is unavailable. Retry.'});
   }
 }
