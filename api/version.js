@@ -1,3 +1,4 @@
+import jahajiHandler from '../server/api-resources/jahaji.js'
 import firestoreReadUsageHandler from '../server/api-resources/firestore-read-usage.js'
 import syncEventHandler from './_sync-event.js'
 import learningPushHandler from '../server/api-resources/learning-push.js'
@@ -23,6 +24,7 @@ const APP_VERSION = 'v9.9'
 export default async function versionHandler(req, res) {
   const resource = String(req.query?.resource || '').trim()
 
+  if (resource === 'jahaji') return jahajiHandler(req, res)
   if (resource === 'channel-router-bot') return channelRouterHandler(req, res)
   if (resource === 'firestore-read-usage') return firestoreReadUsageHandler(req, res)
   if (resource === 'sync-event') return syncEventHandler(req, res)

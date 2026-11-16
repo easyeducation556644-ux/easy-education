@@ -27,6 +27,7 @@ import {
   ShieldAlert,
   Gift,
   Layers3,
+  Monitor,
 } from "lucide-react"
 import { motion, AnimatePresence } from "framer-motion"
 import { collection, query, where, onSnapshot } from "firebase/firestore"
@@ -163,6 +164,7 @@ export default function AdminDashboard() {
       icon: BookOpen,
       fullAdminOnly: true,
     }] : []),
+    ...(fullAdmin ? [{id: "__jahaji", label: "Jahaji", name: "Jahaji", path: "/jahaji", icon: Monitor, fullAdminOnly: true}] : []),
     ...(fullAdmin ? [{ id: "__trials", label: "Trials", name: "Trials", path: "/admin/trials", description: "Create and manage claim-first trials.", icon: Gift, fullAdminOnly: true }] : []),
   ]
 
