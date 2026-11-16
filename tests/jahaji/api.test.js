@@ -162,3 +162,15 @@ test('reconciling an already metered job does not count it twice', async () => {
   const state = (await call(db, 'status', undefined, headers)).body
   assert.deepEqual(state.usage.download, {used: 1, reserved: 0})
 })
+
+test('retrying a reconciled historical job retains its completed allowance', async () => {
+  const {db, headers} = await device()
+  const state = (await call(db, 'status', undefined, headers)).body
+  const operation = 'historical-job-retry'
+  await call(db, 'reconcile', {events: [{operation, feature: 'download', month: state.month}]}, headers)
+  const retry = await call(db, 'reserve', {operation, features: ['download'], site: 'acs'}, headers)
+  assert.equal(retry.statusCode, 200)
+  assert.equal(retry.body.states.download, 'complete')
+  const final = (await call(db, 'status', undefined, headers)).body
+  assert.deepEqual(final.usage.download, {used: 1, reserved: 0})
+})
