@@ -40,6 +40,9 @@ function useRows(action) {
 
 function PlanEditor({initial, close, save}) {
   const [plan, setPlan] = useState(initial)
+  const [limitedValues, setLimitedValues] = useState(() => Object.fromEntries(
+    Object.keys(FEATURES).map(key => [key, initial.limits[key] >= 0 ? initial.limits[key] : 5])
+  ))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   return <form className="rounded-lg border border-border bg-card p-5 space-y-4" onSubmit={async event => {
@@ -48,8 +51,31 @@ function PlanEditor({initial, close, save}) {
   }}>
     <h2 className="font-semibold">{plan.id ? 'Edit plan' : 'Create plan'}</h2>
     <label className="block text-sm">Plan name<input className={input} required maxLength={80} value={plan.name} onChange={e => setPlan({...plan, name: e.target.value})}/></label>
-    <div className="grid gap-3 sm:grid-cols-2">{Object.entries(FEATURES).map(([key, title]) => <label className="text-sm" key={key}>{title}<input className={input} type="number" min={-1} max={1000000} step="1" required value={plan.limits[key]} onChange={e => setPlan({...plan, limits: {...plan.limits, [key]: Number(e.target.value)}})}/></label>)}</div>
-    <p className="text-xs text-muted-foreground">Monthly limits per device. 0 disables a feature. -1 allows unlimited use.</p>
+    <div className="grid gap-3 sm:grid-cols-2">{Object.entries(FEATURES).map(([key, title]) => {
+      const unlimited = plan.limits[key] === -1
+      return <fieldset className="rounded-md border border-border p-3" key={key}>
+        <legend className="px-1 text-sm font-medium">{title}</legend>
+        <label className="mb-3 flex items-center justify-between gap-3 text-sm">
+          Unlimited
+          <input type="checkbox" role="switch" aria-label={title + ' unlimited'} checked={unlimited} onChange={e => {
+            if (e.target.checked) {
+              setLimitedValues(previous => ({...previous, [key]: Number.isInteger(plan.limits[key]) && plan.limits[key] >= 0 ? plan.limits[key] : 5}))
+              setPlan(previous => ({...previous, limits: {...previous.limits, [key]: -1}}))
+            } else {
+              setPlan(previous => ({...previous, limits: {...previous.limits, [key]: limitedValues[key]}}))
+            }
+          }}/>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Monthly limit
+          <input className={input + ' mt-1 disabled:bg-muted disabled:text-muted-foreground'} type="number"
+            aria-label={title + ' monthly limit'} min={0} max={1000000} step="1" required disabled={unlimited}
+            placeholder={unlimited ? 'Unlimited' : ''} value={unlimited ? '' : plan.limits[key]}
+            onChange={e => setPlan(previous => ({...previous, limits: {...previous.limits, [key]: e.target.value === '' ? '' : Number(e.target.value)}}))}/>
+        </label>
+      </fieldset>
+    })}</div>
+    <p className="text-xs text-muted-foreground">Monthly limits per device. Enable Unlimited for unrestricted use. A limit of 0 disables the feature.</p>
     <fieldset className="flex flex-wrap gap-4"><legend className="mb-2 text-sm font-medium">Download sites</legend>{SITES.map(site => <label key={site} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={plan.sites.includes(site)} onChange={e => setPlan({...plan, sites: e.target.checked ? [...plan.sites, site] : plan.sites.filter(value => value !== site)})}/>{site === 'acs' ? 'ACS Admission / Academic / FRB' : site}</label>)}</fieldset>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex gap-2"><button disabled={busy} className={button + ' bg-primary text-primary-foreground'}>Save plan</button><button type="button" className={button} onClick={close}>Cancel</button></div>
