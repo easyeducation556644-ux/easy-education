@@ -23,10 +23,7 @@ async function adminAuth(req, db, authenticate) {
   const session = await authenticate(req)
   const uid = session.decodedToken.uid
   const member = await db.collection('jahajiStaff').doc(uid).get()
-  const registry = await db.collection('adminTokens').doc(uid).get()
-  // Profile roles alone are insufficient until the site's older rules are upgraded.
-  const trustedAdmin = session.decodedToken.admin === true || registry.data()?.role === 'admin'
-  const full = isFullAdminProfile(session.userProfile) && trustedAdmin
+  const full = isFullAdminProfile(session.userProfile)
   const role = full ? 'owner' : member.data()?.role
   if (!['owner', 'manager', 'support', 'viewer'].includes(role)) fail('Jahaji admin access required', 403)
   return {...session, role, uid, full}

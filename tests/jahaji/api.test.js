@@ -130,12 +130,14 @@ test('two devices share an account plan but keep independent usage; banning the 
   assert.equal((await call(db, 'reserve', {...operation, operation: 'banned-device-job'}, secondHeaders)).statusCode, 403)
 })
 
-test('a client-edited admin profile cannot acquire full Jahaji access', async () => {
+test('existing full site admins can enter without a notification token; normal users cannot', async () => {
   const {db} = await device()
-  const authenticate = async () => ({decodedToken: {uid: 'untrusted-admin'}, userProfile: {role: 'admin'}})
-  assert.equal((await call(db, 'admin-access', undefined, {}, authenticate)).statusCode, 403)
-  db.rows.set('adminTokens/untrusted-admin', {role: 'admin'})
-  const response = await call(db, 'admin-access', undefined, {}, authenticate)
+  const admin = async () => ({decodedToken: {uid: 'site-admin'}, userProfile: {role: 'admin'}})
+  const response = await call(db, 'admin-access', undefined, {}, admin)
   assert.equal(response.statusCode, 200)
   assert.equal(response.body.full, true)
+  const limited = async () => ({decodedToken: {uid: 'limited-admin'}, userProfile: {role: 'admin', adminAccess: {mode: 'limited'}}})
+  assert.equal((await call(db, 'admin-access', undefined, {}, limited)).statusCode, 403)
+  const user = async () => ({decodedToken: {uid: 'regular-user'}, userProfile: {role: 'user'}})
+  assert.equal((await call(db, 'admin-access', undefined, {}, user)).statusCode, 403)
 })
