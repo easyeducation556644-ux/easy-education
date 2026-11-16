@@ -24,10 +24,14 @@ service cloud.firestore {
     // ===== Users Collection =====
     match /users/{userId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId
+                    && (!('role' in request.resource.data) || request.resource.data.role == 'user')
+                    && !('adminAccess' in request.resource.data);
       allow update: if isAdmin() ||
                        (isOwner(userId) &&
                         !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                          'role',
+                          'adminAccess',
                           'allowScreenCapture',
                           'screenCaptureAccessUpdatedAt',
                           'screenCaptureAccessUpdatedBy'

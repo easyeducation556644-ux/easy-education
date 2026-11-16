@@ -1,3 +1,5 @@
+import JahajiDashboard from './pages/jahaji/JahajiDashboard'
+import JahajiConnect from './pages/jahaji/JahajiConnect'
 import { useEffect, useMemo, useState } from "react"
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom"
 import {
@@ -678,6 +680,8 @@ function App() {
               <main className={`flex-1 ${nativeApp ? "pb-20" : ""}`}>
                 <Routes key={accessVersion}>
                   <Route path="/" element={<Home />} />
+                  <Route path="/jahaji/*" element={<ProtectedRoute><JahajiDashboard /></ProtectedRoute>} />
+                  <Route path="/jahaji-connect" element={<JahajiConnect />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/courses" element={<Courses />} />
                   <Route path="/course/:courseId" element={<CourseDetail />} />

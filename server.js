@@ -1,3 +1,4 @@
+import jahajiHandler from './server/api-resources/jahaji.js';
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
@@ -38,6 +39,8 @@ app.use((req, res, next) => {
 app.get('/api/manifest.json', (req, res) => {
   dynamicManifestHandler(req, res);
 });
+
+app.all('/api/jahaji', jahajiHandler);
 
 app.get('/api/version', (req, res) => {
   versionHandler(req, res);
