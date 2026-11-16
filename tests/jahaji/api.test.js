@@ -14,7 +14,7 @@ class Store {
   }
   snap(path) {
     const value = this.rows.get(path)
-    return {exists: !!value, data: () => structuredClone(value)}
+    return {id: path.split('/').at(-1), exists: !!value, data: () => structuredClone(value)}
   }
   runTransaction(callback) {
     const result = this.tail.then(async () => {
@@ -111,4 +111,21 @@ test('delegated roles enforce server permissions', async () => {
   db.rows.set('jahajiStaff/staff-user', {role: 'support'})
   assert.equal((await call(db, 'admin-plan', {id: 'example-plan'}, {}, authenticate)).statusCode, 403)
   assert.equal((await call(db, 'admin-staff', undefined, {}, authenticate)).statusCode, 403)
+})
+
+test('two devices share an account plan but keep independent usage; banning the user blocks both', async () => {
+  const {db, id, headers} = await device()
+  const second = 'd'.repeat(64)
+  const secondHeaders = {'x-jahaji-device': second, 'x-jahaji-secret': 'e'.repeat(64)}
+  await call(db, 'register', {id: second, secret: 'e'.repeat(64), name: 'Second PC'})
+  db.rows.get('jahajiDevices/' + id).uid = 'same-user'
+  db.rows.get('jahajiDevices/' + second).uid = 'same-user'
+  db.rows.set('jahajiUsers/same-user', {name: 'Same person', planId: 'paid-plan'})
+  db.rows.set('jahajiPlans/paid-plan', {name: 'One download', limits: {download: 1}, sites: ['acs'], deleted: false})
+  const operation = {operation: 'first-device-job', features: ['download'], site: 'acs'}
+  assert.equal((await call(db, 'reserve', operation, headers)).statusCode, 200)
+  assert.equal((await call(db, 'reserve', {...operation, operation: 'second-device-job'}, secondHeaders)).statusCode, 200)
+  assert.equal((await call(db, 'reserve', {...operation, operation: 'extra-device-job'}, headers)).statusCode, 429)
+  db.rows.get('jahajiUsers/same-user').banned = true
+  assert.equal((await call(db, 'reserve', {...operation, operation: 'banned-device-job'}, secondHeaders)).statusCode, 403)
 })
