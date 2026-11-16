@@ -1,4 +1,5 @@
 import {resolveAccess} from '../jahaji/access-policy.js'
+import {validateRelease} from '../jahaji/releases.js'
 import {activateJahajiPurchase} from '../jahaji/checkout.js'
 import {createHash, randomBytes, timingSafeEqual} from 'node:crypto'
 import {getAdminServices, requireAuthenticatedUser, isFullAdminProfile} from '../../api/utils/firebase-admin.js'
@@ -54,6 +55,7 @@ async function adminRequest(req, res, db, action, authenticate) {
   const admin = await adminAuth(req, db, authenticate)
   const body = req.body || {}
   if (req.method === 'GET') {
+    if (action === 'release') return res.json({release: (await db.collection('jahajiSettings').doc('release').get()).data() || null})
     if (action === 'access') return res.json({role: admin.role, full: admin.full})
     if (action === 'overview') {
       const [devices, users, plans, banned] = await Promise.all([
@@ -86,6 +88,11 @@ async function adminRequest(req, res, db, action, authenticate) {
   if (req.method !== 'POST') fail('Method not allowed', 405)
   if (admin.role === 'viewer') fail('Read-only access', 403)
   const audit = {actor: admin.uid, actorName: admin.userProfile.name || admin.decodedToken.email || 'Admin', at: Date.now()}
+  if (action === 'release') {
+    if (!admin.full) fail('Only full admins can publish app updates', 403)
+    await db.collection('jahajiSettings').doc('release').set({...validateRelease(body), audit})
+    return res.json({ok: true})
+  }
   if (action === 'plan') {
     if (!['owner', 'manager'].includes(admin.role)) fail('Plan management access required', 403)
     const ref = body.id ? db.collection('jahajiPlans').doc(cleanId(body.id)) : db.collection('jahajiPlans').doc()
@@ -137,6 +144,10 @@ export default async function jahajiHandler(req, res, services) {
     const {db} = services?.db ? services : getAdminServices()
     const authenticate = services?.db && services?.authenticate ? services.authenticate : requireAuthenticatedUser
     const action = String(req.query?.action || 'status')
+    if (action === 'release' && req.method === 'GET') {
+      const release = (await db.collection('jahajiSettings').doc('release').get()).data()
+      return res.json({release: release?.published ? validateRelease(release) : null})
+    }
     if (action === 'catalog' && req.method === 'GET') {
       const plans = await db.collection('jahajiPlans').where('published', '==', true).get()
       return res.json({plans: plans.docs.filter(doc => !doc.data().deleted).map(doc => {

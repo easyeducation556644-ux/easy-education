@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import handler from '../../server/api-resources/jahaji.js'
 
 import {Store} from './store.js'
+import {validateRelease} from '../../server/jahaji/releases.js'
 
 async function call(db, action, body, headers = {}, authenticate) {
   const response = {statusCode: 200, setHeader() {}, status(code) {this.statusCode = code; return this}, json(value) {this.body = value; return this}}
@@ -18,6 +19,20 @@ async function device() {
   assert.equal((await call(db, 'register', {id, secret, name: 'Test PC'})).statusCode, 200)
   return {db, id, headers}
 }
+
+test('public update feed hides drafts and audit details; support cannot publish installers', async () => {
+  const db = new Store()
+  const release = validateRelease({version: '3.0.9', url: 'https://github.com/easyeducation556644-ux/easy-education/releases/download/v3.0.9/Jahaji-3.0.9-Setup.exe', sha256: 'a'.repeat(64), size: 1234, published: false})
+  db.rows.set('jahajiSettings/release', {...release, audit: {actor: 'private-admin'}})
+  assert.equal((await call(db, 'release')).body.release, null)
+  db.rows.get('jahajiSettings/release').published = true
+  const publicRelease = (await call(db, 'release')).body.release
+  assert.equal(publicRelease.version, '3.0.9')
+  assert.equal(publicRelease.audit, undefined)
+  db.rows.set('jahajiStaff/support-user', {role: 'support'})
+  const authenticate = async () => ({decodedToken: {uid: 'support-user'}, userProfile: {name: 'Support'}})
+  assert.equal((await call(db, 'admin-release', release, {}, authenticate)).statusCode, 403)
+})
 
 test('a device cannot be recreated with a new proof or reset usage by linking an email', async () => {
   const {db, id, headers} = await device()
