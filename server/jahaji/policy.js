@@ -13,7 +13,7 @@ export function validatePlan(value) {
   for (const key of FEATURES) {
     const limit = value.limits?.[key]
     if (!Number.isSafeInteger(limit) || limit < -1 || limit > 1000000) {
-      throw Object.assign(new Error('Limits must be whole numbers. Use -1 for unlimited.'), {statusCode: 400})
+      throw Object.assign(new Error('Limits must be whole numbers. Choose Unlimited or enter a value from 0 to 1,000,000.'), {statusCode: 400})
     }
     limits[key] = limit
   }
