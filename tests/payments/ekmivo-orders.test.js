@@ -1,4 +1,5 @@
 import {test,mock} from 'node:test';import assert from 'node:assert/strict';
+import {FREE_PLAN} from '../../server/jahaji/policy.js';
 class DB{
  constructor(){this.rows=new Map();this.serial=Promise.resolve();}
  collection(name){const db=this;return {doc(id){const key=name+'/'+id;return {id,async get(){return {id,exists:db.rows.has(key),data:()=>structuredClone(db.rows.get(key))};},async create(v){if(db.rows.has(key))throw Object.assign(Error('exists'),{code:6});db.rows.set(key,structuredClone(v));},async update(v){db.rows.set(key,{...db.rows.get(key),...structuredClone(v)});}};},where(field,_,value){return {limit(){return this;},async get(){const docs=[...db.rows.entries()].filter(([k,v])=>k.startsWith(name+'/')&&v[field]===value).map(([k,v])=>({id:k.split('/')[1],data:()=>structuredClone(v)}));return {empty:!docs.length,docs};}};}};}
@@ -29,4 +30,33 @@ test('merchant flow: stored order, stable retries, authenticated ownership, mism
   await assert.rejects(()=>confirmEvent({...event,invoice_id:'550e8400-e29b-41d4-a716-446655440002'}),/does not match/);
   await assert.rejects(()=>validateFreeOrder({headers:req.headers,body:{userId:'alice',courses:[{id:'course1'}]}}),/requires a verified payment/);
  }finally{globalThis.fetch=previous;for(const [k,v]of Object.entries(env)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
+});
+
+test('Jahaji checkout verifies payment before activation and duplicate webhooks never extend access',async()=>{
+ Object.assign(process.env,{EKMIVO_API_ORIGIN:'https://api.example',EKMIVO_API_KEY:'ek_test_fixture',PUBLIC_APP_URL:'https://merchant.example'});
+ const previous=globalThis.fetch;let payload,status='PENDING',amount=29900;
+ const beforeEnrollments=enrollmentCalls;
+ globalThis.fetch=async(url,options)=>({ok:true,json:async()=>{
+  if(url.pathname.endsWith('/create')){payload=JSON.parse(options.body);return {invoice_id:invoice,status:'PENDING',payment_url:'https://checkout.example/checkout/token'};}
+  return {invoice_id:invoice,status,amount_minor:amount,currency:'BDT',reference:payload.reference};
+ }});
+ try{
+  db.rows.clear();
+  db.rows.set('jahajiPlans/gold-plan',{...FREE_PLAN,name:'Gold',price:299,durationDays:30,published:true});
+  db.rows.set('jahajiDevices/device-test',{uid:'alice',name:'Alice PC'});
+  const request={headers:{authorization:'alice','idempotency-key':'jahaji-payment-test-123'},body:{fullname:'Alice',amount:299,metadata:{product:'jahaji',planId:'gold-plan',deviceId:'device-test',mobileNumber:'01712345678'}}};
+  await assert.rejects(()=>createOrder({...request,body:{...request.body,amount:1}}),/price changed/);
+  const order=await createOrder(request);
+  const confirm=()=>confirmForUser({headers:request.headers,body:{order_id:order.order_id}});
+  await assert.rejects(confirm);
+  assert.equal(db.rows.get('jahajiDevices/device-test').planId,undefined);
+  status='COMPLETED';amount=1;await assert.rejects(confirm,/does not match/);
+  assert.equal(db.rows.get('jahajiDevices/device-test').planId,undefined);
+  amount=29900;
+  const result=await confirm();assert.equal(result.payment.metadata.jahaji.state,'active');
+  const expiresAt=db.rows.get('jahajiDevices/device-test').planExpiresAt;
+  await confirm();await confirmEvent({id:'jahaji-event-test',invoice_id:invoice});
+  assert.equal(db.rows.get('jahajiDevices/device-test').planExpiresAt,expiresAt);
+  assert.equal(enrollmentCalls,beforeEnrollments);
+ }finally{globalThis.fetch=previous;for(const[k,v]of Object.entries(env)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
 });

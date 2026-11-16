@@ -20,7 +20,27 @@ export function validatePlan(value) {
   if (!Array.isArray(value.sites) || value.sites.some(site => !SITES.includes(site))) {
     throw Object.assign(new Error('Choose supported download sites'), {statusCode: 400})
   }
-  return {name, limits, sites: [...new Set(value.sites)]}
+  const price = value.price ?? 0
+  const durationDays = value.durationDays ?? 30
+  const published = value.published === true
+  if (!Number.isFinite(price) || price < 0 || price > 1000000 || Math.round(price * 100) / 100 !== price) {
+    throw Object.assign(new Error('Enter a valid BDT price with up to two decimal places'), {statusCode: 400})
+  }
+  if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650) {
+    throw Object.assign(new Error('Plan duration must be between 1 and 3650 days'), {statusCode: 400})
+  }
+  if (published && price <= 0) throw Object.assign(new Error('Set a price before publishing this plan'), {statusCode: 400})
+  return {name, limits, sites: [...new Set(value.sites)], price, durationDays, published}
+}
+
+export function activeDeviceGrant(device, now = Date.now()) {
+  const scheduled = (device.queuedPlans || []).find(plan => plan.startsAt <= now && plan.expiresAt > now)
+  if (scheduled) return scheduled
+  if (device.planId && (!device.planExpiresAt || device.planExpiresAt > now)) {
+    return {planId: device.planId, expiresAt: device.planExpiresAt || null,
+      orderId: device.purchaseId || null, snapshot: device.planSnapshot || null}
+  }
+  return null
 }
 
 export function reserveUsage(usage, plan, features, site) {

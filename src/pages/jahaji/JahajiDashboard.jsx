@@ -39,7 +39,7 @@ function useRows(action) {
 }
 
 function PlanEditor({initial, close, save}) {
-  const [plan, setPlan] = useState(initial)
+  const [plan, setPlan] = useState(() => ({...initial, price: initial.price ?? 0, durationDays: initial.durationDays ?? 30, published: initial.published ?? false}))
   const [limitedValues, setLimitedValues] = useState(() => Object.fromEntries(
     Object.keys(FEATURES).map(key => [key, initial.limits[key] >= 0 ? initial.limits[key] : 5])
   ))
@@ -51,6 +51,11 @@ function PlanEditor({initial, close, save}) {
   }}>
     <h2 className="font-semibold">{plan.id ? 'Edit plan' : 'Create plan'}</h2>
     <label className="block text-sm">Plan name<input className={input} required maxLength={80} value={plan.name} onChange={e => setPlan({...plan, name: e.target.value})}/></label>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className="block text-sm">Price (BDT)<input className={input} type="number" min="0" max="1000000" step="0.01" required value={plan.price} onChange={e => setPlan({...plan, price: e.target.value === '' ? '' : Number(e.target.value)})}/></label>
+      <label className="block text-sm">Duration (days)<input className={input} type="number" min="1" max="3650" step="1" required value={plan.durationDays} onChange={e => setPlan({...plan, durationDays: e.target.value === '' ? '' : Number(e.target.value)})}/></label>
+    </div>
+    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={plan.published} onChange={e => setPlan({...plan, published: e.target.checked})}/>Publish for customers to buy</label>
     <div className="grid gap-3 sm:grid-cols-2">{Object.entries(FEATURES).map(([key, title]) => {
       const unlimited = plan.limits[key] === -1
       return <fieldset className="rounded-md border border-border p-3" key={key}>
@@ -114,7 +119,7 @@ function Records({kind, access}) {
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {kind === 'plans' && editing && <PlanEditor key={editing.id || 'new'} initial={editing} close={() => setEditing(null)} save={plan => mutate('plan', plan)}/>}
     <div className="overflow-x-auto rounded-lg border border-border bg-card"><table className="w-full text-left text-sm"><thead className="border-b border-border bg-muted/40"><tr><th className="p-3">{kind === 'devices' ? 'Device / user' : 'Name'}</th><th className="p-3">{kind === 'plans' ? 'Monthly allowance' : 'Access'}</th><th className="p-3">Actions</th></tr></thead><tbody>
-      {rows.map(row => <tr key={row.id} className="border-b border-border last:border-0"><td className="p-3"><b>{kind === 'devices' ? row.userName || 'Guest' : row.name || 'Unnamed user'}</b><p className="text-xs text-muted-foreground">{row.email || (kind === 'devices' ? 'Not signed in' : '')}</p>{kind === 'devices' && <p className="text-xs text-muted-foreground">{row.name}</p>}{kind === 'devices' && <p className="text-xs text-muted-foreground">{Object.entries(row.usage || {}).map(([feature, count]) => `${FEATURES[feature]} ${count.used}`).join(' · ')}</p>}</td><td className="p-3">
+      {rows.map(row => <tr key={row.id} className="border-b border-border last:border-0"><td className="p-3"><b>{kind === 'devices' ? row.userName || 'Guest' : row.name || 'Unnamed user'}</b><p className="text-xs text-muted-foreground">{row.email || (kind === 'devices' ? 'Not signed in' : '')}</p>{kind === 'plans' && <p className="text-xs text-muted-foreground">৳{row.price || 0} · {row.durationDays || 30} days · {row.published ? 'For sale' : 'Private'}</p>}{kind === 'devices' && <p className="text-xs text-muted-foreground">{row.name}</p>}{kind === 'devices' && <p className="text-xs text-muted-foreground">{Object.entries(row.usage || {}).map(([feature, count]) => `${FEATURES[feature]} ${count.used}`).join(' · ')}</p>}</td><td className="p-3">
         {kind === 'plans' ? Object.entries(row.limits).map(([feature, count]) => <p className="text-xs" key={feature}>{FEATURES[feature]} · {count === -1 ? 'Unlimited' : count}</p>) : kind === 'staff' ? row.role : <><span className={row.banned ? 'text-destructive' : 'text-green-600'}>{row.banned ? 'Banned' : 'Active'}</span><p className="text-xs text-muted-foreground">{plans.find(plan => plan.id === row.planId)?.name || 'Free / inherited'}</p></>}
       </td><td className="p-3"><div className="flex flex-wrap gap-2">
         {['users', 'devices'].includes(kind) && <>{editable && <select aria-label={'Plan for ' + (row.name || row.userName)} className={input + ' max-w-48'} value={row.planId || ''} disabled={saving} onChange={e => void mutate(kind === 'users' ? 'user' : 'device', {id: row.id, planId: e.target.value || null}).catch(() => {})}><option value="">Free / inherited</option>{plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select>}{canBan && <button disabled={saving} className={button} onClick={() => void mutate(kind === 'users' ? 'user' : 'device', {id: row.id, banned: !row.banned}).catch(() => {})}>{row.banned ? 'Unban' : 'Ban'}</button>}</>}

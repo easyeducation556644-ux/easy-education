@@ -1,3 +1,5 @@
+import JahajiPlans from './pages/jahaji/JahajiPlans'
+import JahajiCheckout from './pages/jahaji/JahajiCheckout'
 import JahajiDashboard from './pages/jahaji/JahajiDashboard'
 import JahajiConnect from './pages/jahaji/JahajiConnect'
 import { useEffect, useMemo, useState } from "react"
@@ -680,6 +682,8 @@ function App() {
               <main className={`flex-1 ${nativeApp ? "pb-20" : ""}`}>
                 <Routes key={accessVersion}>
                   <Route path="/" element={<Home />} />
+                  <Route path="/jahaji-plans" element={<JahajiPlans />} />
+                  <Route path="/jahaji-checkout" element={<JahajiCheckout />} />
                   <Route path="/jahaji/*" element={<ProtectedRoute><JahajiDashboard /></ProtectedRoute>} />
                   <Route path="/jahaji-connect" element={<JahajiConnect />} />
                   <Route path="/login" element={<Login />} />

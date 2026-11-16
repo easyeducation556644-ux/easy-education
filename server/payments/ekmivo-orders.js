@@ -1,3 +1,4 @@
+import {pricedJahajiCart,fulfillJahajiOrder,jahajiPaymentResult} from '../jahaji/checkout.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {getAdminServices,requireAuthenticatedUser} from '../../api/utils/firebase-admin.js';
 import {processPaymentAndEnrollUser} from '../../api/utils/process-payment.js';
@@ -5,6 +6,7 @@ import {publishEnrollmentSync} from '../../api/_sync-event.js';
 import {ekmivoRequest,httpsOrigin,minorUnits,paymentError,assertCompleted,uuidPattern} from './ekmivo-contract.js';
 
 async function pricedCart(db,metadata,user){
+ if(metadata?.product==='jahaji')return pricedJahajiCart(db,metadata,user);
  const requested=metadata?.courses;if(!Array.isArray(requested)||!requested.length||requested.length>50)throw paymentError('Select between 1 and 50 courses.');
  const ids=requested.map(c=>c.id);if(ids.some(id=>typeof id!=='string'||!id||id.includes('/'))||new Set(ids).size!==ids.length)throw paymentError('Invalid course selection.');
  const courses=await Promise.all(requested.map(async item=>{
@@ -58,6 +60,7 @@ export async function confirmOrder(db,orderId,userId){
  if(userId&&order.userId!==userId)throw paymentError('This order belongs to another account.',403);
  if(!order.invoiceId)throw paymentError('Payment creation is not confirmed.',409);
  const payment=await ekmivoRequest('/v1/payment/verify',{invoice_id:order.invoiceId});assertCompleted(payment,order);
+ if(order.kind==='jahaji')return jahajiPaymentResult(order,await fulfillJahajiOrder(db,ref));
  const lease=randomUUID();const done=await db.runTransaction(async tx=>{const current=(await tx.get(ref)).data();if(current.status==='fulfilled')return true;if(current.fulfilLeaseUntil>Date.now())throw paymentError('Enrollment is in progress. Retry shortly.',503);tx.update(ref,{fulfilLease:lease,fulfilLeaseUntil:Date.now()+120000});return false;});
  let result={success:true,alreadyProcessed:true};
  if(!done){try{

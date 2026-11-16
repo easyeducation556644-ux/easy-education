@@ -1,3 +1,4 @@
+import {JahajiActivation, dateLabel} from './jahaji/JahajiPlans'
 "use client"
 
 import { useEffect, useState } from "react"
@@ -10,19 +11,26 @@ import { useAuth } from "../contexts/AuthContext"
 export default function CheckoutComplete() {
  const {currentUser}=useAuth(),{clearCart}=useCart(),location=useLocation(),navigate=useNavigate();
  const [isProcessing,setIsProcessing]=useState(true),[confirmed,setConfirmed]=useState(false),[message,setMessage]=useState(''),[courses,setCourses]=useState([]),[retry,setRetry]=useState(0);
+ const [subscription,setSubscription]=useState(null);
  const orderId=new URLSearchParams(location.search).get('order_id');
  const free=location.state?.isFreeEnrollment===true;
  useEffect(()=>{
   if(free){setConfirmed(true);setIsProcessing(false);setCourses(location.state?.courses||[]);return;}
-  if(!currentUser){setIsProcessing(false);setMessage('Sign in to confirm this payment, then return to this page.');return;}
+  if(!currentUser){setConfirmed(false);setSubscription(null);setCourses([]);setIsProcessing(false);setMessage('Sign in to confirm this payment, then return to this page.');return;}
   let cancelled=false;
   async function confirm(){
-   setIsProcessing(true);setMessage('');
+   setIsProcessing(true);setConfirmed(false);setMessage('');setSubscription(null);setCourses([]);
    try{
     if(!orderId)throw Error('No order reference was returned. Open Payment history or contact support.');
     const response=await fetch('/api/process-enrollment',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${await currentUser.getIdToken()}`},body:JSON.stringify({order_id:orderId,userId:currentUser.uid})});
     const data=await response.json();if(!response.ok||!data.success||!data.verified)throw Error(data.error||'Payment is not confirmed yet.');
-    if(cancelled)return;setCourses(data.payment?.metadata?.courses||[]);setConfirmed(true);setIsProcessing(false);
+    if(cancelled)return;
+    if(data.payment?.metadata?.jahaji){
+     setSubscription(data.payment.metadata.jahaji);setConfirmed(true);setIsProcessing(false);
+     sessionStorage.removeItem('jahaji-payment-attempt');sessionStorage.removeItem('jahaji-pending-order');
+     return;
+    }
+    setCourses(data.payment?.metadata?.courses||[]);setConfirmed(true);setIsProcessing(false);
     // Only clear the matching cart after server-side verification and enrollment.
     try { const attempt=JSON.parse(sessionStorage.getItem('ekmivo-payment-attempt')||'null');
     if(sessionStorage.getItem('ekmivo-pending-order')===orderId&&attempt?.userId===currentUser.uid){
@@ -42,7 +50,7 @@ export default function CheckoutComplete() {
       <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-background flex items-center justify-center px-4">
         <div className="text-center">
           <Loader2 className="w-12 h-12 animate-spin text-primary mx-auto mb-4" />
-          <p className="text-muted-foreground">Processing your enrollment...</p>
+          <p className="text-muted-foreground">Confirming your payment...</p>
         </div>
       </div>
     )
@@ -82,9 +90,15 @@ export default function CheckoutComplete() {
             transition={{ delay: 0.4 }}
             className="text-muted-foreground mb-6 text-sm sm:text-base"
           >
-            {confirmed?"Your course enrollment has been completed successfully. You can now access your course from your dashboard.":message}
+            {confirmed ? subscription ? subscription.state === 'choice_required' ? 'Your Jahaji payment is verified. Choose when to activate your plan.' : 'Your Jahaji purchase is confirmed. Return to the app to see your updated plan.' : "Your course enrollment has been completed successfully. You can now access your course from your dashboard." : message}
           </motion.p>
 
+          {subscription && <div className="mb-6 space-y-3 text-left">
+            <h2 className="font-semibold">{subscription.name}</h2><p className="text-sm text-muted-foreground">{subscription.deviceName}</p>
+            {subscription.state === 'choice_required'
+              ? <JahajiActivation purchase={subscription} onUpdated={value => setSubscription(previous => ({...previous, ...value}))}/>
+              : <p className="text-sm">{subscription.state === 'scheduled' ? 'Scheduled' : 'Active'} · {dateLabel(subscription.startsAt)} → {dateLabel(subscription.expiresAt)}</p>}
+          </div>}
           {/* Purchased Courses Section */}
           {courses.length > 0 && (
             <motion.div
@@ -118,18 +132,18 @@ export default function CheckoutComplete() {
             className="space-y-3"
           >
             <button
-              onClick={() => navigate("/my-courses")}
+              onClick={() => navigate(subscription ? "/jahaji-plans?device=" + subscription.deviceId : "/my-courses")}
               className="w-full py-2.5 sm:py-3 bg-gradient-to-r from-primary to-accent hover:from-primary/90 hover:to-accent/90 text-primary-foreground rounded-lg transition-all font-medium flex items-center justify-center gap-2 text-sm sm:text-base"
             >
               <BookOpen className="w-4 h-4 flex-shrink-0" />
-              Go to My Courses
+              {subscription ? "Manage Jahaji plan" : "Go to My Courses"}
               <ArrowRight className="w-4 h-4 flex-shrink-0" />
             </button>
             <button
-              onClick={() => navigate("/courses")}
+              onClick={() => subscription ? window.location.assign("jahaji://open") : navigate("/courses")}
               className="w-full py-2.5 sm:py-3 bg-muted hover:bg-muted/80 text-foreground rounded-lg transition-colors font-medium text-sm sm:text-base"
             >
-              Browse More Courses
+              {subscription ? "Return to Jahaji" : "Browse More Courses"}
             </button>
           </motion.div>
         </div>
