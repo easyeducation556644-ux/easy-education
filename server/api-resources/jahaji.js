@@ -224,7 +224,7 @@ export default async function jahajiHandler(req, res, services) {
         const monthRef = device.ref.collection('months').doc(period)
         const month = await tx.get(monthRef)
         const saved = previous.data()
-        if (saved && (JSON.stringify(saved.features) !== JSON.stringify(features) || saved.site !== site)) fail('Operation does not match its reservation', 409)
+        if (saved && (JSON.stringify(saved.features) !== JSON.stringify(features) || saved.site !== site && saved.site !== 'legacy')) fail('Operation does not match its reservation', 409)
         const states = saved?.states || {}
         const pending = features.filter(key => states[key] !== 'complete' && states[key] !== 'reserved')
         const usage = pending.length ? reserveUsage(month.data()?.usage, plan, pending, site) : month.data()?.usage || {}
