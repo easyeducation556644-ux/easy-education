@@ -1,3 +1,5 @@
+import {resolveAccess} from '../jahaji/access-policy.js'
+import {activateJahajiPurchase} from '../jahaji/checkout.js'
 import {createHash, randomBytes, timingSafeEqual} from 'node:crypto'
 import {getAdminServices, requireAuthenticatedUser, isFullAdminProfile} from '../../api/utils/firebase-admin.js'
 import {FREE_PLAN, FEATURES, monthKey, reserveUsage, settleUsage, validatePlan} from '../jahaji/policy.js'
@@ -7,7 +9,7 @@ const fail = (message, statusCode = 400) => {throw Object.assign(new Error(messa
 const cleanId = value => /^[a-zA-Z0-9_-]{8,128}$/.test(value || '') ? value : fail('Invalid identifier')
 const sameSecret = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
 const publicDevice = (id, value) => ({id, name: value.name, email: value.email || '', userName: value.userName || 'Guest',
-  uid: value.uid || null, banned: !!value.banned, planId: value.planId || null, lastSeen: value.lastSeen, createdAt: value.createdAt})
+  uid: value.uid || null, planExpiresAt: value.planExpiresAt || null, banned: !!value.banned, planId: value.planId || null, lastSeen: value.lastSeen, createdAt: value.createdAt})
 
 async function deviceAuth(req, db) {
   const id = cleanId(req.headers['x-jahaji-device'])
@@ -30,21 +32,21 @@ async function adminAuth(req, db, authenticate) {
 }
 
 async function policy(tx, db, device) {
-  const owner = device.uid ? (await tx.get(db.collection('jahajiUsers').doc(device.uid))).data() : null
-  if (device.banned || owner?.banned) fail('This device or account has been banned', 403)
-  const planId = device.planId || owner?.planId
-  const plan = planId ? await tx.get(db.collection('jahajiPlans').doc(planId)) : null
-  return plan?.exists && !plan.data().deleted ? {...plan.data(), id: plan.id} : {...FREE_PLAN, id: 'free'}
+  return (await resolveAccess(tx, db, device)).plan
 }
 
 async function snapshot(db, device) {
   return db.runTransaction(async tx => {
     const current = (await tx.get(device.ref)).data()
-    const plan = await policy(tx, db, current)
+    const {plan, grant} = await resolveAccess(tx, db, current)
     const month = monthKey()
     const usage = (await tx.get(device.ref.collection('months').doc(month))).data()?.usage || {}
     if (Date.now() - current.lastSeen > 300000) tx.update(device.ref, {lastSeen: Date.now()})
-    return {device: publicDevice(device.id, current), plan, month, usage, features: FEATURES}
+    return {device: {...publicDevice(device.id, current), planExpiresAt: grant?.expiresAt || null},
+      plan, month, usage, features: FEATURES,
+      scheduled: (current.queuedPlans || []).filter(row => row.startsAt > Date.now()).map(row => ({
+        name: row.snapshot?.name || 'Jahaji plan', startsAt: row.startsAt, expiresAt: row.expiresAt,
+      }))}
   })
 }
 
@@ -103,6 +105,7 @@ async function adminRequest(req, res, db, action, authenticate) {
       if ('planId' in body) {
         if (!['owner', 'manager'].includes(admin.role)) fail('Plan access required', 403)
         patch.planId = body.planId ? cleanId(body.planId) : null
+        if (action === 'device') Object.assign(patch, {planExpiresAt: null, purchaseId: null, planSnapshot: null})
         if (patch.planId) {
           const plan = await tx.get(db.collection('jahajiPlans').doc(patch.planId))
           if (!plan.exists || plan.data().deleted) fail('Plan not found', 404)
@@ -134,6 +137,38 @@ export default async function jahajiHandler(req, res, services) {
     const {db} = services?.db ? services : getAdminServices()
     const authenticate = services?.db && services?.authenticate ? services.authenticate : requireAuthenticatedUser
     const action = String(req.query?.action || 'status')
+    if (action === 'catalog' && req.method === 'GET') {
+      const plans = await db.collection('jahajiPlans').where('published', '==', true).get()
+      return res.json({plans: plans.docs.filter(doc => !doc.data().deleted).map(doc => {
+        const plan = doc.data()
+        return {id: doc.id, name: plan.name, price: plan.price, durationDays: plan.durationDays,
+          limits: plan.limits, sites: plan.sites}
+      })})
+    }
+    if (action === 'mine' && req.method === 'GET') {
+      const session = await authenticate(req)
+      const devices = await db.collection('jahajiDevices').where('uid', '==', session.decodedToken.uid).get()
+      const orders = await db.collection('ekmivoOrders').where('userId', '==', session.decodedToken.uid).get()
+      return res.json({
+        devices: await Promise.all(devices.docs.map(async doc => {
+          try {return await snapshot(db, {id: doc.id, ref: doc.ref})}
+          catch (error) {
+            if (error.statusCode !== 403) throw error
+            return {device: publicDevice(doc.id, doc.data()), plan: {...FREE_PLAN, id: 'free'}, blocked: true, scheduled: []}
+          }
+        })),
+        purchases: orders.docs.filter(doc => doc.data().kind === 'jahaji').map(doc => {
+          const row = doc.data()
+          return {id: doc.id, name: row.jahaji.name, deviceName: row.jahaji.deviceName,
+            amount: row.amountMinor / 100, status: row.status, createdAt: row.createdAt, entitlement: row.entitlement || null}
+        }).sort((a,b) => b.createdAt - a.createdAt),
+      })
+    }
+    if (action === 'activate' && req.method === 'POST') {
+      const session = await authenticate(req)
+      const entitlement = await activateJahajiPurchase(db, session.decodedToken, req.body?.orderId, req.body?.timing)
+      return res.json({ok: true, entitlement})
+    }
     if (action.startsWith('admin-')) return await adminRequest(req, res, db, action.slice(6), authenticate)
     if (action === 'register' && req.method === 'POST') {
       const body = req.body || {}
@@ -170,7 +205,7 @@ export default async function jahajiHandler(req, res, services) {
         tx.update(deviceRef, {uid, email, userName: name, linkedAt: Date.now()})
         tx.update(ref, {used: true})
       })
-      return res.json({ok: true})
+      return res.json({ok: true, deviceId: (await ref.get()).data().deviceId})
     }
     const device = await deviceAuth(req, db)
     if (action === 'status' && req.method === 'GET') return res.json(await snapshot(db, device))

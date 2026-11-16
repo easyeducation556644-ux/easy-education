@@ -1,11 +1,12 @@
 import {useState} from 'react'
-import {Link, useSearchParams} from 'react-router-dom'
+import {Link, useNavigate, useSearchParams} from 'react-router-dom'
 import {useAuth} from '../../contexts/AuthContext'
 import {jahajiRequest} from './JahajiDashboard'
 
 export default function JahajiConnect() {
   const {currentUser, signInWithGoogle} = useAuth()
   const [params] = useSearchParams()
+  const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [done, setDone] = useState(false)
@@ -14,7 +15,12 @@ export default function JahajiConnect() {
     setBusy(true); setMessage('')
     try {
       if (!currentUser) await signInWithGoogle()
-      await jahajiRequest('link', {code})
+      const result = await jahajiRequest('link', {code})
+      if (params.get('upgrade') === '1') {
+        const plan = params.get('plan')
+        navigate((plan ? '/jahaji-checkout?plan=' + encodeURIComponent(plan) + '&' : '/jahaji-plans?') + 'device=' + encodeURIComponent(result.deviceId))
+        return
+      }
       setDone(true); setMessage('Jahaji is connected. You can return to the desktop app.')
     } catch (e) {setMessage(e.message)} finally {setBusy(false)}
   }
