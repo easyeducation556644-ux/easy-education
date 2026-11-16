@@ -141,3 +141,24 @@ test('existing full site admins can enter without a notification token; normal u
   const user = async () => ({decodedToken: {uid: 'regular-user'}, userProfile: {role: 'user'}})
   assert.equal((await call(db, 'admin-access', undefined, {}, user)).statusCode, 403)
 })
+
+test('history sync only adds unseen completed work and never subtracts when local videos disappear', async () => {
+  const {db, headers} = await device()
+  const status = (await call(db, 'status', undefined, headers)).body
+  const event = {operation: 'historical-video-download', feature: 'download', month: status.month}
+  assert.equal((await call(db, 'reconcile', {events: [event]}, headers)).statusCode, 200)
+  await call(db, 'reconcile', {events: [event]}, headers)
+  await call(db, 'reconcile', {events: []}, headers)
+  const synced = (await call(db, 'status', undefined, headers)).body
+  assert.deepEqual(synced.usage.download, {used: 1, reserved: 0})
+})
+
+test('reconciling an already metered job does not count it twice', async () => {
+  const {db, headers} = await device()
+  const operation = 'already-metered-download'
+  const reserved = (await call(db, 'reserve', {operation, features: ['download'], site: 'retina'}, headers)).body
+  await call(db, 'settle', {operation, feature: 'download', success: true}, headers)
+  await call(db, 'reconcile', {events: [{operation, feature: 'download', month: reserved.month}]}, headers)
+  const state = (await call(db, 'status', undefined, headers)).body
+  assert.deepEqual(state.usage.download, {used: 1, reserved: 0})
+})

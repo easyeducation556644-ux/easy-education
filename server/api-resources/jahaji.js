@@ -174,6 +174,36 @@ export default async function jahajiHandler(req, res, services) {
     }
     const device = await deviceAuth(req, db)
     if (action === 'status' && req.method === 'GET') return res.json(await snapshot(db, device))
+    if (action === 'reconcile' && req.method === 'POST') {
+      const events = req.body?.events
+      if (!Array.isArray(events) || events.length > 25) fail('Invalid usage history')
+      for (const event of events) {
+        cleanId(event.operation)
+        if (!FEATURES.includes(event.feature) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(event.month || '') || event.month > monthKey()) fail('Invalid usage event')
+      }
+      // Each completed operation is imported once. Removing local rows never subtracts usage.
+      for (const event of events) {
+        const ref = device.ref.collection('operations').doc(event.operation)
+        await db.runTransaction(async tx => {
+          const snap = await tx.get(ref)
+          const previous = snap.data()
+          if (previous && !previous.features.includes(event.feature)) fail('Usage operation does not match', 409)
+          if (previous?.states[event.feature] === 'complete') return
+          const period = previous?.month || event.month
+          const monthRef = device.ref.collection('months').doc(period)
+          const month = await tx.get(monthRef)
+          const usage = month.data()?.usage || {}
+          const count = usage[event.feature] || {used: 0, reserved: 0}
+          const wasReserved = previous?.states[event.feature] === 'reserved'
+          tx.set(monthRef, {usage: {...usage, [event.feature]: {
+            used: count.used + 1, reserved: Math.max(0, count.reserved - (wasReserved ? 1 : 0)),
+          }}}, {merge: true})
+          tx.set(ref, {...(previous || {features: [event.feature], site: 'legacy', month: period}),
+            states: {...previous?.states, [event.feature]: 'complete'}, updatedAt: Date.now()})
+        })
+      }
+      return res.json({ok: true})
+    }
     if (action === 'pair' && req.method === 'POST') {
       if (device.data.uid) return res.json({linked: true})
       const code = randomBytes(32).toString('hex')
