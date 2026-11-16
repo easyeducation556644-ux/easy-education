@@ -129,3 +129,13 @@ test('two devices share an account plan but keep independent usage; banning the 
   db.rows.get('jahajiUsers/same-user').banned = true
   assert.equal((await call(db, 'reserve', {...operation, operation: 'banned-device-job'}, secondHeaders)).statusCode, 403)
 })
+
+test('a client-edited admin profile cannot acquire full Jahaji access', async () => {
+  const {db} = await device()
+  const authenticate = async () => ({decodedToken: {uid: 'untrusted-admin'}, userProfile: {role: 'admin'}})
+  assert.equal((await call(db, 'admin-access', undefined, {}, authenticate)).statusCode, 403)
+  db.rows.set('adminTokens/untrusted-admin', {role: 'admin'})
+  const response = await call(db, 'admin-access', undefined, {}, authenticate)
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.body.full, true)
+})
