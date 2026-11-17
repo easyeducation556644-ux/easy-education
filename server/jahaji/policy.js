@@ -1,6 +1,6 @@
 export const FEATURES = ['download', 'watermark', 'telegram', 'youtube', 'scan', 'import', 'account']
 export const SITES = ['acs', 'retina', 'youtube', 'vimeo', 'vidinfra', 'other']
-export const FREE_PLAN = Object.freeze({name: 'Free', limits: Object.fromEntries(FEATURES.map(key => [key, 5])), sites: SITES})
+export const FREE_PLAN = Object.freeze({name: 'Free', deviceLimit: 1, limits: Object.fromEntries(FEATURES.map(key => [key, 5])), sites: SITES})
 
 export function monthKey(now = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit'}).format(now)
@@ -30,7 +30,11 @@ export function validatePlan(value) {
     throw Object.assign(new Error('Plan duration must be between 1 and 3650 days'), {statusCode: 400})
   }
   if (published && price <= 0) throw Object.assign(new Error('Set a price before publishing this plan'), {statusCode: 400})
-  return {name, limits, sites: [...new Set(value.sites)], price, durationDays, published}
+  const deviceLimit = value.deviceLimit ?? 1
+  if (!Number.isSafeInteger(deviceLimit) || (deviceLimit !== -1 && (deviceLimit < 1 || deviceLimit > 1000))) {
+    throw Object.assign(new Error('Device limit must be 1–1000, or choose Unlimited'), {statusCode: 400})
+  }
+  return {name, limits, sites: [...new Set(value.sites)], price, durationDays, published, deviceLimit}
 }
 
 export function activeDeviceGrant(device, now = Date.now()) {

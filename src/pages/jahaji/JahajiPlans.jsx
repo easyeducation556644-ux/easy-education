@@ -61,6 +61,10 @@ export default function JahajiPlans() {
   }, [currentUser])
   useEffect(() => {void reload(); return () => {request.current++}}, [reload])
   const selected = mine.devices.find(row => row.device.id === deviceId)
+  const toggleDevice = async (id, enabled) => {
+    if (!window.confirm(enabled ? 'Enable this device?' : 'Disable this device? Its monthly usage and purchase history will be kept.')) return
+    try {await jahajiRequest('device-access', {id, enabled}); await reload()} catch (e) {setError(e.message)}
+  }
   return <div className="mx-auto max-w-6xl space-y-8 px-4 py-10">
     <div><h1 className="text-3xl font-bold">Jahaji plans</h1><p className="mt-2 text-sm text-muted-foreground">Choose a plan for your computer. Feature allowances reset each month; buying a plan keeps the usage already recorded for that device.</p></div>
     {error && <p role="alert" className="text-destructive">{error}</p>}
@@ -70,8 +74,10 @@ export default function JahajiPlans() {
       {selected && <p className="mt-3 text-sm">Current plan · <b>{selected.plan.name}</b>{selected.plan.id !== 'free' && ` · ${dateLabel(selected.device.planExpiresAt)}`}</p>}
       {selected?.scheduled?.map(row => <p key={row.startsAt} className="mt-2 text-xs text-muted-foreground">Scheduled · {row.name} · {dateLabel(row.startsAt)} → {dateLabel(row.expiresAt)}</p>)}
     </section>}
+    {currentUser && mine.devices.length > 0 && <section className="space-y-3 rounded-xl border border-border bg-card p-5"><h2 className="font-semibold">Your devices · {mine.devices[0].slots?.used ?? mine.devices.length}/{mine.devices[0].slots?.limit === -1 ? 'Unlimited' : mine.devices[0].slots?.limit ?? 1}</h2>{mine.devices.map(row => <div key={row.device.id} className="flex items-center justify-between gap-3 text-sm"><div><b>{row.device.name}</b><p className="text-xs text-muted-foreground">{row.device.accountDisabled ? 'Disabled' : row.device.allowed === false ? 'Over device limit' : 'Enabled'}</p></div><button className={planButton} disabled={row.blocked} onClick={() => void toggleDevice(row.device.id, !!row.device.accountDisabled)}>{row.device.accountDisabled ? 'Enable' : 'Disable'}</button></div>)}</section>}
     <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{plans.map(plan => <section key={plan.id} className="flex flex-col rounded-xl border border-border bg-card p-6">
       <h2 className="text-xl font-semibold">{plan.name}</h2><p className="my-4"><b className="text-3xl">৳{plan.price}</b><span className="text-sm text-muted-foreground"> / {plan.durationDays} days</span></p>
+      <p className="mb-4 text-sm">{plan.deviceLimit === -1 ? 'Unlimited devices' : `${plan.deviceLimit ?? 1} device(s) per account`}</p>
       <ul className="mb-5 flex-1 space-y-2 text-sm">{Object.entries(FEATURE_LABELS).map(([key, label]) => <li key={key} className="flex justify-between gap-3"><span>{label}</span><b>{plan.limits[key] === -1 ? 'Unlimited' : plan.limits[key] === 0 ? 'Not included' : `${plan.limits[key]} / month`}</b></li>)}</ul>
       <p className="mb-4 text-xs text-muted-foreground">Download sites · {plan.sites.join(', ')}</p>
       {currentUser && selected && !selected.blocked ? <Link className={planButton} to={`/jahaji-checkout?plan=${encodeURIComponent(plan.id)}&device=${encodeURIComponent(deviceId)}`}>Buy plan</Link> : <span className="text-sm text-muted-foreground">{currentUser ? 'Connect and select your device to buy' : 'Sign in to buy'}</span>}

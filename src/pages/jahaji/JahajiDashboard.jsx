@@ -40,7 +40,7 @@ function useRows(action) {
 }
 
 function PlanEditor({initial, close, save}) {
-  const [plan, setPlan] = useState(() => ({...initial, price: initial.price ?? 0, durationDays: initial.durationDays ?? 30, published: initial.published ?? false}))
+  const [plan, setPlan] = useState(() => ({...initial, deviceLimit: initial.deviceLimit ?? 1, price: initial.price ?? 0, durationDays: initial.durationDays ?? 30, published: initial.published ?? false}))
   const [limitedValues, setLimitedValues] = useState(() => Object.fromEntries(
     Object.keys(FEATURES).map(key => [key, initial.limits[key] >= 0 ? initial.limits[key] : 5])
   ))
@@ -57,6 +57,10 @@ function PlanEditor({initial, close, save}) {
       <label className="block text-sm">Duration (days)<input className={input} type="number" min="1" max="3650" step="1" required value={plan.durationDays} onChange={e => setPlan({...plan, durationDays: e.target.value === '' ? '' : Number(e.target.value)})}/></label>
     </div>
     <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={plan.published} onChange={e => setPlan({...plan, published: e.target.checked})}/>Publish for customers to buy</label>
+    <fieldset className="rounded-md border border-border p-3"><legend className="px-1 text-sm font-medium">Devices per Easy Education account</legend>
+      <label className="mb-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={plan.deviceLimit === -1} onChange={e => setPlan({...plan, deviceLimit: e.target.checked ? -1 : 1})}/>Unlimited devices</label>
+      <input aria-label="Devices per account" className={input} type="number" min="1" max="1000" step="1" required disabled={plan.deviceLimit === -1} value={plan.deviceLimit === -1 ? '' : plan.deviceLimit} placeholder={plan.deviceLimit === -1 ? 'Unlimited' : ''} onChange={e => setPlan({...plan, deviceLimit: e.target.value === '' ? '' : Number(e.target.value)})}/>
+    </fieldset>
     <div className="grid gap-3 sm:grid-cols-2">{Object.entries(FEATURES).map(([key, title]) => {
       const unlimited = plan.limits[key] === -1
       return <fieldset className="rounded-md border border-border p-3" key={key}>

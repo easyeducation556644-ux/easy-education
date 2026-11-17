@@ -109,7 +109,7 @@ test('two devices share an account plan but keep independent usage; banning the 
   db.rows.get('jahajiDevices/' + id).uid = 'same-user'
   db.rows.get('jahajiDevices/' + second).uid = 'same-user'
   db.rows.set('jahajiUsers/same-user', {name: 'Same person', planId: 'paid-plan'})
-  db.rows.set('jahajiPlans/paid-plan', {name: 'One download', limits: {download: 1}, sites: ['acs'], deleted: false})
+  db.rows.set('jahajiPlans/paid-plan', {name: 'One download', deviceLimit: 2, limits: {download: 1}, sites: ['acs'], deleted: false})
   const operation = {operation: 'first-device-job', features: ['download'], site: 'acs'}
   assert.equal((await call(db, 'reserve', operation, headers)).statusCode, 200)
   assert.equal((await call(db, 'reserve', {...operation, operation: 'second-device-job'}, secondHeaders)).statusCode, 200)
