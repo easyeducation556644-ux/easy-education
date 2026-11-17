@@ -18,7 +18,7 @@ export async function pricedJahajiCart(db, metadata, user) {
   if (!Number.isInteger(plan.durationDays) || plan.durationDays < 1 || plan.durationDays > 3650) throw paymentError('This plan has no valid duration')
   const amountMinor = minorUnits(plan.price)
   if (amountMinor <= 0) throw paymentError('This plan has no purchase price')
-  const snapshot = {name: plan.name, limits: plan.limits, sites: plan.sites}
+  const snapshot = {name: plan.name, limits: plan.limits, sites: plan.sites, deviceLimit: plan.deviceLimit ?? 1}
   return {kind: 'jahaji', courses: [], subtotal: amountMinor / 100, discount: 0, couponCode: '', amountMinor,
     jahaji: {planId: metadata.planId, deviceId: metadata.deviceId, deviceName: device.name,
       name: plan.name, durationDays: plan.durationDays, snapshot}}

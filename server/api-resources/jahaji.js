@@ -1,5 +1,6 @@
 import {resolveAccess} from '../jahaji/access-policy.js'
 import {validateRelease} from '../jahaji/releases.js'
+import {accountSlots, requireDeviceSlot} from '../jahaji/device-slots.js'
 import {activateJahajiPurchase} from '../jahaji/checkout.js'
 import {createHash, randomBytes, timingSafeEqual} from 'node:crypto'
 import {getAdminServices, requireAuthenticatedUser, isFullAdminProfile} from '../../api/utils/firebase-admin.js'
@@ -32,7 +33,11 @@ async function adminAuth(req, db, authenticate) {
   return {...session, role, uid, full}
 }
 
-async function policy(tx, db, device) {
+async function policy(tx, db, device, id) {
+  if (device.uid) {
+    const owner = (await tx.get(db.collection('jahajiUsers').doc(device.uid))).data()
+    requireDeviceSlot(await accountSlots(tx, db, device.uid, owner), id)
+  }
   return (await resolveAccess(tx, db, device)).plan
 }
 
@@ -40,10 +45,11 @@ async function snapshot(db, device) {
   return db.runTransaction(async tx => {
     const current = (await tx.get(device.ref)).data()
     const {plan, grant} = await resolveAccess(tx, db, current)
+    const slots = current.uid ? await accountSlots(tx, db, current.uid, (await tx.get(db.collection('jahajiUsers').doc(current.uid))).data()) : null
     const month = monthKey()
     const usage = (await tx.get(device.ref.collection('months').doc(month))).data()?.usage || {}
     if (Date.now() - current.lastSeen > 300000) tx.update(device.ref, {lastSeen: Date.now()})
-    return {device: {...publicDevice(device.id, current), planExpiresAt: grant?.expiresAt || null},
+    return {device: {...publicDevice(device.id, current), accountDisabled: !!current.accountDisabled, allowed: !slots || slots.allowed.includes(device.id), planExpiresAt: grant?.expiresAt || null}, slots: slots ? {limit: slots.limit, used: slots.used} : null,
       plan, month, usage, features: FEATURES,
       scheduled: (current.queuedPlans || []).filter(row => row.startsAt > Date.now()).map(row => ({
         name: row.snapshot?.name || 'Jahaji plan', startsAt: row.startsAt, expiresAt: row.expiresAt,
@@ -153,7 +159,7 @@ export default async function jahajiHandler(req, res, services) {
       return res.json({plans: plans.docs.filter(doc => !doc.data().deleted).map(doc => {
         const plan = doc.data()
         return {id: doc.id, name: plan.name, price: plan.price, durationDays: plan.durationDays,
-          limits: plan.limits, sites: plan.sites}
+          limits: plan.limits, sites: plan.sites, deviceLimit: plan.deviceLimit ?? 1}
       })})
     }
     if (action === 'mine' && req.method === 'GET') {
@@ -179,6 +185,21 @@ export default async function jahajiHandler(req, res, services) {
       const session = await authenticate(req)
       const entitlement = await activateJahajiPurchase(db, session.decodedToken, req.body?.orderId, req.body?.timing)
       return res.json({ok: true, entitlement})
+    }
+    if (action === 'device-access' && req.method === 'POST') {
+      const session = await authenticate(req), uid = session.decodedToken.uid
+      const id = cleanId(req.body?.id), enabled = req.body?.enabled
+      if (typeof enabled !== 'boolean') fail('Choose device access')
+      await db.runTransaction(async tx => {
+        const ownerRef = db.collection('jahajiUsers').doc(uid), ref = db.collection('jahajiDevices').doc(id)
+        const owner = (await tx.get(ownerRef)).data(), device = (await tx.get(ref)).data()
+        if (!owner || !device || device.uid !== uid) fail('Device not found', 404)
+        if (owner.banned || device.banned) fail('Account or device is banned', 403)
+        if (enabled) requireDeviceSlot(await accountSlots(tx, db, uid, owner, {...device, id, accountDisabled: false}), id, true)
+        tx.update(ref, {accountDisabled: !enabled})
+        tx.update(ownerRef, {devicesChangedAt: Date.now()})
+      })
+      return res.json({ok: true})
     }
     if (action.startsWith('admin-')) return await adminRequest(req, res, db, action.slice(6), authenticate)
     if (action === 'register' && req.method === 'POST') {
@@ -212,8 +233,9 @@ export default async function jahajiHandler(req, res, services) {
         if (device.data()?.banned || previous.data()?.banned) fail('Account or device is banned', 403)
         const email = session.decodedToken.email || ''
         const name = session.userProfile.name || session.decodedToken.name || email
-        tx.set(owner, {name, email, lastSeen: Date.now(), ...(!previous.exists ? {createdAt: Date.now(), banned: false} : {})}, {merge: true})
-        tx.update(deviceRef, {uid, email, userName: name, linkedAt: Date.now()})
+        requireDeviceSlot(await accountSlots(tx, db, uid, previous.data(), {...device.data(), id: deviceRef.id, uid, accountDisabled: false, linkedAt: device.data()?.linkedAt || Date.now()}), deviceRef.id, true)
+        tx.set(owner, {name, email, lastSeen: Date.now(), deviceAccessUpdatedAt: Date.now(), ...(!previous.exists ? {createdAt: Date.now(), banned: false} : {})}, {merge: true})
+        tx.update(deviceRef, {uid, email, userName: name, accountDisabled: false, linkedAt: device.data()?.linkedAt || Date.now()})
         tx.update(ref, {used: true})
       })
       return res.json({ok: true, deviceId: (await ref.get()).data().deviceId})
@@ -264,7 +286,7 @@ export default async function jahajiHandler(req, res, services) {
       const ref = device.ref.collection('operations').doc(operation)
       const result = await db.runTransaction(async tx => {
         const current = (await tx.get(device.ref)).data()
-        const plan = await policy(tx, db, current)
+        const plan = await policy(tx, db, current, device.id)
         const previous = await tx.get(ref)
         const period = previous.data()?.states && Object.values(previous.data().states).some(state => ['complete', 'reserved'].includes(state)) ? previous.data().month : monthKey()
         const monthRef = device.ref.collection('months').doc(period)
