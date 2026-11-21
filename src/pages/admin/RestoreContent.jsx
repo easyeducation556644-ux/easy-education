@@ -9,12 +9,13 @@ const CONFIRM_TEXT = "RESTORE MISSING CONTENT"
 
 function buildChunks(items) {
   const chunks = []
+  const encoder = new TextEncoder()
   let group = []
   let bytes = 0
   for (const item of items) {
-    const size = JSON.stringify(item).length + 100
-    if (size > 125000) throw Error("An individual document is too large for safe restore")
-    if (group.length >= 15 || bytes + size > 125000) {
+    const size = encoder.encode(JSON.stringify(item)).byteLength + 180
+    if (size > 105000) throw Error("An individual document is too large for safe restore")
+    if (group.length >= 15 || bytes + size > 105000) {
       chunks.push(group)
       group = []
       bytes = 0
