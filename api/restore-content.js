@@ -106,7 +106,7 @@ function decodeValue(value, db, depth = 0) {
 function decodeFields(fields, db, depth = 0) {
   if (!fields || typeof fields !== "object" || Array.isArray(fields) || depth > 30)
     throw Error("Invalid document fields");
-  const output = Object.create(null);
+  const output = {};
   for (const [key, value] of Object.entries(fields)) {
     if (!key || ["__proto__", "constructor", "prototype"].includes(key)) throw Error("Unsafe field name");
     output[key] = decodeValue(value, db, depth + 1);
