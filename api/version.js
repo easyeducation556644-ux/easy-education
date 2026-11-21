@@ -17,6 +17,7 @@ import createPaymentHandler from '../server/api-resources/create-payment.js'
 import verifyPaymentHandler from '../server/api-resources/verify-payment.js'
 import uploadImageHandler from '../server/api-resources/upload-image.js'
 import unpiratorPlaybackHandler from '../server/api-resources/unpirator-playback.js'
+import restoreContentHandler from '../server/api-resources/restore-content.js'
 import channelRouterHandler from '../server/bot/channel-router.js'
 
 const APP_VERSION = 'v9.9'
@@ -47,6 +48,7 @@ export default async function versionHandler(req, res) {
   if (resource === 'verify-payment') return verifyPaymentHandler(req, res)
   if (resource === 'upload-image') return uploadImageHandler(req, res)
   if (resource === 'unpirator-playback') return unpiratorPlaybackHandler(req, res)
+  if (resource === 'restore-content') return restoreContentHandler(req, res)
 
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
   res.setHeader('Pragma', 'no-cache')
