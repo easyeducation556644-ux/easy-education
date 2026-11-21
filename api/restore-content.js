@@ -1,13 +1,9 @@
 /*
  * Easy Education emergency recovery — CONTENT COLLECTIONS ONLY.
  *
- * This endpoint is deliberately fail-closed, disabled without explicit Vercel
- * environment settings. Firebase Admin SDK bypasses Firestore client rules.
+ * Existing authenticated Full Admins can restore using the deployed server credentials.
+ * Firebase Admin SDK bypasses Firestore client rules.
  * Never enable "allow write: if true" for recovery.
- *
- * Vercel env required:
- * EASY_EDUCATION_RESTORE_ENABLED=true
- * EASY_EDUCATION_RESTORE_ADMIN_UIDS=<trusted Firebase Auth UIDs, comma separated>
  * The fixed signed data root below is the only accepted restore dataset.
  *
  * No user/payment/access/settings/adminTokens documents are accepted.
@@ -15,7 +11,7 @@
  */
 import { Timestamp, GeoPoint } from "firebase-admin/firestore";
 import { createHash } from "node:crypto";
-import { getAdminServices } from "../server/api-resources/utils/firebase-admin.js";
+import { getAdminServices, isFullAdminProfile } from "../server/api-resources/utils/firebase-admin.js";
 
 const PROJECT_ID = "easy-education-real";
 // Merkle SHA-256 root for the verified 2,581-record content snapshot.
@@ -134,14 +130,6 @@ function validateBatch(rows, db) {
 }
 
 async function authenticate(req) {
-  if (process.env.EASY_EDUCATION_RESTORE_ENABLED !== "true") {
-    const err = Error("Restore is disabled in Vercel environment"); err.status = 503; throw err;
-  }
-  const uidList = process.env.EASY_EDUCATION_RESTORE_ADMIN_UIDS || "";
-  const allowlisted = new Set(uidList.split(",").map(s => s.trim()).filter(Boolean));
-  if (!allowlisted.size) {
-    const err = Error("Trusted restore admin UID is not configured"); err.status = 503; throw err;
-  }
   const origin = req.headers.origin;
   if (origin !== "https://easy-education.vercel.app") {
     const err = Error("Requests must come from the official site"); err.status = 403; throw err;
@@ -155,8 +143,12 @@ async function authenticate(req) {
   let decoded;
   try { decoded = await auth.verifyIdToken(m[1], true); }
   catch { const err = Error("Session expired or revoked"); err.status = 401; throw err; }
-  if (!allowlisted.has(decoded.uid)) {
-    const err = Error("Your Firebase UID is not allowlisted for recovery"); err.status = 403; throw err;
+  // Only established Full Admin accounts can use this emergency endpoint.
+  // Do not rely on the frontend route or on a client-supplied role flag.
+  const profileSnap = await db.collection("users").doc(decoded.uid).get();
+  const userProfile = profileSnap.exists ? profileSnap.data() : null;
+  if (!isFullAdminProfile(userProfile)) {
+    const err = Error("Full Admin access required"); err.status = 403; throw err;
   }
   if (req.body?.root !== TRUSTED_ROOT) {
     const err = Error("The selected recovery backup is not approved"); err.status = 409; throw err;
