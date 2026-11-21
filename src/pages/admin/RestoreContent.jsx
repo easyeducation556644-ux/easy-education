@@ -128,7 +128,7 @@ export default function RestoreContent() {
     setProgress({ done: 0, total: items.length })
     try {
       const token = await currentUser?.getIdToken(true)
-      if (!token) throw Error("Sign in again as the trusted administrator")
+      if (!token) throw Error("Sign in again as Full Admin")
       const all = []
       for (const group of chunks) {
         const partial = await callRestore(token, "preflight", group)
@@ -188,8 +188,8 @@ export default function RestoreContent() {
         <p className="text-sm text-muted-foreground mt-1">Restore only verified missing courses, chapters, categories and classes. No Firestore rule change required.</p>
       </div>
       <div className="border border-amber-300 dark:border-amber-700 rounded-lg p-4 bg-amber-50/60 dark:bg-amber-950/20 text-sm space-y-2">
-        <p className="font-semibold">This is a restricted recovery tool, not a normal import feature.</p>
-        <p>It is disabled until the backend has <code>EASY_EDUCATION_RESTORE_ENABLED=true</code> and <code>EASY_EDUCATION_RESTORE_ADMIN_UIDS</code> configured with a verified Firebase Auth UID. If your Firebase rules are locked down, keep them locked down. This API uses trusted server credentials.</p>
+        <p className="font-semibold">Recovery is limited to the verified content backup.</p>
+        <p>Any existing logged-in Full Admin can use this restore page. No separate UID list or new environment settings are required. Keep Firestore rules locked down.</p>
         <p><strong>Never use</strong> <code>allow read, write: if true</code>. No payments, users, enrollments, settings or announcements are accepted. Existing records are never overwritten.</p>
       </div>
 
