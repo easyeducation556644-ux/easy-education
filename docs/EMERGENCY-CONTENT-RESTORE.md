@@ -5,10 +5,9 @@ This feature adds an **Admin Panel → Database Restore** page and a tightly sco
 ## Critical safety notes
 
 - **Never** set Firestore Rules to `allow read, write: if true`; it is not required.
-- This endpoint is **OFF by default** and returns 503 unless `EASY_EDUCATION_RESTORE_ENABLED=true` is set in Vercel.
-- Set `EASY_EDUCATION_RESTORE_ADMIN_UIDS` to the exact, separately verified **Firebase Authentication UID(s)** authorized to operate recovery; use a comma-separated list. Do not trust the compromised Firestore `users.role` field alone.
-- The endpoint needs valid, least-privilege Firebase Admin credentials already configured on the Vercel backend. **Do not upload or commit a service-account key.**
-- Turn on only while performing recovery; switch `EASY_EDUCATION_RESTORE_ENABLED` off immediately afterward.
+- No additional Vercel environment variables or explicit UID allowlist are required. Existing authenticated **Full Admin** accounts can use the tool. The server checks the Firebase ID token (revocation checked) and corresponding `users/{uid}` role on every request.
+- This uses the Firebase Admin credentials already configured on the Vercel backend; **do not upload or commit a service-account key**.
+- NOTE: the Firestore `users` collection had been exposed during the incident. Verify that current Full Admin user profiles have not been maliciously promoted before deploying; do not assume a profile role is a trusted independent authority.
 - Before running restore, **export/snapshot the current production Firestore database** (including records created since the attack), verify that payment/access Cloud Function triggers will not mutate state, and ideally perform the same recovery on a staging project first.
 
 ## Approved input file
@@ -19,12 +18,12 @@ Collection counts: `categories=7`, `courses=170`, `chapters=283`, `classes=2121`
 
 ## Workflow
 
-1. Deploy and open `/admin/restore` as the trusted authorized Firebase Auth user.
+1. Deploy and open `/admin/restore` as an existing Full Admin.
 2. Select the approved JSON on your own device; this never becomes a public/static asset.
 3. Click **Check Missing Documents**. This is read-only and checks original IDs against live Firestore in small batches.
 4. Review counts. Confirm an independent live database backup. Type `RESTORE MISSING CONTENT` and click **Restore Missing Content**.
 5. The endpoint uses `DocumentReference.create()` only. It never overwrites, updates, or deletes existing records. If interrupted, re-run preflight and continue safely; existing records will be skipped.
-6. Download the audit report and check the live course pages, user access and production logs. Disable the restore flag.
+6. Download the audit report and check the live course pages, user access and production logs. After recovery, remove or disable the emergency restore route before it becomes a permanent administrative entry point.
 
 ## Not included in this pass
 
