@@ -8,15 +8,30 @@
  * Vercel env required:
  * EASY_EDUCATION_RESTORE_ENABLED=true
  * EASY_EDUCATION_RESTORE_ADMIN_UIDS=<trusted Firebase Auth UIDs, comma separated>
- * EASY_EDUCATION_RESTORE_SOURCE_SHA256=<SHA-256 of the original local JSONL>
+ * The fixed signed data root below is the only accepted restore dataset.
  *
  * No user/payment/access/settings/adminTokens documents are accepted.
  * Every write is Firestore DocumentReference.create(): NEVER overwrite/delete.
  */
 import { Timestamp, GeoPoint } from "firebase-admin/firestore";
+import { createHash } from "node:crypto";
 import { getAdminServices } from "../server/api-resources/utils/firebase-admin.js";
 
 const PROJECT_ID = "easy-education-real";
+// Merkle SHA-256 root for the verified 2,581-record content snapshot.
+const TRUSTED_ROOT = "153b8d0e4ba66d04e85ad8e5026b7b2382f2804bca628bbca30cd4d9b0cdb12a";
+const hash = buffer => createHash("sha256").update(buffer).digest();
+function assertMerkleProof(item) {
+  if (!item || typeof item !== "object" || !item.row || !Array.isArray(item.proof) || item.proof.length !== 12) throw Error("Invalid signed record");
+  let digest = hash(Buffer.from(JSON.stringify(item.row), "utf8"));
+  for (const step of item.proof) {
+    if (!step || !["left", "right"].includes(step.side) || typeof step.hash !== "string" || !/^[a-f0-9]{64}$/.test(step.hash)) throw Error("Invalid signed record proof");
+    const sibling = Buffer.from(step.hash, "hex");
+    digest = hash(step.side === "left" ? Buffer.concat([sibling, digest]) : Buffer.concat([digest, sibling]));
+  }
+  if (digest.toString("hex") !== TRUSTED_ROOT) throw Error("Record does not match original recovery backup");
+  return item.row;
+}
 const MAX_DOCUMENTS = 20;
 const MAX_REQUEST_BYTES = 140000;
 const CONTENT_COLLECTIONS = new Set(["categories", "courses", "chapters", "classes"]);
@@ -103,6 +118,7 @@ function validateBatch(rows, db) {
   if (!Array.isArray(rows) || rows.length < 1 || rows.length > MAX_DOCUMENTS) throw Error("Batch must contain 1–20 documents");
   const paths = new Set();
   return rows.map(item => {
+    item = assertMerkleProof(item);
     const path = item?.path;
     if (typeof path !== "string" || !PATH_PATTERN.test(path)) throw Error("Invalid document path");
     if (paths.has(path)) throw Error("Duplicate document path");
@@ -126,10 +142,6 @@ async function authenticate(req) {
   if (!allowlisted.size) {
     const err = Error("Trusted restore admin UID is not configured"); err.status = 503; throw err;
   }
-  const pinnedHash = (process.env.EASY_EDUCATION_RESTORE_SOURCE_SHA256 || "").toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(pinnedHash)) {
-    const err = Error("Restore source SHA-256 is not configured"); err.status = 503; throw err;
-  }
   const origin = req.headers.origin;
   if (origin !== "https://easy-education.vercel.app") {
     const err = Error("Requests must come from the official site"); err.status = 403; throw err;
@@ -146,8 +158,8 @@ async function authenticate(req) {
   if (!allowlisted.has(decoded.uid)) {
     const err = Error("Your Firebase UID is not allowlisted for recovery"); err.status = 403; throw err;
   }
-  if (req.body?.sourceHash?.toLowerCase() !== pinnedHash) {
-    const err = Error("Backup SHA-256 does not match the pinned recovery file"); err.status = 409; throw err;
+  if (req.body?.root !== TRUSTED_ROOT) {
+    const err = Error("The selected recovery backup is not approved"); err.status = 409; throw err;
   }
   return { db, uid: decoded.uid };
 }
@@ -202,7 +214,7 @@ export default async function handler(req, res) {
     }
     return res.status(200).json({ success: true, action, results });
   } catch (err) {
-    const status = err.status || (/^(Invalid|Unexpected|Unsupported|Pending|Empty|Forbidden|Batch|Duplicate|Document|Unsafe|Cross-project)/.test(err.message) ? 400 : 500);
+    const status = err.status || (/^(Invalid|Unexpected|Unsupported|Pending|Empty|Forbidden|Batch|Duplicate|Document|Unsafe|Cross-project|Record)/.test(err.message) ? 400 : 500);
     if (status === 500) console.error("Restore handler failed:", err?.code || "unknown");
     return reject(res, status, status === 500 ? "Restore failed. Check server logs." : err.message);
   }
