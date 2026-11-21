@@ -25,6 +25,7 @@ import {
   MessageSquare,
   ShieldCheck,
   ShieldAlert,
+  DatabaseBackup,
   Gift,
   Layers3,
   Monitor,
@@ -60,6 +61,7 @@ import BanManagement from "./BanManagement"
 import ClassComments from "./ClassComments"
 import ManageAdministration from "./ManageAdministration"
 import ManageSecurityEvents from "./ManageSecurityEvents"
+import RestoreContent from "./RestoreContent"
 import { useAuth } from "../../contexts/AuthContext"
 import {
   ADMIN_PAGE_CATALOG,
@@ -166,6 +168,7 @@ export default function AdminDashboard() {
     }] : []),
     ...(fullAdmin ? [{id: "__jahaji", label: "Jahaji", name: "Jahaji", path: "/jahaji", icon: Monitor, fullAdminOnly: true}] : []),
     ...(fullAdmin ? [{ id: "__trials", label: "Trials", name: "Trials", path: "/admin/trials", description: "Create and manage claim-first trials.", icon: Gift, fullAdminOnly: true }] : []),
+    ...(fullAdmin ? [{ id: "__restore-content", label: "Database Restore", name: "Database Restore", path: "/admin/restore", description: "Restore verified missing content without changing Firestore rules.", icon: DatabaseBackup, fullAdminOnly: true }] : []),
   ]
 
   const visibleNavItems = navItems.filter((item) => {
@@ -231,6 +234,7 @@ export default function AdminDashboard() {
             <Routes>
               <Route index element={hasAdminPermission(userProfile, ADMIN_PERMISSION_KEYS.OVERVIEW) ? <AdminOverview /> : <Navigate to={getDefaultAdminPath(userProfile)} replace />} />
               <Route path="read-usage" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.READ_USAGE}><ReadUsage /></AdminRoute>} />
+              <Route path="restore" element={<AdminRoute fullOnly><RestoreContent /></AdminRoute>} />
               <Route path="administration" element={<AdminRoute fullOnly><ManageAdministration /></AdminRoute>} />
               <Route path="security-events" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.SECURITY_EVENTS}><ManageSecurityEvents /></AdminRoute>} />
               <Route path="notifications" element={<AdminRoute permission={ADMIN_PERMISSION_KEYS.NOTIFICATIONS}><Notifications /></AdminRoute>} />
