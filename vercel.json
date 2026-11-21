@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/restore-content",
+      "destination": "/api/version?resource=restore-content"
+    },
+    {
       "source": "/api/jahaji",
       "destination": "/api/version?resource=jahaji"
     },
@@ -126,9 +130,6 @@
     },
     "api/offline-video.js": {
       "maxDuration": 300
-    },
-    "api/restore-content.js": {
-      "maxDuration": 60
     }
   }
 }
