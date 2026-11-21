@@ -11,7 +11,7 @@
  */
 import { Timestamp, GeoPoint } from "firebase-admin/firestore";
 import { createHash } from "node:crypto";
-import { getAdminServices, isFullAdminProfile } from "../server/api-resources/utils/firebase-admin.js";
+import { getAdminServices, isFullAdminProfile } from "./utils/firebase-admin.js";
 
 const PROJECT_ID = "easy-education-real";
 // Merkle SHA-256 root for the verified 2,581-record content snapshot.
