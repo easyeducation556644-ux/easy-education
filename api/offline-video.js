@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { Readable } from "node:stream"
-import { requireVerifiedUser } from "./utils/firebase-admin.js"
+import { getAdminServices, requireVerifiedUser } from "./utils/firebase-admin.js"
 
 const DEFAULT_HEIGHT = 360
 const MAX_HEIGHT = 2160
@@ -435,6 +435,44 @@ async function getRumbleInfo(videoUrl) {
   return { formats }
 }
 
+// Verify that the requested video actually belongs to a class the
+// authenticated learner has purchased. A class ID and arbitrary Rumble URL
+// are not, by themselves, authorization to mint a download token.
+async function assertClassDownloadAccess(uid, classId, videoUrl) {
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(classId)) {
+    const error = new Error("Invalid class identifier");
+    error.statusCode = 400;
+    throw error;
+  }
+  const { db } = getAdminServices();
+  const classSnapshot = await db.collection("classes").doc(classId).get();
+  if (!classSnapshot.exists) {
+    const error = new Error("Class not found");
+    error.statusCode = 404;
+    throw error;
+  }
+  const data = classSnapshot.data();
+  const allowedUrls = [data.videoURL, data.rumbleLink].filter(x => typeof x === "string" && x);
+  if (!allowedUrls.includes(videoUrl)) {
+    const error = new Error("Video URL does not belong to this class");
+    error.statusCode = 403;
+    throw error;
+  }
+  const courseId = data.courseId;
+  if (!courseId || typeof courseId !== "string") {
+    const error = new Error("Class does not belong to a course");
+    error.statusCode = 403;
+    throw error;
+  }
+  const enrollment = await db.collection("userCourses").doc(`${uid}_${courseId}`).get();
+  if (enrollment.exists && enrollment.data()?.userId === uid && enrollment.data()?.courseId === courseId) return;
+  const profile = await db.collection("users").doc(uid).get();
+  if (profile.exists && profile.data()?.role === "admin") return;
+  const error = new Error("You do not have enrollment access to this class");
+  error.statusCode = 403;
+  throw error;
+}
+
 function sendError(res, statusCode, message) {
   if (!res.headersSent) res.status(statusCode).json({ error: message })
   else res.end()
@@ -464,6 +502,7 @@ export default async function offlineVideoHandler(req, res) {
       if (!parseRumbleUrl(videoUrl)) {
         return sendError(res, 400, "A valid Rumble video URL is required")
       }
+      await assertClassDownloadAccess(decodedToken.uid, classId, videoUrl)
 
       downloadToken = signDownloadToken({
         classId,
