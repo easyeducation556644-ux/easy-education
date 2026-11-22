@@ -95,6 +95,36 @@ export default function MyCourses() {
           }
         })
 
+        // Incident recovery: an approved payment is evidence of ownership even
+        // when the corresponding userCourses record was deleted. This is a
+        // read-only fallback; the server-side restoration remains authoritative.
+        paymentsSnapshot.docs.forEach((paymentDoc) => {
+          const payment = paymentDoc.data()
+          const enrolledAt = payment.approvedAt || payment.submittedAt || null
+          ;(payment.courses || []).forEach((item) => {
+            if (!item?.id) return
+            if (!uniqueEnrollments.has(item.id)) {
+              uniqueEnrollments.set(item.id, {
+                userId: currentUser.uid,
+                courseId: item.id,
+                enrolledAt,
+                progress: 0,
+              })
+            }
+            // A purchased bundle exposes its constituent courses in MyCourses.
+            bundleMap.forEach((bundle, childId) => {
+              if (bundle.bundleId === item.id && !uniqueEnrollments.has(childId)) {
+                uniqueEnrollments.set(childId, {
+                  userId: currentUser.uid,
+                  courseId: childId,
+                  enrolledAt,
+                  progress: 0,
+                })
+              }
+            })
+          })
+        })
+
         const built = (await Promise.all([...uniqueEnrollments.entries()].map(async ([courseId, userCourse]) => {
           try {
             const courseSnapshot = await getDoc(doc(db, "courses", courseId))
