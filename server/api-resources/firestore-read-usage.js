@@ -151,11 +151,35 @@ function toFirestorePayload(group) {
 
 async function handlePost(req, res) {
   const { db, adminAuth } = ensureAdminApp()
+  // Never permit anonymous callers to trigger writes using Admin SDK.
+  const actor = await decodeOptionalUser(req, adminAuth)
+  if (!actor?.uid) return res.status(401).json({ error: 'Authentication required' })
+  const contentLength = Number(req.headers['content-length'] || 0)
+  if (contentLength > 32000) return res.status(413).json({ error: 'Usage batch too large' })
   const sessionId = cleanText(req.body?.sessionId, '', 100)
   const events = Array.isArray(req.body?.events) ? req.body.events : []
   if (!sessionId || events.length === 0) return res.status(204).end()
+  if (events.length > 25) return res.status(413).json({ error: 'Too many usage records' })
 
-  const actor = await decodeOptionalUser(req, adminAuth)
+  // One document per UID keeps the rate quota bounded; transaction prevents
+  // concurrent serverless instances bypassing the hourly limit.
+  const quotaRef = db.collection('apiUsageMeterQuotas').doc(actor.uid)
+  const windowStart = Math.floor(Date.now() / 3600000) * 3600000
+  try {
+    await db.runTransaction(async tx => {
+      const snapshot = await tx.get(quotaRef)
+      const data = snapshot.exists ? snapshot.data() : {}
+      const count = data.windowStart === windowStart ? Number(data.count || 0) : 0
+      if (count >= 120) throw new Error('USAGE_QUOTA_EXCEEDED')
+      tx.set(quotaRef, { windowStart, count: count + 1 }, { merge: true })
+    })
+  } catch (error) {
+    if (error.message === 'USAGE_QUOTA_EXCEEDED') {
+      return res.status(429).json({ error: 'Usage submission rate exceeded' })
+    }
+    throw error
+  }
+
   const grouped = groupEvents(events, actor, sessionId)
   if (grouped.size === 0) return res.status(204).end()
 
