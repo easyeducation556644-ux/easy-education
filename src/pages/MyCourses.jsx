@@ -98,7 +98,10 @@ export default function MyCourses() {
         // Incident recovery: an approved payment is evidence of ownership even
         // when the corresponding userCourses record was deleted. This is a
         // read-only fallback; the server-side restoration remains authoritative.
-        paymentsSnapshot.docs.forEach((paymentDoc) => {
+        // Fail-closed until LIVE Firebase payment rules and historical payment
+        // provenance have been validated by the recovery operator. The
+        // enrollment restore job is the primary source for MyCourses.
+        if (import.meta.env.VITE_VERIFIED_PAYMENT_FALLBACK === "enabled") paymentsSnapshot.docs.forEach((paymentDoc) => {
           const payment = paymentDoc.data()
           const enrolledAt = payment.approvedAt || payment.submittedAt || null
           ;(payment.courses || []).forEach((item) => {
