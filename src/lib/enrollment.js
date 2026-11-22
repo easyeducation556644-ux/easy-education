@@ -1,91 +1,45 @@
-import { collection, addDoc, getDocs, query, where, serverTimestamp, doc, setDoc } from 'firebase/firestore'
-import { db } from './firebase'
-import { notifyAdminsOfEnrollment } from './notifications'
+import { auth } from "./firebase"
 
+// A client can request a free enrollment, but it must never create an
+// approved payment or a userCourses entitlement directly. The server verifies
+// the Firebase ID token, prices the current catalog, and writes both records.
 export async function enrollInFreeCourse(userId, userEmail, userName, course) {
   try {
-    const existingPaymentQuery = query(
-      collection(db, 'payments'),
-      where('userId', '==', userId),
-      where('status', '==', 'approved')
-    )
-    const existingPayments = await getDocs(existingPaymentQuery)
-
-    const alreadyEnrolled = existingPayments.docs.some(doc => {
-      const payment = doc.data()
-      return payment.courses?.some(c => c.id === course.id)
+    const user = auth.currentUser
+    if (!user?.uid || user.uid !== userId) {
+      return { success: false, message: "Please sign in to enroll" }
+    }
+    if (!course?.id || typeof course.id !== "string") {
+      return { success: false, message: "Invalid course" }
+    }
+    const token = await user.getIdToken()
+    const response = await fetch("/api/process-enrollment", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        userId: user.uid,
+        userEmail: user.email || userEmail || "",
+        userName: user.displayName || userName || "",
+        transaction_id: `FREE-${crypto.randomUUID()}`,
+        skipPaymentVerification: true,
+        paymentMethod: "Free Course",
+        courses: [{ id: course.id }],
+        subtotal: 0,
+        discount: 0,
+        couponCode: "",
+        finalAmount: 0,
+      }),
     })
-
-    if (alreadyEnrolled) {
-      return { success: false, message: 'You are already enrolled in this course' }
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok || !result.success) {
+      return { success: false, message: result.error || "Could not enroll. Please try again." }
     }
-
-    const pendingPaymentQuery = query(
-      collection(db, 'payments'),
-      where('userId', '==', userId),
-      where('status', '==', 'pending')
-    )
-    const pendingPayments = await getDocs(pendingPaymentQuery)
-
-    const hasPending = pendingPayments.docs.some(doc => {
-      const payment = doc.data()
-      return payment.courses?.some(c => c.id === course.id)
-    })
-
-    if (hasPending) {
-      return { success: false, message: 'You have a pending payment for this course' }
-    }
-
-    const paymentData = {
-      userId,
-      userName,
-      userEmail,
-      senderNumber: 'N/A - Free Course',
-      transactionId: 'FREE-' + Date.now(),
-      courses: [{
-        id: course.id,
-        title: course.title,
-        price: 0,
-      }],
-      subtotal: 0,
-      discountType: 'none',
-      discountPercent: 0,
-      discountAmount: 0,
-      discount: 0,
-      couponCode: '',
-      finalAmount: 0,
-      status: 'approved',
-      submittedAt: serverTimestamp(),
-      approvedAt: serverTimestamp(),
-      isFreeEnrollment: true,
-    }
-
-    await addDoc(collection(db, 'payments'), paymentData)
-    
-    // Create userCourses entry for access control (consistent with paid/bundle enrollments)
-    const userCourseRef = doc(db, 'userCourses', `${userId}_${course.id}`)
-    await setDoc(userCourseRef, {
-      userId,
-      courseId: course.id,
-      enrolledAt: serverTimestamp(),
-      progress: 0
-    }, { merge: true })
-    
-    notifyAdminsOfEnrollment({
-      userId,
-      userName,
-      userEmail,
-      courses: [{
-        id: course.id,
-        title: course.title,
-      }],
-      finalAmount: 0,
-      isFreeEnrollment: true,
-    }).catch(err => console.error('Failed to notify admins:', err))
-    
-    return { success: true, message: 'Successfully enrolled in free course!' }
+    return { success: true, message: "Successfully enrolled in free course!" }
   } catch (error) {
-    console.error('Error enrolling in free course:', error)
-    return { success: false, message: 'Failed to enroll. Please try again.' }
+    console.error("Free course enrollment failed", error)
+    return { success: false, message: "Failed to enroll. Please try again." }
   }
 }

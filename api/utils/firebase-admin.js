@@ -106,7 +106,7 @@ export async function requireVerifiedUser(req) {
 
   const { auth } = getAdminServices()
   try {
-    return await auth.verifyIdToken(match[1])
+    return await auth.verifyIdToken(match[1], true)
   } catch {
     const error = new Error("Invalid or expired authentication token")
     error.statusCode = 401
@@ -128,7 +128,7 @@ export async function requireAuthenticatedUser(req) {
   let decodedToken
 
   try {
-    decodedToken = await auth.verifyIdToken(match[1])
+    decodedToken = await auth.verifyIdToken(match[1], true)
   } catch {
     const error = new Error("Invalid or expired authentication token")
     error.statusCode = 401

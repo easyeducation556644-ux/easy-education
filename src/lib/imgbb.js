@@ -1,3 +1,4 @@
+import { auth } from "./firebase"
 /**
  * Client-side Image Upload Helper
  * Serverless function কে call করবে
@@ -32,9 +33,9 @@ export async function uploadImageToImgBB(file) {
   }
   
   // File size (32MB max) চেক করা হচ্ছে
-  const maxSize = 32 * 1024 * 1024
+  const maxSize = 3 * 1024 * 1024
   if (file.size > maxSize) {
-    throw new Error("Image size must be less than 32MB")
+    throw new Error("Image size must be less than 3MB")
   }
   
   try {
@@ -46,12 +47,15 @@ export async function uploadImageToImgBB(file) {
     // Data URI header (data:image/jpeg;base64,) রিমুভ করা হচ্ছে
     const base64Data = base64.replace(/^data:image\/\w+;base64,/, "")
     
-    // সার্ভারলেস ফাংশনকে কল
+    const token = await auth.currentUser?.getIdToken()
+    if (!token) throw new Error("Please sign in to upload an image")
+    // Uploads are authenticated and size-checked by the server.
     const response = await fetch(`${API_URL}/api/upload-image`, {
       method: "POST",
       headers: {
         // Base64 ডেটা JSON ফরম্যাটে পাঠানো হচ্ছে
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
       },
       // এখানে Base64 স্ট্রিংটিকে কোনো অতিরিক্ত এনকোডিং ছাড়াই পাঠানো হচ্ছে
       body: JSON.stringify({ image: base64Data }),

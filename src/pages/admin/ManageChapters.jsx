@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
 import { Plus, Edit, Trash2, X, Upload, Loader2 } from "lucide-react"
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from "firebase/firestore"
-import { db } from "../../lib/firebase"
+import { auth, db } from "../../lib/firebase"
 import { toast } from "../../hooks/use-toast"
 import ConfirmDialog from "../../components/ConfirmDialog"
 import { useAuth } from "../../contexts/AuthContext"
@@ -115,12 +115,12 @@ export default function ManageChapters() {
       return
     }
 
-    const maxSize = 5 * 1024 * 1024
+    const maxSize = 3 * 1024 * 1024
     if (file.size > maxSize) {
       toast({
         variant: "error",
         title: "File Too Large",
-        description: "Image must be less than 5MB.",
+        description: "Image must be less than 3MB.",
       })
       return
     }
@@ -134,9 +134,11 @@ export default function ManageChapters() {
           try {
             const base64 = reader.result.split(",")[1]
             
+            const token = await auth.currentUser?.getIdToken()
+            if (!token) throw new Error("Please sign in to upload")
             const response = await fetch("/api/upload-image", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
               body: JSON.stringify({ image: base64 }),
             })
 
