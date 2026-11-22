@@ -195,6 +195,10 @@ export async function flushUsage() {
         token = null
       }
 
+      // Anonymous sessions cannot write metrics via privileged Admin SDK.
+      // Drop this in-memory sample instead of retrying an unauthorized flush.
+      if (!token) return
+
       const response = await fetch("/api/firestore-read-usage", {
         method: "POST",
         headers: {
